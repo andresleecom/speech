@@ -10,10 +10,12 @@ from typing import Literal
 
 from .config import Settings, app_data_dir, load_settings, save_settings
 from .diagnostics import run_diagnostics as run_diagnostics_report
+from .focus import get_foreground_window, restore_foreground_window
 from .formatter import clean_text
 from .hotkeys import HotkeyManager
 from .inserter import insert_text
 from .logger import get_logger
+from .overlay import RecordingOverlay
 from .recorder import Recorder
 from .transcriber import Transcriber
 from .tray import TrayApp
@@ -35,12 +37,15 @@ class AppController:
         self.recorder = Recorder()
         self.transcriber = Transcriber(settings)
         self.tray = TrayApp(self)
+        self.recording_overlay = RecordingOverlay(self.stop_from_overlay)
         self.hotkeys = HotkeyManager(settings.hotkeys, self.on_hotkey)
         self._lock = threading.RLock()
         self._status: Status = STATUS_IDLE
         self._processing = False
         self._shutdown = False
         self._recording_language_mode: LanguageMode | None = None
+        self._paste_target_window: int | None = None
+        self._restore_paste_target_before_paste = False
 
     def run(self) -> None:
         self.set_status(STATUS_IDLE)
@@ -61,6 +66,7 @@ class AppController:
             self._shutdown = True
 
         if already_shutdown:
+            self.recording_overlay.stop()
             self.tray.stop()
             return
 
@@ -71,17 +77,27 @@ class AppController:
 
         if self.recorder.is_recording():
             try:
+                self.recording_overlay.hide()
                 audio_path = self.recorder.stop_recording()
                 self._delete_audio(audio_path)
             except Exception:
                 self.logger.exception("Active recording failed to stop during shutdown.")
 
+        self.recording_overlay.stop()
         self.tray.stop()
         self.logger.info("WinWhisperDictate stopped.")
 
     def exit_app(self) -> None:
         self.logger.info("Exit requested.")
         self.stop()
+
+    def stop_from_overlay(self) -> None:
+        with self._lock:
+            if self._processing or not self.recorder.is_recording():
+                self.recording_overlay.hide()
+                return
+            self._restore_paste_target_before_paste = True
+        self.toggle()
 
     def on_hotkey(self, action: str) -> None:
         if action == "toggle":
@@ -106,6 +122,7 @@ class AppController:
                 language_mode = self._recording_language_mode or self.settings.language_mode
                 self._processing = True
                 self.logger.info("Recording stopped; transcribing (language_mode=%s).", language_mode)
+                self.recording_overlay.hide()
                 self._beep(440, 120)
                 worker = threading.Thread(
                     target=self._stop_and_process,
@@ -117,14 +134,18 @@ class AppController:
                 return
 
             language_mode = language_override or self.settings.language_mode
+            self._paste_target_window = get_foreground_window()
+            self._restore_paste_target_before_paste = False
             try:
                 self.recorder.start_recording()
             except Exception:
+                self._paste_target_window = None
                 self._handle_error("Recording failed to start.")
                 return
 
             self._recording_language_mode = language_mode
             self.logger.info("Recording started (language_mode=%s).", language_mode)
+            self.recording_overlay.show()
             self._beep(880, 120)
             self.set_status(STATUS_RECORDING)
 
@@ -193,8 +214,12 @@ class AppController:
                 return
 
             self.set_status(STATUS_PASTING)
-            if not insert_text(cleaned):
-                self.notify("WinWhisperDictate", "Text copied to clipboard.")
+            self._restore_paste_target_if_needed()
+            if insert_text(cleaned):
+                self.logger.info("Paste shortcut sent; dictation text remains on clipboard.")
+            else:
+                self.logger.warning("Automatic paste failed; dictation may still be on clipboard.")
+                self.notify("WinWhisperDictate", "Automatic paste failed. Try Ctrl+V.")
         except Exception:
             failed = True
             self._handle_error("Dictation failed.")
@@ -204,9 +229,24 @@ class AppController:
             with self._lock:
                 self._processing = False
                 self._recording_language_mode = None
+                self._paste_target_window = None
+                self._restore_paste_target_before_paste = False
                 shutdown = self._shutdown
             if not failed and not shutdown:
                 self.set_status(STATUS_IDLE)
+
+    def _restore_paste_target_if_needed(self) -> None:
+        with self._lock:
+            should_restore = self._restore_paste_target_before_paste
+            target_window = self._paste_target_window
+
+        if not should_restore:
+            return
+
+        if restore_foreground_window(target_window):
+            self.logger.info("Restored target window before paste.")
+        else:
+            self.logger.warning("Could not restore target window before paste.")
 
     def _run_diagnostics_worker(self) -> None:
         try:

@@ -14,14 +14,6 @@ def insert_text(text: str) -> bool:
         logger.warning("Clipboard dependency is unavailable: %s.", exc.__class__.__name__)
         return False
 
-    saved_text: str | None = None
-    try:
-        current_clipboard = pyperclip.paste()
-        if isinstance(current_clipboard, str):
-            saved_text = current_clipboard
-    except Exception:
-        saved_text = None
-
     try:
         pyperclip.copy(text)
     except Exception as exc:
@@ -43,14 +35,5 @@ def insert_text(text: str) -> bool:
         except Exception:
             pass
         return False
-
-    if saved_text is not None:
-        try:
-            pyperclip.copy(saved_text)
-        except Exception as exc:
-            logger.warning(
-                "Could not restore previous clipboard text after paste: %s.",
-                exc.__class__.__name__,
-            )
 
     return True

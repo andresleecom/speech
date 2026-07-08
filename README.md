@@ -59,7 +59,7 @@ python -m winwhisper.main
 Open Notepad.
 Press `Ctrl+Alt+Space`.
 Say, "Hello this is a test."
-Press `Ctrl+Alt+Space` again.
+Click the floating red recording button or press `Ctrl+Alt+Space` again.
 The transcribed text should paste into Notepad.
 
 ## Spanish Test
@@ -67,7 +67,7 @@ The transcribed text should paste into Notepad.
 Open Notepad.
 Press `Ctrl+Alt+S`.
 Say, "Hola este es un mensaje de prueba."
-Press `Ctrl+Alt+S` again.
+Click the floating red recording button or press `Ctrl+Alt+S` again.
 The Spanish transcription should paste into Notepad.
 
 ## Hotkeys table
@@ -93,6 +93,13 @@ The app creates the file on first run if it does not exist.
 | `paste_mode` | `clipboard_ctrl_v` | Clipboard paste mode for the MVP. |
 | `delete_audio_after_transcription` | `true` | Delete temporary WAV files after transcription. |
 | `hotkeys` | See defaults above. | Global hotkey bindings. |
+
+## Floating recording button
+
+When recording starts, WinWhisperDictate shows a small floating red `REC` button.
+Click it to stop recording and transcribe. The app remembers the active window
+from the start of recording and tries to focus it again before pasting, so the
+text goes back where your cursor was when dictation began.
 
 ## Model Recommendations
 
@@ -121,7 +128,9 @@ The diagnostics report includes Python, OS, microphone, model, dependency, API k
 
 ## Known limitations
 
-Non-text clipboard content is not preserved when pasting in the MVP.
+Dictation text remains on the clipboard after each paste attempt so you can press
+`Ctrl+V` manually if the focused app did not accept the automatic paste.
+Previous clipboard content is not preserved in the MVP.
 
 ## Troubleshooting
 
