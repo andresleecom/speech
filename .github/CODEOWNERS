@@ -1,0 +1,3 @@
+# Default owner for all paths. Reviewers are requested on PRs that touch these
+# files when branch rules require code-owner review.
+* @andresleecom
