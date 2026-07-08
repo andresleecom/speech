@@ -9,5 +9,17 @@ dist/
 *.spec
 !packaging/Speech.spec
 
+# Secrets and local env (never commit)
 .env
+.env.*
+!.env.example
+*.pem
+*.key
+*.p12
+*.pfx
+id_rsa
+id_rsa.*
+credentials.json
+service-account*.json
+
 models/

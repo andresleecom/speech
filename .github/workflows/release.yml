@@ -5,12 +5,19 @@ on:
     tags:
       - "v*"
 
+# Only this workflow needs write access, and only for publishing releases.
 permissions:
   contents: write
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
 
 jobs:
   windows:
     runs-on: windows-latest
+    # Tags from forks should never publish under this repo.
+    if: github.repository == 'andresleecom/speech'
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5

@@ -5,6 +5,14 @@ on:
     branches: ["main"]
   pull_request:
 
+# Least privilege for PR/CI jobs. Release workflow elevates only when needed.
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
   test:
     runs-on: windows-latest
