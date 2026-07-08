@@ -4,6 +4,7 @@ import argparse
 import io
 import logging
 import os
+import sys
 import threading
 from contextlib import redirect_stdout
 from pathlib import Path
@@ -241,11 +242,13 @@ class AppController:
             audio_path = None
 
             if not result.text.strip():
+                self.logger.info("No speech detected; transcription text was empty.")
                 self.notify(APP_NAME, "No speech detected")
                 return
 
             cleaned = clean_text(result.text, self.settings.cleanup_mode)
             if not cleaned.strip():
+                self.logger.info("No speech detected; cleaned transcription text was empty.")
                 self.notify(APP_NAME, "No speech detected")
                 return
 
@@ -349,6 +352,7 @@ def main(argv: list[str] | None = None) -> int:
     args = parser.parse_args(argv)
 
     if args.version:
+        _attach_parent_console_for_cli()
         print(__version__)
         return 0
 
@@ -356,6 +360,7 @@ def main(argv: list[str] | None = None) -> int:
     _apply_startup_mitigations(logger)
 
     if args.diagnostics:
+        _attach_parent_console_for_cli()
         run_diagnostics_report()
         return 0
 
@@ -391,6 +396,23 @@ def main(argv: list[str] | None = None) -> int:
 def _apply_startup_mitigations(logger: logging.Logger) -> None:
     _drop_invalid_sslkeylogfile(logger)
     _inject_truststore(logger)
+
+
+def _attach_parent_console_for_cli() -> None:
+    if os.name != "nt":
+        return
+    if sys.stdout is not None and sys.stderr is not None:
+        return
+
+    try:
+        import ctypes
+
+        attach_parent_process = ctypes.c_uint(-1).value
+        ctypes.windll.kernel32.AttachConsole(attach_parent_process)
+        sys.stdout = open("CONOUT$", "w", encoding="utf-8", buffering=1)
+        sys.stderr = open("CONOUT$", "w", encoding="utf-8", buffering=1)
+    except Exception:
+        pass
 
 
 def _drop_invalid_sslkeylogfile(logger: logging.Logger) -> None:

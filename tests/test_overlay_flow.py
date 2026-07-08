@@ -35,12 +35,14 @@ class FakeRecorder:
 
 
 class FakeTranscriber:
+    text = "hola mundo"
+
     def __init__(self, settings: Settings) -> None:
         self.settings = settings
 
     def transcribe(self, audio_path: Path, language_mode: str) -> TranscriptionResult:
         return TranscriptionResult(
-            text="hola mundo",
+            text=self.text,
             language="es",
             language_probability=1.0,
             duration=1.0,
@@ -111,8 +113,15 @@ class ImmediateThread:
         self.target(*self.args)
 
 
-def make_controller(monkeypatch, tmp_path, restored, inserted) -> AppController:
+def make_controller(
+    monkeypatch,
+    tmp_path,
+    restored,
+    inserted,
+    transcription_text="hola mundo",
+) -> AppController:
     FakeOverlay.instances.clear()
+    FakeTranscriber.text = transcription_text
     monkeypatch.setenv("WINWHISPER_APPDATA_DIR", str(tmp_path))
     monkeypatch.setattr(main_module, "Recorder", FakeRecorder)
     monkeypatch.setattr(main_module, "Transcriber", FakeTranscriber)
@@ -178,6 +187,17 @@ def test_hotkey_stop_does_not_force_restore_before_paste(monkeypatch, tmp_path):
         "transcribing",
         "hide",
     ]
+
+
+def test_empty_transcription_notifies_without_pasting(monkeypatch, tmp_path):
+    inserted: list[str] = []
+    controller = make_controller(monkeypatch, tmp_path, [], inserted, transcription_text="")
+
+    controller.toggle()
+    controller.toggle()
+
+    assert inserted == []
+    assert controller.tray.notifications == [("Speech", "No speech detected")]
 
 
 def test_late_overlay_stop_does_not_start_new_recording(monkeypatch, tmp_path):
