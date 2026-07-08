@@ -396,9 +396,10 @@ class AppController:
                 self._paste_target_process_name = None
                 self._overlay_anchor = None
                 shutdown = self._shutdown
-            # Synthetic paste and missed key-ups can leave the hotkey tracker
-            # thinking a chord is still held, which blocks the next take.
-            self.hotkeys.reset_state()
+            # Synthetic paste and missed key-ups can leave a phantom trigger key
+            # "down", which blocks the next take. Clear only the trigger tracking
+            # so a chord the user is still physically holding keeps matching.
+            self.hotkeys.reset_trigger_state()
             self.recording_overlay.hide()
             if not failed and not shutdown:
                 self.set_status(STATUS_IDLE)
