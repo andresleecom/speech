@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import argparse
 import io
 import logging
 import os
@@ -8,6 +9,8 @@ from contextlib import redirect_stdout
 from pathlib import Path
 from typing import Literal
 
+from . import __version__
+from .branding import APP_NAME
 from .config import Settings, app_data_dir, load_settings, save_settings
 from .diagnostics import run_diagnostics as run_diagnostics_report
 from .focus import (
@@ -25,6 +28,7 @@ from .overlay import RecordingOverlay
 from .recorder import Recorder
 from .transcriber import Transcriber
 from .tray import TrayApp
+from .update_controller import UpdateCoordinator
 
 Status = Literal["Idle", "Recording", "Transcribing", "Pasting", "Error"]
 LanguageMode = Literal["auto", "en", "es"]
@@ -57,6 +61,12 @@ class AppController:
         self._paste_target_process_name: str | None = None
         self._overlay_anchor: ScreenPoint | None = None
         self._restore_paste_target_before_paste = False
+        self.update_coordinator = UpdateCoordinator(
+            self.settings,
+            self.notify,
+            self.exit_app,
+            self.logger,
+        )
 
     def run(self) -> None:
         self.set_status(STATUS_IDLE)
@@ -65,6 +75,14 @@ class AppController:
             self.logger.info("Hotkey listener started.")
         except Exception:
             self._handle_error("Hotkey listener failed to start.")
+
+        try:
+            self.update_coordinator.maybe_check_for_updates()
+        except Exception as exc:
+            self.logger.warning(
+                "Automatic update check could not start with %s.",
+                exc.__class__.__name__,
+            )
 
         try:
             self.tray.run()
@@ -96,7 +114,7 @@ class AppController:
 
         self.recording_overlay.stop()
         self.tray.stop()
-        self.logger.info("WinWhisperDictate stopped.")
+        self.logger.info("%s stopped.", APP_NAME)
 
     def exit_app(self) -> None:
         self.logger.info("Exit requested.")
@@ -197,6 +215,9 @@ class AppController:
         )
         thread.start()
 
+    def check_for_updates(self) -> None:
+        self.update_coordinator.check_for_updates(manual=True)
+
     def notify(self, title: str, message: str) -> None:
         self.tray.notify(title, message)
 
@@ -220,12 +241,12 @@ class AppController:
             audio_path = None
 
             if not result.text.strip():
-                self.notify("WinWhisperDictate", "No speech detected")
+                self.notify(APP_NAME, "No speech detected")
                 return
 
             cleaned = clean_text(result.text, self.settings.cleanup_mode)
             if not cleaned.strip():
-                self.notify("WinWhisperDictate", "No speech detected")
+                self.notify(APP_NAME, "No speech detected")
                 return
 
             self.set_status(STATUS_PASTING)
@@ -239,7 +260,7 @@ class AppController:
             else:
                 self.logger.warning("Automatic paste failed; dictation may still be on clipboard.")
                 self.notify(
-                    "WinWhisperDictate",
+                    APP_NAME,
                     f"Automatic paste failed. Try {_shortcut_label(shortcut)}.",
                 )
         except Exception:
@@ -287,7 +308,7 @@ class AppController:
             report = output.getvalue().strip()
             self.logger.info("Diagnostics report:\n%s", report or "(no output)")
             self.notify(
-                "WinWhisperDictate",
+                APP_NAME,
                 "Diagnostics ran. Report written to log.",
             )
         except Exception:
@@ -306,7 +327,7 @@ class AppController:
         self.logger.exception(message)
         self._beep(220, 350)
         self.set_status(STATUS_ERROR)
-        self.notify("WinWhisperDictate", message)
+        self.notify(APP_NAME, message)
 
     def _beep(self, frequency: int, duration_ms: int) -> None:
         try:
@@ -317,10 +338,28 @@ class AppController:
             self.logger.warning("Beep failed with %s.", exc.__class__.__name__)
 
 
-def main() -> int:
+def main(argv: list[str] | None = None) -> int:
+    parser = argparse.ArgumentParser(prog=APP_NAME)
+    parser.add_argument("--version", action="store_true", help="Print version and exit.")
+    parser.add_argument(
+        "--diagnostics",
+        action="store_true",
+        help="Print diagnostics and exit.",
+    )
+    args = parser.parse_args(argv)
+
+    if args.version:
+        print(__version__)
+        return 0
+
     logger = get_logger(__name__)
-    logger.info("WinWhisperDictate starting.")
     _apply_startup_mitigations(logger)
+
+    if args.diagnostics:
+        run_diagnostics_report()
+        return 0
+
+    logger.info("%s starting.", APP_NAME)
 
     settings = load_settings()
     logger.info(
@@ -343,7 +382,7 @@ def main() -> int:
         logger.info("Interrupted by user.")
         controller.stop()
     except Exception:
-        logger.exception("WinWhisperDictate exited after an unhandled error.")
+        logger.exception("%s exited after an unhandled error.", APP_NAME)
         controller.stop()
         return 1
     return 0

@@ -7,6 +7,8 @@ from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
+from .branding import APP_NAME, LEGACY_APP_NAME
+
 DEFAULT_HOTKEYS = {
     "toggle_recording": "<ctrl>+<alt>+<space>",
     "force_english": "<ctrl>+<alt>+e",
@@ -24,6 +26,8 @@ class Settings(BaseModel):
     cleanup_mode: Literal["none", "basic", "llm"] = "basic"
     paste_mode: PasteMode = "auto"
     delete_audio_after_transcription: bool = True
+    check_for_updates: bool = True
+    last_update_check_at: float | None = None
     hotkeys: dict[str, str] = Field(default_factory=lambda: DEFAULT_HOTKEYS.copy())
 
     model_config = ConfigDict(extra="ignore")
@@ -34,16 +38,25 @@ def app_data_dir() -> Path:
     if override:
         return Path(override)
 
+    return _default_app_data_dir(APP_NAME)
+
+
+def legacy_app_data_dir() -> Path:
+    return _default_app_data_dir(LEGACY_APP_NAME)
+
+
+def _default_app_data_dir(name: str) -> Path:
     appdata = os.getenv("APPDATA")
     if appdata:
-        return Path(appdata) / "WinWhisperDictate"
+        return Path(appdata) / name
 
-    return Path.home() / "AppData" / "Roaming" / "WinWhisperDictate"
+    return Path.home() / "AppData" / "Roaming" / name
 
 
 def load_settings() -> Settings:
     _load_dotenv()
     settings_path = _settings_path()
+    _migrate_legacy_settings(settings_path)
     settings_path.parent.mkdir(parents=True, exist_ok=True)
 
     if not settings_path.exists():
@@ -75,6 +88,33 @@ def save_settings(settings: Settings) -> None:
 
 def _settings_path() -> Path:
     return app_data_dir() / "settings.json"
+
+
+def _legacy_settings_path() -> Path:
+    return legacy_app_data_dir() / "settings.json"
+
+
+def _migrate_legacy_settings(settings_path: Path) -> None:
+    if os.getenv("WINWHISPER_APPDATA_DIR"):
+        return
+    if settings_path.exists():
+        return
+
+    legacy_settings_path = _legacy_settings_path()
+    if not legacy_settings_path.exists():
+        return
+
+    try:
+        settings_path.parent.mkdir(parents=True, exist_ok=True)
+        settings_path.write_text(
+            legacy_settings_path.read_text(encoding="utf-8"),
+            encoding="utf-8",
+        )
+    except OSError as exc:
+        _log_warning(
+            "Legacy settings could not be migrated (%s).",
+            exc.__class__.__name__,
+        )
 
 
 def _load_dotenv() -> None:

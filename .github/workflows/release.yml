@@ -1,0 +1,48 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: write
+
+jobs:
+  windows:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install Python dependencies
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -r requirements-dev.txt
+      - name: Install Inno Setup
+        run: choco install innosetup --no-progress -y
+      - name: Run tests
+        run: python -m pytest -q
+      - name: Build Windows installer
+        shell: pwsh
+        run: .\scripts\build_windows.ps1 -Python python
+      - name: Smoke packaged executable
+        shell: pwsh
+        run: |
+          $exe = "dist\Speech\Speech.exe"
+          if (!(Test-Path $exe)) { throw "Packaged executable not found." }
+          & $exe --version
+          if ($LASTEXITCODE -ne 0) { throw "Version smoke test failed." }
+          & $exe --diagnostics
+          if ($LASTEXITCODE -ne 0) { throw "Diagnostics smoke test failed." }
+      - name: Publish GitHub release
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG_NAME: ${{ github.ref_name }}
+        run: |
+          $installer = Get-ChildItem -Path dist\installer -Filter "Speech-Setup-*.exe" | Select-Object -First 1
+          if ($null -eq $installer) { throw "Installer asset not found." }
+          $checksum = Get-Item "$($installer.FullName).sha256"
+          gh release create $env:TAG_NAME $installer.FullName $checksum.FullName --title $env:TAG_NAME --generate-notes

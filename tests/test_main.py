@@ -1,4 +1,11 @@
-from winwhisper.main import _is_writable_regular_file
+from winwhisper import __version__
+from winwhisper.main import _is_writable_regular_file, main
+
+
+def test_version_flag_prints_package_version(capsys):
+    assert main(["--version"]) == 0
+
+    assert capsys.readouterr().out.strip() == __version__
 
 
 def test_device_namespace_path_is_not_a_regular_file():

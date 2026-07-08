@@ -2,7 +2,8 @@ from __future__ import annotations
 
 from typing import Any, Callable
 
-_APP_NAME = "WinWhisperDictate"
+from .branding import APP_NAME
+
 _STATUS_COLORS = {
     "Idle": (128, 128, 128, 255),
     "Recording": (220, 38, 38, 255),
@@ -22,7 +23,7 @@ class TrayApp:
         from pystray import Icon, Menu, MenuItem
 
         self._icon = Icon(
-            _APP_NAME,
+            APP_NAME,
             self._make_icon_image(),
             self._tooltip(),
             self._make_menu(Menu, MenuItem),
@@ -110,6 +111,7 @@ class TrayApp:
                 ),
             ),
             item_cls("Open Settings File", self._on_open_settings),
+            item_cls("Check for Updates", self._on_check_updates),
             item_cls("Diagnostics", self._on_diagnostics),
             item_cls("Exit", self._on_exit),
         )
@@ -149,6 +151,9 @@ class TrayApp:
     def _on_diagnostics(self, icon: Any, item: Any) -> None:
         self._controller.run_diagnostics()
 
+    def _on_check_updates(self, icon: Any, item: Any) -> None:
+        self._controller.check_for_updates()
+
     def _on_exit(self, icon: Any, item: Any) -> None:
         self._controller.exit_app()
 
@@ -165,7 +170,7 @@ class TrayApp:
         return str(self._controller.settings.cleanup_mode)
 
     def _tooltip(self) -> str:
-        return f"{_APP_NAME} — {self._status}"
+        return f"{APP_NAME} - {self._status}"
 
     def _make_icon_image(self) -> Any:
         from PIL import Image, ImageDraw

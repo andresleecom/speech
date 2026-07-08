@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import queue
 import threading
+import os
 from collections.abc import Callable
 from dataclasses import dataclass
 from typing import Any, Literal
@@ -13,11 +14,11 @@ CommandName = Literal["show", "hide", "stop", "transcribing"]
 OverlayState = Literal["hidden", "recording", "transcribing"]
 
 _WIDTH = 152
-_HEIGHT = 132
+_HEIGHT = 152
 _MARGIN = 24
 _CURSOR_OFFSET = 18
 _TRANSPARENT_COLOR = "#01030a"
-_CENTER = ScreenPoint(76, 66)
+_CENTER = ScreenPoint(76, 76)
 _SURFACE_DIAMETER = 72
 _BUTTON_DIAMETER = 46
 _RING_DIAMETER = 66
@@ -85,20 +86,116 @@ def sonar_ring_visuals(
     visuals: list[tuple[float, float]] = []
     for index in range(count):
         progress = ((phase / 32.0) + (index / count)) % 1.0
-        scale = 1.0 + progress * (1.0 + clamped_level * 0.28)
-        opacity = (1.0 - progress) ** 1.8 * (0.24 + clamped_level * 0.22)
+        max_scale = 1.9 + clamped_level * 0.1
+        scale = 1.0 + progress * (max_scale - 1.0)
+        opacity = (1.0 - progress) ** 2.2 * (0.13 + clamped_level * 0.06)
         visuals.append((scale, opacity))
     return visuals
 
 
-def _ring_color(opacity: float) -> str:
-    if opacity >= 0.32:
-        return "#db4241"
-    if opacity >= 0.22:
-        return "#a93636"
-    if opacity >= 0.12:
-        return "#6f2f33"
-    return "#3c2024"
+def render_orb_frame(
+    state: OverlayState,
+    level: float = 0.0,
+    phase: int = 0,
+) -> Any:
+    from PIL import Image, ImageDraw, ImageFilter, ImageFont
+
+    scale = 4
+    image = Image.new("RGBA", (_WIDTH * scale, _HEIGHT * scale), (0, 0, 0, 0))
+
+    def s(value: float) -> int:
+        return round(value * scale)
+
+    def bounds(center: ScreenPoint, diameter: float) -> tuple[int, int, int, int]:
+        radius = diameter / 2
+        return (
+            s(center.x - radius),
+            s(center.y - radius),
+            s(center.x + radius),
+            s(center.y + radius),
+        )
+
+    def composite_blur(
+        ellipse_bounds: tuple[int, int, int, int],
+        fill: tuple[int, int, int, int],
+        blur_radius: float,
+    ) -> None:
+        layer = Image.new("RGBA", image.size, (0, 0, 0, 0))
+        layer_draw = ImageDraw.Draw(layer)
+        layer_draw.ellipse(ellipse_bounds, fill=fill)
+        image.alpha_composite(layer.filter(ImageFilter.GaussianBlur(s(blur_radius))))
+
+    draw = ImageDraw.Draw(image)
+
+    if state == "recording":
+        for ring_scale, opacity in sonar_ring_visuals(level, phase):
+            alpha = round(opacity * 255)
+            draw.ellipse(
+                bounds(_CENTER, _RING_DIAMETER * ring_scale),
+                fill=(219, 66, 65, alpha),
+            )
+
+    composite_blur(bounds(_CENTER, _SURFACE_DIAMETER + 13), (0, 0, 0, 120), 5)
+    draw.ellipse(
+        bounds(_CENTER, _SURFACE_DIAMETER),
+        fill=(30, 30, 34, 184),
+        outline=(255, 255, 255, 31),
+        width=s(1),
+    )
+    draw.arc(
+        bounds(ScreenPoint(_CENTER.x, _CENTER.y - 1), _SURFACE_DIAMETER - 8),
+        start=50,
+        end=130,
+        fill=(255, 255, 255, 30),
+        width=s(1),
+    )
+
+    if state == "transcribing":
+        spinner_bounds = bounds(_CENTER, 30)
+        draw.ellipse(spinner_bounds, outline=(255, 255, 255, 42), width=s(3))
+        draw.arc(
+            spinner_bounds,
+            start=(phase * 32) % 360,
+            end=((phase * 32) % 360) + 285,
+            fill=(226, 76, 74, 255),
+            width=s(3),
+        )
+        label_y = s(_CENTER.y + 44)
+        try:
+            font = ImageFont.truetype("segoeui.ttf", s(11))
+        except Exception:
+            font = None
+        text = "Transcribing..."
+        text_bbox = draw.textbbox((0, 0), text, font=font)
+        text_width = text_bbox[2] - text_bbox[0]
+        draw.text(
+            (s(_CENTER.x) - text_width // 2, label_y),
+            text,
+            fill=(255, 255, 255, 178),
+            font=font,
+        )
+    else:
+        composite_blur(bounds(_CENTER, _BUTTON_DIAMETER + 6), (126, 29, 31, 120), 3)
+        draw.ellipse(
+            bounds(_CENTER, _BUTTON_DIAMETER),
+            fill=(219, 66, 65, 255),
+            outline=(226, 76, 74, 255),
+            width=s(1),
+        )
+        glyph_radius = s(4)
+        glyph_bounds = (
+            s(_CENTER.x - 7.5),
+            s(_CENTER.y - 7.5),
+            s(_CENTER.x + 7.5),
+            s(_CENTER.y + 7.5),
+        )
+        draw.rounded_rectangle(
+            glyph_bounds,
+            radius=glyph_radius,
+            fill=(255, 255, 255, 255),
+        )
+
+    return image.resize((_WIDTH, _HEIGHT), Image.Resampling.LANCZOS)
 
 
 class RecordingOverlay:
@@ -145,8 +242,26 @@ class RecordingOverlay:
             self._thread.start()
 
     def _run(self) -> None:
+        if os.name == "nt":
+            try:
+                from .native_overlay import run_native_overlay
+
+                run_native_overlay(
+                    self._commands,
+                    self._on_stop,
+                    self._current_level,
+                    self._logger,
+                )
+                return
+            except Exception as exc:
+                self._logger.warning(
+                    "Native recording overlay is unavailable; falling back to Tkinter (%s).",
+                    exc.__class__.__name__,
+                )
+
         try:
             import tkinter as tk
+            from PIL import ImageTk
         except Exception as exc:
             self._logger.warning(
                 "Recording overlay is unavailable: %s.",
@@ -177,11 +292,23 @@ class RecordingOverlay:
             bd=0,
         )
         canvas.pack()
-        items = self._draw_overlay(canvas)
-        self._set_overlay_state(canvas, items, "hidden")
+        photo = ImageTk.PhotoImage(
+            render_orb_frame("recording", self._current_level(), phase)
+        )
+        image_item = canvas.create_image(0, 0, anchor="nw", image=photo)
+        canvas.image = photo
+
+        def update_frame(next_state: OverlayState) -> None:
+            next_photo = ImageTk.PhotoImage(
+                render_orb_frame(next_state, self._current_level(), phase)
+            )
+            canvas.itemconfigure(image_item, image=next_photo)
+            canvas.image = next_photo
 
         def request_stop(event: Any = None) -> str:
-            self._set_overlay_state(canvas, items, "transcribing")
+            nonlocal state
+            state = "transcribing"
+            update_frame(state)
             threading.Thread(
                 target=self._on_stop,
                 name="winwhisper-overlay-stop",
@@ -192,7 +319,7 @@ class RecordingOverlay:
         def begin_drag(event: Any) -> str | None:
             nonlocal drag_origin, drag_press
             if is_stop_button_point(int(event.x), int(event.y)):
-                return "break"
+                return request_stop(event)
             drag_origin = ScreenPoint(root.winfo_x(), root.winfo_y())
             drag_press = ScreenPoint(int(event.x_root), int(event.y_root))
             return None
@@ -215,7 +342,6 @@ class RecordingOverlay:
             drag_origin = None
             drag_press = None
 
-        canvas.tag_bind("stop_button", "<Button-1>", request_stop)
         canvas.bind("<ButtonPress-1>", begin_drag)
         canvas.bind("<B1-Motion>", drag)
         canvas.bind("<ButtonRelease-1>", end_drag)
@@ -231,17 +357,16 @@ class RecordingOverlay:
                 if command.name == "show":
                     self._position(root, command.anchor)
                     state = "recording"
-                    self._set_overlay_state(canvas, items, state)
+                    update_frame(state)
                     root.deiconify()
                     root.lift()
                     root.attributes("-topmost", True)
                 elif command.name == "hide":
                     state = "hidden"
-                    self._set_overlay_state(canvas, items, state)
                     root.withdraw()
                 elif command.name == "transcribing":
                     state = "transcribing"
-                    self._set_overlay_state(canvas, items, state)
+                    update_frame(state)
                     root.deiconify()
                     root.lift()
                     root.attributes("-topmost", True)
@@ -255,10 +380,7 @@ class RecordingOverlay:
             nonlocal phase
             if state != "hidden":
                 phase += 1
-                if state == "recording":
-                    self._update_rings(canvas, items["rings"], self._current_level(), phase)
-                elif state == "transcribing":
-                    self._update_spinner(canvas, items["spinner"], phase)
+                update_frame(state)
             root.after(75, animate)
 
         root.after(50, pump)
@@ -270,183 +392,6 @@ class RecordingOverlay:
         screen_height = root.winfo_screenheight()
         x, y = position_near_anchor(anchor, screen_width, screen_height)
         root.geometry(f"{_WIDTH}x{_HEIGHT}+{x}+{y}")
-
-    def _draw_overlay(self, canvas: Any) -> dict[str, Any]:
-        rings = [
-            canvas.create_oval(
-                *self._circle_bounds(_CENTER, _RING_DIAMETER),
-                outline="#6f2528",
-                width=2,
-                tags=("recording",),
-            )
-            for _ in range(3)
-        ]
-
-        surface_shadow = canvas.create_oval(
-            *self._circle_bounds(_CENTER, _SURFACE_DIAMETER + 10),
-            fill="#050506",
-            outline="#050506",
-            tags=("recording", "transcribing"),
-        )
-        surface = canvas.create_oval(
-            *self._circle_bounds(_CENTER, _SURFACE_DIAMETER),
-            fill="#1e1e22",
-            outline="#3d3d43",
-            width=1,
-            tags=("recording", "transcribing"),
-        )
-        highlight = canvas.create_arc(
-            *self._circle_bounds(ScreenPoint(_CENTER.x, _CENTER.y - 1), _SURFACE_DIAMETER - 8),
-            start=50,
-            extent=80,
-            style="arc",
-            outline="#55555d",
-            width=1,
-            tags=("recording", "transcribing"),
-        )
-
-        button = canvas.create_oval(
-            *self._circle_bounds(_CENTER, _BUTTON_DIAMETER),
-            fill="#db4241",
-            outline="#e24c4a",
-            width=1,
-            tags=("recording", "stop_button"),
-        )
-        stop_glyph = self._rounded_rect(
-            canvas,
-            _CENTER.x - 8,
-            _CENTER.y - 8,
-            _CENTER.x + 8,
-            _CENTER.y + 8,
-            4,
-            fill="#ffffff",
-            outline="#ffffff",
-            tags=("recording", "stop_button"),
-        )
-
-        spinner_track = canvas.create_oval(
-            *self._circle_bounds(_CENTER, 30),
-            outline="#4b4b52",
-            width=3,
-            tags=("transcribing",),
-        )
-        spinner = canvas.create_arc(
-            *self._circle_bounds(_CENTER, 30),
-            start=0,
-            extent=285,
-            style="arc",
-            outline="#e24c4a",
-            width=3,
-            tags=("transcribing",),
-        )
-        label = canvas.create_text(
-            _CENTER.x,
-            114,
-            text="Transcribing...",
-            fill="#ffffff",
-            font=("Segoe UI", 11, "normal"),
-            tags=("transcribing",),
-        )
-
-        return {
-            "rings": rings,
-            "recording": [*rings, surface_shadow, surface, highlight, button, stop_glyph],
-            "transcribing": [surface_shadow, surface, highlight, spinner_track, spinner, label],
-            "spinner": spinner,
-        }
-
-    def _set_overlay_state(
-        self,
-        canvas: Any,
-        items: dict[str, Any],
-        state: OverlayState,
-    ) -> None:
-        canvas.itemconfigure("recording", state="hidden")
-        canvas.itemconfigure("transcribing", state="hidden")
-        if state == "recording":
-            canvas.itemconfigure("recording", state="normal")
-        elif state == "transcribing":
-            canvas.itemconfigure("transcribing", state="normal")
-
-    def _update_rings(
-        self,
-        canvas: Any,
-        ring_items: list[int],
-        level: float,
-        phase: int,
-    ) -> None:
-        for item, (scale, opacity) in zip(
-            ring_items,
-            sonar_ring_visuals(level, phase, count=len(ring_items)),
-            strict=False,
-        ):
-            diameter = _RING_DIAMETER * scale
-            canvas.coords(item, *self._circle_bounds(_CENTER, diameter))
-            canvas.itemconfigure(item, outline=_ring_color(opacity), width=max(1, round(1 + level * 2)))
-
-    def _update_spinner(self, canvas: Any, spinner_item: int, phase: int) -> None:
-        canvas.itemconfigure(spinner_item, start=(phase * 32) % 360)
-
-    def _circle_bounds(self, center: ScreenPoint, diameter: float) -> tuple[float, float, float, float]:
-        radius = diameter / 2
-        return (
-            center.x - radius,
-            center.y - radius,
-            center.x + radius,
-            center.y + radius,
-        )
-
-    def _rounded_rect(
-        self,
-        canvas: Any,
-        x1: int,
-        y1: int,
-        x2: int,
-        y2: int,
-        radius: int,
-        **kwargs: Any,
-    ) -> int:
-        return canvas.create_polygon(
-            self._rounded_rect_points(x1, y1, x2, y2, radius),
-            smooth=True,
-            splinesteps=16,
-            **kwargs,
-        )
-
-    def _rounded_rect_points(
-        self,
-        x1: int,
-        y1: int,
-        x2: int,
-        y2: int,
-        radius: int,
-    ) -> list[int]:
-        return [
-            x1 + radius,
-            y1,
-            x2 - radius,
-            y1,
-            x2,
-            y1,
-            x2,
-            y1 + radius,
-            x2,
-            y2 - radius,
-            x2,
-            y2,
-            x2 - radius,
-            y2,
-            x1 + radius,
-            y2,
-            x1,
-            y2,
-            x1,
-            y2 - radius,
-            x1,
-            y1 + radius,
-            x1,
-            y1,
-        ]
 
     def _current_level(self) -> float:
         try:

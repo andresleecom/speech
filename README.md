@@ -1,15 +1,30 @@
-# WinWhisperDictate
+# Speech
 
-WinWhisperDictate is a Windows 10/11 tray app for local speech dictation.
+Speech is a Windows 10/11 tray app for local speech dictation.
 It records your microphone with a global hotkey, transcribes with faster-whisper, optionally cleans the text, and pastes into the focused app.
 It supports English, Spanish, or automatic language detection.
 
-## Installation
+## Installation for users
+
+Download the latest Windows installer from GitHub Releases:
+
+```text
+https://github.com/andresleecom/speech/releases/latest
+```
+
+Run `Speech-Setup-<version>.exe`. The installer is per-user and
+does not require administrator privileges.
+
+The app checks GitHub Releases for updates once per day by default. When a new
+version is available, use the tray menu item `Check for Updates` to confirm,
+download, verify, and launch the installer.
+
+## Development setup
 
 Clone the repository.
 
 ```powershell
-git clone <repo-url>
+git clone https://github.com/andresleecom/speech.git
 cd speech
 ```
 
@@ -38,13 +53,8 @@ Install the runtime requirements.
 pip install -r requirements.txt
 ```
 
-Install the package in editable mode.
-
-```powershell
-pip install -e .
-```
-
-The editable install is required so `python -m winwhisper.main` resolves the `src` layout.
+The requirements file installs the local package in editable mode and pulls the
+runtime dependencies declared in `pyproject.toml`.
 
 ## Run
 
@@ -80,7 +90,7 @@ The Spanish transcription should paste into Notepad.
 
 ## Settings file location and keys
 
-The settings file is `%APPDATA%\WinWhisperDictate\settings.json`.
+The settings file is `%APPDATA%\Speech\settings.json`.
 The app creates the file on first run if it does not exist.
 
 | Key | Default | Description |
@@ -92,11 +102,13 @@ The app creates the file on first run if it does not exist.
 | `cleanup_mode` | `basic` | Use `none`, `basic`, or `llm`. |
 | `paste_mode` | `auto` | Paste shortcut mode. `auto` uses `Ctrl+Shift+V` for common terminal windows and `Ctrl+V` elsewhere. Older `clipboard_ctrl_v` settings keep the same terminal detection. Use `clipboard_ctrl_shift_v` to force `Ctrl+Shift+V`. |
 | `delete_audio_after_transcription` | `true` | Delete temporary WAV files after transcription. |
+| `check_for_updates` | `true` | Check GitHub Releases for updates at most once per day. |
+| `last_update_check_at` | `null` | Internal timestamp for update throttling. |
 | `hotkeys` | See defaults above. | Global hotkey bindings. |
 
 ## Floating recording button
 
-When recording starts, WinWhisperDictate shows a floating circular recording
+When recording starts, Speech shows a floating circular recording
 orb to the right of the text cursor when Windows exposes it, or near the mouse
 cursor as a fallback. The red center button stops recording, and the surrounding
 sonar rings pulse while the microphone is live. Drag the orb to move it. After
@@ -104,6 +116,10 @@ you stop recording, the orb switches to a transcribing spinner until the text is
 ready. The app remembers the active window from the start of recording and tries
 to focus it again before pasting, so the text goes back where your cursor was
 when dictation began.
+
+On Windows, the overlay uses a native layered window with per-pixel alpha for
+smooth circular edges and transparent corners. Tkinter is kept as a fallback for
+development and future non-Windows work.
 
 In `auto` paste mode, terminal windows such as Windows Terminal, WezTerm,
 Alacritty, mintty, and legacy console hosts receive `Ctrl+Shift+V`. Other
@@ -119,7 +135,7 @@ Use `cuda` with `float16` or `int8_float16` when you have a supported NVIDIA GPU
 ## Privacy
 
 Transcription runs locally by default.
-Temporary WAV files are written under `%TEMP%\WinWhisperDictate\`.
+Temporary WAV files are written under `%TEMP%\Speech\`.
 Temporary WAV files are deleted after transcription when `delete_audio_after_transcription` is `true`.
 LLM cleanup is off by default.
 LLM cleanup only runs when `cleanup_mode` is `llm` and `OPENAI_API_KEY` is set.
@@ -148,22 +164,32 @@ They also re-sign HTTPS traffic with a certificate that Python's default trust s
 The app works around both automatically at startup: it removes an invalid `SSLKEYLOGFILE` value and trusts the Windows certificate store via `truststore`.
 If you download models from your own scripts instead, apply the same two workarounds there.
 
-## Packaging with PyInstaller
+## Packaging and releases
 
-Install PyInstaller.
-
-```powershell
-pip install pyinstaller
-```
-
-Build a one-file executable with PyInstaller.
+Install development dependencies.
 
 ```powershell
-pyinstaller --noconsole --onefile --name WinWhisperDictate src\winwhisper\main.py
+pip install -r requirements-dev.txt
 ```
 
-If the one-file build has issues with faster-whisper, use the one-folder variant.
+Install Inno Setup 6, then build the Windows app and installer.
 
 ```powershell
-pyinstaller --noconsole --name WinWhisperDictate src\winwhisper\main.py
+.\scripts\build_windows.ps1
 ```
+
+The build outputs:
+
+- `dist\Speech\Speech.exe`
+- `dist\installer\Speech-Setup-<version>.exe`
+- `dist\installer\Speech-Setup-<version>.exe.sha256`
+
+To publish a release, update the version in `pyproject.toml`, then push a tag
+such as `v0.1.0`. The GitHub Actions release workflow builds the installer and
+publishes the `.exe` plus `.sha256` to GitHub Releases.
+
+## Roadmap
+
+- Windows installer and GitHub Releases auto-update: current target.
+- macOS app bundle and signed/notarized installer.
+- Linux AppImage or distro packages.

@@ -3,9 +3,28 @@ requires = ["setuptools"]
 build-backend = "setuptools.build_meta"
 
 [project]
-name = "winwhisper"
+name = "speech"
 version = "0.1.0"
+description = "Windows tray app for local speech dictation with faster-whisper."
+readme = "README.md"
 requires-python = ">=3.11"
+license = {text = "MIT"}
+dependencies = [
+  "faster-whisper",
+  "sounddevice",
+  "numpy",
+  "pynput",
+  "pyperclip",
+  "pystray",
+  "pillow",
+  "python-dotenv",
+  "pydantic",
+  "openai",
+  "truststore",
+]
+
+[project.scripts]
+speech = "winwhisper.main:main"
 
 [tool.setuptools]
 package-dir = {"" = "src"}

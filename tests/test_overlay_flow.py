@@ -1,6 +1,8 @@
 from pathlib import Path
+import os
 
 import winwhisper.main as main_module
+import pytest
 from winwhisper.config import Settings
 from winwhisper.focus import ScreenPoint
 from winwhisper.main import AppController
@@ -8,6 +10,7 @@ from winwhisper.overlay import (
     dragged_overlay_position,
     is_stop_button_point,
     position_near_anchor,
+    render_orb_frame,
     sonar_ring_visuals,
 )
 from winwhisper.transcriber import TranscriptionResult
@@ -274,5 +277,42 @@ def test_dragged_overlay_position_stays_inside_screen():
 
 
 def test_stop_button_hit_area_is_limited_to_red_control():
-    assert is_stop_button_point(76, 66) is True
+    assert is_stop_button_point(76, 76) is True
     assert is_stop_button_point(20, 20) is False
+
+
+def test_render_orb_frame_has_antialiased_transparent_edges():
+    image = render_orb_frame("recording", level=0.5, phase=4)
+
+    assert image.mode == "RGBA"
+    assert image.size == (152, 152)
+    alpha_histogram = image.getchannel("A").histogram()
+    assert alpha_histogram[0] > 0
+    assert sum(alpha_histogram[1:255]) > 0
+
+
+def test_render_orb_frame_keeps_stop_control_crisp():
+    image = render_orb_frame("recording", level=0.0, phase=0)
+
+    red_r, red_g, red_b, red_alpha = image.getpixel((76, 56))
+    glyph_r, glyph_g, glyph_b, glyph_alpha = image.getpixel((76, 76))
+
+    assert red_alpha == 255
+    assert red_r > 190
+    assert red_g < 90
+    assert red_b < 90
+    assert glyph_alpha == 255
+    assert glyph_r > 240
+    assert glyph_g > 240
+    assert glyph_b > 240
+
+
+@pytest.mark.skipif(os.name != "nt", reason="Native overlay is Windows-only")
+def test_native_overlay_premultiplies_rgba_for_layered_window():
+    from PIL import Image
+
+    from winwhisper.native_overlay import rgba_to_bgra_premultiplied
+
+    image = Image.new("RGBA", (1, 1), (100, 50, 200, 128))
+
+    assert rgba_to_bgra_premultiplied(image) == bytes((100, 25, 50, 128))

@@ -1,10 +1,13 @@
 .venv/
 __pycache__/
-*.pyc
+*.py[cod]
 .pytest_cache/
-.env
+*.egg-info/
+
 build/
 dist/
 *.spec
-.claude/
-*.egg-info/
+!packaging/Speech.spec
+
+.env
+models/

@@ -7,6 +7,7 @@ import sys
 import tempfile
 from pathlib import Path
 
+from .branding import APP_NAME
 from .config import load_settings
 
 
@@ -21,7 +22,7 @@ def run_diagnostics() -> None:
     print(f"Configured device: {settings.device}")
     print(f"faster-whisper import: {_import_status('faster_whisper')}")
     print(f"OPENAI_API_KEY present: {'yes' if os.getenv('OPENAI_API_KEY') else 'no'}")
-    print(f"%TEMP%\\WinWhisperDictate writable: {'yes' if _temp_dir_writable() else 'no'}")
+    print(f"%TEMP%\\{APP_NAME} writable: {'yes' if _temp_dir_writable() else 'no'}")
 
 
 def _print_microphone_devices() -> None:
@@ -54,7 +55,7 @@ def _import_status(module_name: str) -> str:
 
 
 def _temp_dir_writable() -> bool:
-    temp_dir = Path(tempfile.gettempdir()) / "WinWhisperDictate"
+    temp_dir = Path(tempfile.gettempdir()) / APP_NAME
     try:
         temp_dir.mkdir(parents=True, exist_ok=True)
         with tempfile.TemporaryFile(dir=temp_dir):

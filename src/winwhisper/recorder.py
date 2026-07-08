@@ -7,6 +7,7 @@ import wave
 from pathlib import Path
 from typing import Any
 
+from .branding import APP_NAME
 from .logger import get_logger
 
 SAMPLE_RATE = 16_000
@@ -95,7 +96,7 @@ class Recorder:
         else:
             audio = np.empty((0, CHANNELS), dtype=DTYPE)
 
-        output_dir = Path(tempfile.gettempdir()) / "WinWhisperDictate"
+        output_dir = Path(tempfile.gettempdir()) / APP_NAME
         output_dir.mkdir(parents=True, exist_ok=True)
         output_path = output_dir / f"rec-{uuid.uuid4().hex}.wav"
 
