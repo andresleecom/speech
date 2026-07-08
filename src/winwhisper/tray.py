@@ -1,6 +1,8 @@
 from __future__ import annotations
 
-from typing import Any, Callable
+import threading
+from collections.abc import Callable
+from typing import Any
 
 from .branding import APP_NAME
 
@@ -14,46 +16,65 @@ _STATUS_COLORS = {
 
 
 class TrayApp:
+    """System tray UI.
+
+    pystray's Win32 icon is not thread-safe. All Icon mutations go through
+    `_ui_lock` so worker threads (dictation, updates, diagnostics) never race
+    the icon loop or each other on `icon` / `title` / `notify` / `update_menu`.
+    """
+
     def __init__(self, controller: Any) -> None:
         self._controller = controller
         self._icon: Any | None = None
         self._status = "Idle"
+        self._ui_lock = threading.RLock()
 
     def run(self) -> None:
         from pystray import Icon, Menu, MenuItem
 
-        self._icon = Icon(
-            APP_NAME,
-            self._make_icon_image(),
-            self._tooltip(),
-            self._make_menu(Menu, MenuItem),
-        )
-        self._icon.run()
+        with self._ui_lock:
+            self._icon = Icon(
+                APP_NAME,
+                self._make_icon_image(),
+                self._tooltip(),
+                self._make_menu(Menu, MenuItem),
+            )
+            icon = self._icon
+        icon.run()
 
     def stop(self) -> None:
-        icon = self._icon
-        if icon is None:
-            return
-        icon.stop()
-
-    def set_status(self, status: str) -> None:
-        self._status = status
-        icon = self._icon
-        if icon is None:
-            return
-
-        icon.title = self._tooltip()
-        icon.icon = self._make_icon_image()
-        self._update_menu()
-
-    def notify(self, title: str, message: str) -> None:
-        icon = self._icon
-        if icon is None:
-            return
+        with self._ui_lock:
+            icon = self._icon
+            self._icon = None
+            if icon is None:
+                return
         try:
-            icon.notify(message, title)
+            icon.stop()
         except Exception:
             pass
+
+    def set_status(self, status: str) -> None:
+        with self._ui_lock:
+            self._status = status
+            icon = self._icon
+            if icon is None:
+                return
+            try:
+                icon.title = self._tooltip()
+                icon.icon = self._make_icon_image()
+                self._update_menu_unlocked()
+            except Exception:
+                pass
+
+    def notify(self, title: str, message: str) -> None:
+        with self._ui_lock:
+            icon = self._icon
+            if icon is None:
+                return
+            try:
+                icon.notify(message, title)
+            except Exception:
+                pass
 
     def _make_menu(self, menu_cls: Any, item_cls: Any) -> Any:
         return menu_cls(
@@ -138,7 +159,8 @@ class TrayApp:
     ) -> Callable[[Any, Any], None]:
         def action(icon: Any, item: Any) -> None:
             select(value)
-            self._update_menu()
+            with self._ui_lock:
+                self._update_menu_unlocked()
 
         return action
 
@@ -183,6 +205,10 @@ class TrayApp:
         return image
 
     def _update_menu(self) -> None:
+        with self._ui_lock:
+            self._update_menu_unlocked()
+
+    def _update_menu_unlocked(self) -> None:
         icon = self._icon
         if icon is None:
             return

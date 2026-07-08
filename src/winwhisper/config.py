@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import os
+import threading
 from pathlib import Path
 from typing import Literal
 
@@ -16,6 +17,8 @@ DEFAULT_HOTKEYS = {
 }
 
 PasteMode = Literal["auto", "clipboard_ctrl_v", "clipboard_ctrl_shift_v"]
+
+_SAVE_LOCK = threading.Lock()
 
 
 class Settings(BaseModel):
@@ -74,16 +77,30 @@ def load_settings() -> Settings:
             "Settings file is corrupt or invalid; using defaults (%s).",
             exc.__class__.__name__,
         )
+        _quarantine_corrupt_settings(settings_path)
         return Settings()
 
 
 def save_settings(settings: Settings) -> None:
     settings_path = _settings_path()
     settings_path.parent.mkdir(parents=True, exist_ok=True)
-    settings_path.write_text(
-        json.dumps(settings.model_dump(), indent=2) + "\n",
-        encoding="utf-8",
-    )
+    payload = json.dumps(settings.model_dump(), indent=2) + "\n"
+    temp_path = settings_path.with_name(settings_path.name + ".tmp")
+
+    with _SAVE_LOCK:
+        temp_path.write_text(payload, encoding="utf-8")
+        os.replace(temp_path, settings_path)
+
+
+def _quarantine_corrupt_settings(settings_path: Path) -> None:
+    try:
+        if not settings_path.exists():
+            return
+        corrupt_path = settings_path.with_name(settings_path.name + ".corrupt")
+        os.replace(settings_path, corrupt_path)
+        _log_warning("Corrupt settings moved to %s.", corrupt_path.name)
+    except OSError:
+        pass
 
 
 def _settings_path() -> Path:
@@ -106,10 +123,11 @@ def _migrate_legacy_settings(settings_path: Path) -> None:
 
     try:
         settings_path.parent.mkdir(parents=True, exist_ok=True)
-        settings_path.write_text(
-            legacy_settings_path.read_text(encoding="utf-8"),
-            encoding="utf-8",
-        )
+        payload = legacy_settings_path.read_text(encoding="utf-8")
+        temp_path = settings_path.with_name(settings_path.name + ".tmp")
+        with _SAVE_LOCK:
+            temp_path.write_text(payload, encoding="utf-8")
+            os.replace(temp_path, settings_path)
     except OSError as exc:
         _log_warning(
             "Legacy settings could not be migrated (%s).",

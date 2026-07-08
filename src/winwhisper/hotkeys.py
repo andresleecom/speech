@@ -123,6 +123,7 @@ class HotkeyManager:
         kind, name = self._describe(key)
         if kind == "mod":
             self._pressed_modifiers.add(name)
+            self._down_triggers.clear()
             return
         if name in self._down_triggers:
             return  # key repeat while held
@@ -135,6 +136,7 @@ class HotkeyManager:
         kind, name = self._describe(key)
         if kind == "mod":
             self._pressed_modifiers.discard(name)
+            self._down_triggers.clear()
         else:
             self._down_triggers.discard(name)
 

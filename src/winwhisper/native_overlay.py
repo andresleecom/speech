@@ -59,9 +59,33 @@ AC_SRC_ALPHA = 0x01
 DIB_RGB_COLORS = 0
 BI_RGB = 0
 
+SM_XVIRTUALSCREEN = 76
+SM_YVIRTUALSCREEN = 77
+SM_CXVIRTUALSCREEN = 78
+SM_CYVIRTUALSCREEN = 79
+MONITOR_DEFAULTTONEAREST = 2
+
 
 class POINT(ctypes.Structure):
     _fields_ = [("x", ctypes.c_long), ("y", ctypes.c_long)]
+
+
+class RECT(ctypes.Structure):
+    _fields_ = [
+        ("left", ctypes.c_long),
+        ("top", ctypes.c_long),
+        ("right", ctypes.c_long),
+        ("bottom", ctypes.c_long),
+    ]
+
+
+class MONITORINFO(ctypes.Structure):
+    _fields_ = [
+        ("cbSize", wintypes.DWORD),
+        ("rcMonitor", RECT),
+        ("rcWork", RECT),
+        ("dwFlags", wintypes.DWORD),
+    ]
 
 
 class SIZE(ctypes.Structure):
@@ -185,6 +209,10 @@ user32.GetDC.argtypes = [wintypes.HWND]
 user32.GetDC.restype = wintypes.HDC
 user32.ReleaseDC.argtypes = [wintypes.HWND, wintypes.HDC]
 user32.GetSystemMetrics.argtypes = [ctypes.c_int]
+user32.MonitorFromPoint.argtypes = [POINT, wintypes.DWORD]
+user32.MonitorFromPoint.restype = wintypes.HMONITOR
+user32.GetMonitorInfoW.argtypes = [wintypes.HMONITOR, ctypes.c_void_p]
+user32.GetMonitorInfoW.restype = wintypes.BOOL
 user32.SetCapture.argtypes = [wintypes.HWND]
 user32.ReleaseCapture.argtypes = []
 user32.GetCursorPos.argtypes = [ctypes.POINTER(POINT)]
@@ -384,12 +412,15 @@ class NativeOverlayWindow:
             return
 
         point = _cursor_pos()
+        origin_x, origin_y, width, height = _virtual_screen_bounds()
         x, y = dragged_overlay_position(
             self._drag_origin,
             self._drag_press,
             ScreenPoint(point.x, point.y),
-            user32.GetSystemMetrics(0),
-            user32.GetSystemMetrics(1),
+            width,
+            height,
+            origin_x=origin_x,
+            origin_y=origin_y,
         )
         self._move(x, y)
 
@@ -408,10 +439,13 @@ class NativeOverlayWindow:
         ).start()
 
     def _position(self, anchor: ScreenPoint | None) -> None:
+        origin_x, origin_y, width, height = _monitor_work_area(anchor)
         self._x, self._y = position_near_anchor(
             anchor,
-            user32.GetSystemMetrics(0),
-            user32.GetSystemMetrics(1),
+            width,
+            height,
+            origin_x=origin_x,
+            origin_y=origin_y,
         )
 
     def _move(self, x: int, y: int) -> None:
@@ -510,6 +544,45 @@ def _cursor_pos() -> POINT:
     if not user32.GetCursorPos(ctypes.byref(point)):
         raise ctypes.WinError()
     return point
+
+
+def _virtual_screen_bounds() -> tuple[int, int, int, int]:
+    """Return (origin_x, origin_y, width, height) for the full virtual desktop."""
+    origin_x = int(user32.GetSystemMetrics(SM_XVIRTUALSCREEN))
+    origin_y = int(user32.GetSystemMetrics(SM_YVIRTUALSCREEN))
+    width = int(user32.GetSystemMetrics(SM_CXVIRTUALSCREEN))
+    height = int(user32.GetSystemMetrics(SM_CYVIRTUALSCREEN))
+    if width <= 0 or height <= 0:
+        return 0, 0, int(user32.GetSystemMetrics(0)), int(user32.GetSystemMetrics(1))
+    return origin_x, origin_y, width, height
+
+
+def _monitor_work_area(anchor: ScreenPoint | None) -> tuple[int, int, int, int]:
+    """Return (origin_x, origin_y, width, height) for the monitor near the anchor."""
+    point = POINT()
+    if anchor is None:
+        if not user32.GetCursorPos(ctypes.byref(point)):
+            return _virtual_screen_bounds()
+    else:
+        point.x = int(anchor.x)
+        point.y = int(anchor.y)
+
+    monitor = user32.MonitorFromPoint(point, MONITOR_DEFAULTTONEAREST)
+    if not monitor:
+        return _virtual_screen_bounds()
+
+    info = MONITORINFO()
+    info.cbSize = ctypes.sizeof(MONITORINFO)
+    if not user32.GetMonitorInfoW(monitor, ctypes.byref(info)):
+        return _virtual_screen_bounds()
+
+    left = int(info.rcWork.left)
+    top = int(info.rcWork.top)
+    width = int(info.rcWork.right - info.rcWork.left)
+    height = int(info.rcWork.bottom - info.rcWork.top)
+    if width <= 0 or height <= 0:
+        return _virtual_screen_bounds()
+    return left, top, width, height
 
 
 def _loword_signed(value: int) -> int:
