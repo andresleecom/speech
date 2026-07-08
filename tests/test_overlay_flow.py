@@ -96,6 +96,9 @@ class FakeHotkeys:
     def stop(self) -> None:
         return None
 
+    def reset_state(self) -> None:
+        return None
+
 
 class FakeOverlay:
     instances: list["FakeOverlay"] = []

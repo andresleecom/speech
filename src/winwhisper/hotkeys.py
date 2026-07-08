@@ -28,6 +28,22 @@ _MODIFIER_ALIASES = {
     "cmd_r": "cmd",
 }
 
+# While synthetic paste injects keys, ignore listener events so Controller
+# keystrokes cannot poison modifier/trigger tracking.
+_suppress_events = False
+_suppress_lock = threading.Lock()
+
+
+def set_listener_suppressed(suppressed: bool) -> None:
+    global _suppress_events
+    with _suppress_lock:
+        _suppress_events = suppressed
+
+
+def listener_is_suppressed() -> bool:
+    with _suppress_lock:
+        return _suppress_events
+
 
 def normalize_combo(combo: str) -> str:
     """Wrap bare named keys in brackets (e.g. "space" -> "<space>")."""
@@ -83,6 +99,7 @@ class HotkeyManager:
         self._on_hotkey = on_hotkey
         self._listener: Any | None = None
         self._logger = get_logger(__name__)
+        self._state_lock = threading.Lock()
         self._pressed_modifiers: set[str] = set()
         self._down_triggers: set[str] = set()
         self._bindings: list[tuple[frozenset[str], str, str]] = []
@@ -103,8 +120,7 @@ class HotkeyManager:
 
         from pynput import keyboard
 
-        self._pressed_modifiers.clear()
-        self._down_triggers.clear()
+        self.reset_state()
         self._listener = keyboard.Listener(
             on_press=self._on_press,
             on_release=self._on_release,
@@ -118,27 +134,48 @@ class HotkeyManager:
 
         listener.stop()
         self._listener = None
+        self.reset_state()
+
+    def reset_state(self) -> None:
+        """Clear modifier/trigger tracking after synthetic input or missed releases."""
+        with self._state_lock:
+            self._pressed_modifiers.clear()
+            self._down_triggers.clear()
 
     def _on_press(self, key: Any) -> None:
-        kind, name = self._describe(key)
-        if kind == "mod":
-            self._pressed_modifiers.add(name)
-            self._down_triggers.clear()
+        if listener_is_suppressed():
             return
-        if name in self._down_triggers:
-            return  # key repeat while held
-        self._down_triggers.add(name)
-        for modifiers, trigger, action in self._bindings:
-            if trigger == name and modifiers <= self._pressed_modifiers:
+
+        kind, name = self._describe(key)
+        with self._state_lock:
+            if kind == "mod":
+                self._pressed_modifiers.add(name)
+                # A new modifier edge ends the previous chord hold, which
+                # recovers when Windows drops a trigger key-up.
+                self._down_triggers.clear()
+                return
+            if name in self._down_triggers:
+                return  # key repeat while held
+            self._down_triggers.add(name)
+            pressed_modifiers = set(self._pressed_modifiers)
+            bindings = list(self._bindings)
+
+        for modifiers, trigger, action in bindings:
+            if trigger == name and modifiers <= pressed_modifiers:
                 self._dispatch(action)
+                return
 
     def _on_release(self, key: Any) -> None:
+        if listener_is_suppressed():
+            return
+
         kind, name = self._describe(key)
-        if kind == "mod":
-            self._pressed_modifiers.discard(name)
-            self._down_triggers.clear()
-        else:
-            self._down_triggers.discard(name)
+        with self._state_lock:
+            if kind == "mod":
+                self._pressed_modifiers.discard(name)
+                self._down_triggers.clear()
+            else:
+                self._down_triggers.discard(name)
 
     def _describe(self, key: Any) -> tuple[str, str]:
         """Classify an event key as ("mod", alias) or ("key", trigger name)."""
@@ -159,6 +196,7 @@ class HotkeyManager:
         return "key", f"vk{vk}"
 
     def _dispatch(self, action: str) -> None:
+        self._logger.info("Hotkey matched action=%s.", action)
         thread = threading.Thread(
             target=self._run_callback,
             args=(action,),

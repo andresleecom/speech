@@ -69,6 +69,46 @@ def test_hotkey_recovers_when_trigger_release_is_missed(monkeypatch):
     assert actions == ["toggle", "toggle"]
 
 
+def test_hotkey_ignores_events_while_listener_suppressed(monkeypatch):
+    from winwhisper import hotkeys as hotkeys_mod
+
+    actions = []
+    manager = _test_manager(actions, monkeypatch)
+
+    hotkeys_mod.set_listener_suppressed(True)
+    try:
+        manager._on_press("ctrl")
+        manager._on_press("alt")
+        manager._on_press("space")
+    finally:
+        hotkeys_mod.set_listener_suppressed(False)
+
+    assert actions == []
+
+    manager.reset_state()
+    manager._on_press("ctrl")
+    manager._on_press("alt")
+    manager._on_press("space")
+
+    assert actions == ["toggle"]
+
+
+def test_hotkey_reset_state_allows_second_chord_without_release(monkeypatch):
+    actions = []
+    manager = _test_manager(actions, monkeypatch)
+
+    manager._on_press("ctrl")
+    manager._on_press("alt")
+    manager._on_press("space")
+    # Missed releases + synthetic paste pollution, then explicit reset.
+    manager.reset_state()
+    manager._on_press("ctrl")
+    manager._on_press("alt")
+    manager._on_press("space")
+
+    assert actions == ["toggle", "toggle"]
+
+
 def _test_manager(actions, monkeypatch):
     manager = HotkeyManager(
         {"toggle_recording": "<ctrl>+<alt>+<space>"},
