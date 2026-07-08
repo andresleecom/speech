@@ -38,20 +38,30 @@ def position_near_anchor(
     screen_height: int,
     width: int = _WIDTH,
     height: int = _HEIGHT,
+    origin_x: int = 0,
+    origin_y: int = 0,
 ) -> tuple[int, int]:
+    """Place the overlay near the anchor, clamped to a screen rectangle.
+
+    ``origin_x`` / ``origin_y`` are the top-left of that rectangle in virtual
+    desktop coordinates (primary monitor is usually 0,0; secondary monitors
+    may be negative). ``screen_width`` / ``screen_height`` are the rectangle size.
+    """
+    min_x = origin_x + _MARGIN
+    min_y = origin_y + _MARGIN
+    max_x = max(min_x, origin_x + screen_width - width - _MARGIN)
+    max_y = max(min_y, origin_y + screen_height - height - _MARGIN)
+
     if anchor is None:
-        return (
-            max(_MARGIN, screen_width - width - _MARGIN),
-            max(_MARGIN, screen_height - height - _MARGIN),
-        )
+        return max_x, max_y
 
     x = anchor.x + _CURSOR_OFFSET
     y = anchor.y - height // 2
-    if x + width > screen_width - _MARGIN:
+    if x + width > origin_x + screen_width - _MARGIN:
         x = anchor.x - width - _CURSOR_OFFSET
 
-    x = min(max(_MARGIN, x), max(_MARGIN, screen_width - width - _MARGIN))
-    y = min(max(_MARGIN, y), max(_MARGIN, screen_height - height - _MARGIN))
+    x = min(max(min_x, x), max_x)
+    y = min(max(min_y, y), max_y)
     return x, y
 
 
@@ -63,11 +73,18 @@ def dragged_overlay_position(
     screen_height: int,
     width: int = _WIDTH,
     height: int = _HEIGHT,
+    origin_x: int = 0,
+    origin_y: int = 0,
 ) -> tuple[int, int]:
+    min_x = origin_x + _MARGIN
+    min_y = origin_y + _MARGIN
+    max_x = max(min_x, origin_x + screen_width - width - _MARGIN)
+    max_y = max(min_y, origin_y + screen_height - height - _MARGIN)
+
     x = origin.x + pointer.x - press.x
     y = origin.y + pointer.y - press.y
-    x = min(max(_MARGIN, x), max(_MARGIN, screen_width - width - _MARGIN))
-    y = min(max(_MARGIN, y), max(_MARGIN, screen_height - height - _MARGIN))
+    x = min(max(min_x, x), max_x)
+    y = min(max(min_y, y), max_y)
     return x, y
 
 

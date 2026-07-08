@@ -17,13 +17,15 @@ from winwhisper.transcriber import TranscriptionResult
 
 
 class FakeRecorder:
-    def __init__(self) -> None:
+    def __init__(self, *args, **kwargs) -> None:
         self.recording = False
 
     def start_recording(self) -> None:
         self.recording = True
 
-    def stop_recording(self) -> Path:
+    def stop_recording(self) -> Path | None:
+        if not self.recording:
+            return None
         self.recording = False
         return Path("fake-recording.wav")
 
@@ -172,7 +174,7 @@ def test_overlay_stop_restores_target_window_before_paste(monkeypatch, tmp_path)
     ]
 
 
-def test_hotkey_stop_does_not_force_restore_before_paste(monkeypatch, tmp_path):
+def test_hotkey_stop_restores_target_window_before_paste(monkeypatch, tmp_path):
     restored: list[int | None] = []
     inserted: list[str] = []
     controller = make_controller(monkeypatch, tmp_path, restored, inserted)
@@ -180,7 +182,7 @@ def test_hotkey_stop_does_not_force_restore_before_paste(monkeypatch, tmp_path):
     controller.toggle()
     controller.toggle()
 
-    assert restored == []
+    assert restored == [777]
     assert inserted == [("Hola mundo", "ctrl_v")]
     assert FakeOverlay.instances[0].events == [
         "show:ScreenPoint(x=240, y=320)",
@@ -222,6 +224,19 @@ def test_windows_terminal_target_uses_ctrl_shift_v(monkeypatch, tmp_path):
     controller.toggle()
 
     assert inserted == [("Hola mundo", "ctrl_shift_v")]
+
+
+def test_position_near_anchor_respects_negative_origin():
+    # Secondary monitor to the left of primary (virtual coords can be negative).
+    x, y = position_near_anchor(
+        ScreenPoint(-400, 200),
+        screen_width=1920,
+        screen_height=1080,
+        origin_x=-1920,
+        origin_y=0,
+    )
+    assert -1920 + 24 <= x <= -24
+    assert 24 <= y <= 1080 - 152 - 24
 
 
 def test_position_near_anchor_keeps_overlay_inside_screen():

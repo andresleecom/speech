@@ -14,6 +14,8 @@ CLEANUP_PROMPT = (
     "Return only the cleaned text."
 )
 
+LLM_CLEANUP_TIMEOUT_SECONDS = 30.0
+
 _SPACE_RE = re.compile(r"\s+")
 _SPACE_BEFORE_PUNCTUATION_RE = re.compile(r"\s+([.,!?;:])")
 
@@ -52,7 +54,7 @@ def _llm_cleanup(text: str) -> str:
     try:
         from openai import OpenAI
 
-        client = OpenAI()
+        client = OpenAI(timeout=LLM_CLEANUP_TIMEOUT_SECONDS)
         response = client.chat.completions.create(
             model=os.getenv("WINWHISPER_OPENAI_CLEANUP_MODEL", "gpt-4o-mini"),
             messages=[
@@ -60,6 +62,7 @@ def _llm_cleanup(text: str) -> str:
                 {"role": "user", "content": text},
             ],
             temperature=0,
+            timeout=LLM_CLEANUP_TIMEOUT_SECONDS,
         )
         cleaned = response.choices[0].message.content
         if not cleaned:

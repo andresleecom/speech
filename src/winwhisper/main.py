@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+import ctypes
 import io
 import logging
 import os
@@ -8,7 +9,7 @@ import sys
 import threading
 from contextlib import redirect_stdout
 from pathlib import Path
-from typing import Literal
+from typing import Any, Literal
 
 from . import __version__
 from .branding import APP_NAME
@@ -40,12 +41,15 @@ STATUS_TRANSCRIBING: Status = "Transcribing"
 STATUS_PASTING: Status = "Pasting"
 STATUS_ERROR: Status = "Error"
 
+_SINGLE_INSTANCE_MUTEX_NAME = "Local\\SpeechSingleInstanceMutex"
+_mutex_handle: Any | None = None
+
 
 class AppController:
     def __init__(self, settings: Settings) -> None:
         self.settings = settings
         self.logger = get_logger(__name__)
-        self.recorder = Recorder()
+        self.recorder = Recorder(on_max_duration=self._on_max_recording_duration)
         self.transcriber = Transcriber(settings)
         self.tray = TrayApp(self)
         self.recording_overlay = RecordingOverlay(
@@ -61,7 +65,6 @@ class AppController:
         self._paste_target_window: int | None = None
         self._paste_target_process_name: str | None = None
         self._overlay_anchor: ScreenPoint | None = None
-        self._restore_paste_target_before_paste = False
         self.update_coordinator = UpdateCoordinator(
             self.settings,
             self.notify,
@@ -109,7 +112,8 @@ class AppController:
             try:
                 self.recording_overlay.hide()
                 audio_path = self.recorder.stop_recording()
-                self._delete_audio(audio_path)
+                if audio_path is not None:
+                    self._delete_audio(audio_path)
             except Exception:
                 self.logger.exception("Active recording failed to stop during shutdown.")
 
@@ -126,7 +130,6 @@ class AppController:
             if self._processing or not self.recorder.is_recording():
                 self.recording_overlay.hide()
                 return
-            self._restore_paste_target_before_paste = True
         self.toggle()
 
     def on_hotkey(self, action: str) -> None:
@@ -143,6 +146,9 @@ class AppController:
         self.logger.warning("Unknown hotkey action %s.", action)
 
     def toggle(self, language_override: LanguageMode | None = None) -> None:
+        beep: tuple[int, int] | None = None
+        start_failed = False
+
         with self._lock:
             if self._processing:
                 self.logger.info("Ignoring toggle while dictation is being processed.")
@@ -151,9 +157,11 @@ class AppController:
             if self.recorder.is_recording():
                 language_mode = self._recording_language_mode or self.settings.language_mode
                 self._processing = True
-                self.logger.info("Recording stopped; transcribing (language_mode=%s).", language_mode)
+                self.logger.info(
+                    "Recording stopped; transcribing (language_mode=%s).",
+                    language_mode,
+                )
                 self.recording_overlay.show_transcribing()
-                self._beep(440, 120)
                 worker = threading.Thread(
                     target=self._stop_and_process,
                     args=(language_mode,),
@@ -161,27 +169,33 @@ class AppController:
                     daemon=True,
                 )
                 worker.start()
-                return
+                beep = (440, 120)
+            else:
+                language_mode = language_override or self.settings.language_mode
+                self._paste_target_window = get_foreground_window()
+                self._paste_target_process_name = get_window_process_name(
+                    self._paste_target_window
+                )
+                self._overlay_anchor = get_cursor_anchor(self._paste_target_window)
+                try:
+                    self.recorder.start_recording()
+                except Exception:
+                    self._paste_target_window = None
+                    self._paste_target_process_name = None
+                    self._overlay_anchor = None
+                    start_failed = True
+                else:
+                    self._recording_language_mode = language_mode
+                    self.logger.info("Recording started (language_mode=%s).", language_mode)
+                    self.recording_overlay.show(self._overlay_anchor)
+                    self.set_status(STATUS_RECORDING)
+                    beep = (880, 120)
 
-            language_mode = language_override or self.settings.language_mode
-            self._paste_target_window = get_foreground_window()
-            self._paste_target_process_name = get_window_process_name(self._paste_target_window)
-            self._overlay_anchor = get_cursor_anchor(self._paste_target_window)
-            self._restore_paste_target_before_paste = False
-            try:
-                self.recorder.start_recording()
-            except Exception:
-                self._paste_target_window = None
-                self._paste_target_process_name = None
-                self._overlay_anchor = None
-                self._handle_error("Recording failed to start.")
-                return
-
-            self._recording_language_mode = language_mode
-            self.logger.info("Recording started (language_mode=%s).", language_mode)
-            self.recording_overlay.show(self._overlay_anchor)
-            self._beep(880, 120)
-            self.set_status(STATUS_RECORDING)
+        if start_failed:
+            self._handle_error("Recording failed to start.")
+            return
+        if beep is not None:
+            self._beep(*beep)
 
     def set_language_mode(self, mode: str) -> None:
         if mode not in {"auto", "en", "es"}:
@@ -205,6 +219,10 @@ class AppController:
         try:
             save_settings(self.settings)
             os.startfile(str(app_data_dir() / "settings.json"))  # type: ignore[attr-defined]
+            self.notify(
+                APP_NAME,
+                "Restart Speech after editing hotkeys or model settings.",
+            )
         except Exception:
             self._handle_error("Settings file could not be opened.")
 
@@ -230,12 +248,29 @@ class AppController:
     def is_recording(self) -> bool:
         return self.recorder.is_recording()
 
+    def _on_max_recording_duration(self) -> None:
+        # Called from the audio callback; hop to a worker immediately.
+        threading.Thread(
+            target=self._handle_max_recording_duration,
+            name="winwhisper-max-duration-stop",
+            daemon=True,
+        ).start()
+
+    def _handle_max_recording_duration(self) -> None:
+        self.logger.warning("Max recording duration reached; stopping dictation.")
+        self.notify(APP_NAME, "Max recording length reached; stopping.")
+        self.toggle()
+
     def _stop_and_process(self, language_mode: LanguageMode) -> None:
         audio_path: Path | None = None
         failed = False
 
         try:
             audio_path = self.recorder.stop_recording()
+            if audio_path is None:
+                self.logger.info("Recording already stopped; skipping dictation.")
+                return
+
             self.set_status(STATUS_TRANSCRIBING)
             result = self.transcriber.transcribe(audio_path, language_mode)
             self._delete_audio(audio_path)
@@ -253,7 +288,7 @@ class AppController:
                 return
 
             self.set_status(STATUS_PASTING)
-            self._restore_paste_target_if_needed()
+            self._restore_paste_target()
             shortcut = self._paste_shortcut()
             if insert_text(cleaned, shortcut=shortcut):
                 self.logger.info(
@@ -278,18 +313,16 @@ class AppController:
                 self._paste_target_window = None
                 self._paste_target_process_name = None
                 self._overlay_anchor = None
-                self._restore_paste_target_before_paste = False
                 shutdown = self._shutdown
             self.recording_overlay.hide()
             if not failed and not shutdown:
                 self.set_status(STATUS_IDLE)
 
-    def _restore_paste_target_if_needed(self) -> None:
+    def _restore_paste_target(self) -> None:
         with self._lock:
-            should_restore = self._restore_paste_target_before_paste
             target_window = self._paste_target_window
 
-        if not should_restore:
+        if target_window is None:
             return
 
         if restore_foreground_window(target_window):
@@ -354,7 +387,7 @@ def main(argv: list[str] | None = None) -> int:
     if args.version:
         _attach_parent_console_for_cli()
         print(__version__)
-        return 0
+        return _finish_cli(0)
 
     logger = get_logger(__name__)
     _apply_startup_mitigations(logger)
@@ -362,7 +395,13 @@ def main(argv: list[str] | None = None) -> int:
     if args.diagnostics:
         _attach_parent_console_for_cli()
         run_diagnostics_report()
-        return 0
+        return _finish_cli(0)
+
+    if not _acquire_single_instance():
+        logger.warning("Another %s instance is already running; exiting.", APP_NAME)
+        _attach_parent_console_for_cli()
+        print(f"{APP_NAME} is already running.", file=sys.stderr)
+        return _finish_cli(0)
 
     logger.info("%s starting.", APP_NAME)
 
@@ -393,6 +432,42 @@ def main(argv: list[str] | None = None) -> int:
     return 0
 
 
+def _acquire_single_instance() -> bool:
+    """Return True if this process owns the single-instance mutex."""
+    global _mutex_handle
+    if os.name != "nt":
+        return True
+
+    try:
+        kernel32 = ctypes.windll.kernel32
+        kernel32.CreateMutexW.argtypes = [
+            wintypes_lpsecurityattributes(),
+            ctypes.c_bool,
+            ctypes.c_wchar_p,
+        ]
+        kernel32.CreateMutexW.restype = ctypes.c_void_p
+        kernel32.GetLastError.restype = ctypes.c_ulong
+
+        handle = kernel32.CreateMutexW(None, False, _SINGLE_INSTANCE_MUTEX_NAME)
+        if not handle:
+            return True  # Fail open if mutex cannot be created.
+
+        error = int(kernel32.GetLastError())
+        # ERROR_ALREADY_EXISTS
+        if error == 183:
+            kernel32.CloseHandle(handle)
+            return False
+
+        _mutex_handle = handle
+        return True
+    except Exception:
+        return True
+
+
+def wintypes_lpsecurityattributes() -> Any:
+    return ctypes.c_void_p
+
+
 def _apply_startup_mitigations(logger: logging.Logger) -> None:
     _drop_invalid_sslkeylogfile(logger)
     _inject_truststore(logger)
@@ -405,14 +480,28 @@ def _attach_parent_console_for_cli() -> None:
         return
 
     try:
-        import ctypes
+        import ctypes as ct
 
-        attach_parent_process = ctypes.c_uint(-1).value
-        ctypes.windll.kernel32.AttachConsole(attach_parent_process)
+        attach_parent_process = ct.c_uint(-1).value
+        ct.windll.kernel32.AttachConsole(attach_parent_process)
         sys.stdout = open("CONOUT$", "w", encoding="utf-8", buffering=1)
         sys.stderr = open("CONOUT$", "w", encoding="utf-8", buffering=1)
     except Exception:
         pass
+
+
+def _finish_cli(exit_code: int) -> int:
+    try:
+        if sys.stdout is not None:
+            sys.stdout.flush()
+        if sys.stderr is not None:
+            sys.stderr.flush()
+    except Exception:
+        pass
+
+    if getattr(sys, "frozen", False):
+        os._exit(exit_code)
+    return exit_code
 
 
 def _drop_invalid_sslkeylogfile(logger: logging.Logger) -> None:
