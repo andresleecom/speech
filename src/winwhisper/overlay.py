@@ -344,12 +344,15 @@ class RecordingOverlay:
         def drag(event: Any) -> str | None:
             if drag_origin is None or drag_press is None:
                 return None
+            origin_x, origin_y, screen_width, screen_height = _tk_virtual_screen_bounds(root)
             x, y = dragged_overlay_position(
                 drag_origin,
                 drag_press,
                 ScreenPoint(int(event.x_root), int(event.y_root)),
-                root.winfo_screenwidth(),
-                root.winfo_screenheight(),
+                screen_width,
+                screen_height,
+                origin_x=origin_x,
+                origin_y=origin_y,
             )
             root.geometry(f"{_WIDTH}x{_HEIGHT}+{x}+{y}")
             return None
@@ -405,9 +408,14 @@ class RecordingOverlay:
         root.mainloop()
 
     def _position(self, root: Any, anchor: ScreenPoint | None) -> None:
-        screen_width = root.winfo_screenwidth()
-        screen_height = root.winfo_screenheight()
-        x, y = position_near_anchor(anchor, screen_width, screen_height)
+        origin_x, origin_y, screen_width, screen_height = _tk_monitor_work_area(root, anchor)
+        x, y = position_near_anchor(
+            anchor,
+            screen_width,
+            screen_height,
+            origin_x=origin_x,
+            origin_y=origin_y,
+        )
         root.geometry(f"{_WIDTH}x{_HEIGHT}+{x}+{y}")
 
     def _current_level(self) -> float:
@@ -427,3 +435,25 @@ class RecordingOverlay:
             root.attributes("-transparentcolor", _TRANSPARENT_COLOR)
         except Exception:
             pass
+
+
+def _tk_monitor_work_area(root: Any, anchor: ScreenPoint | None) -> tuple[int, int, int, int]:
+    if os.name == "nt":
+        try:
+            from .native_overlay import _monitor_work_area
+
+            return _monitor_work_area(anchor)
+        except Exception:
+            pass
+    return 0, 0, int(root.winfo_screenwidth()), int(root.winfo_screenheight())
+
+
+def _tk_virtual_screen_bounds(root: Any) -> tuple[int, int, int, int]:
+    if os.name == "nt":
+        try:
+            from .native_overlay import _virtual_screen_bounds
+
+            return _virtual_screen_bounds()
+        except Exception:
+            pass
+    return 0, 0, int(root.winfo_screenwidth()), int(root.winfo_screenheight())

@@ -45,9 +45,13 @@ class TrayApp:
     def stop(self) -> None:
         with self._ui_lock:
             icon = self._icon
+            self._icon = None
             if icon is None:
                 return
-        icon.stop()
+        try:
+            icon.stop()
+        except Exception:
+            pass
 
     def set_status(self, status: str) -> None:
         with self._ui_lock:

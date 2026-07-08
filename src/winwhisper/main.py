@@ -126,11 +126,7 @@ class AppController:
         self.stop()
 
     def stop_from_overlay(self) -> None:
-        with self._lock:
-            if self._processing or not self.recorder.is_recording():
-                self.recording_overlay.hide()
-                return
-        self.toggle()
+        self._request_stop(hide_overlay_if_idle=True)
 
     def on_hotkey(self, action: str) -> None:
         if action == "toggle":
@@ -155,21 +151,7 @@ class AppController:
                 return
 
             if self.recorder.is_recording():
-                language_mode = self._recording_language_mode or self.settings.language_mode
-                self._processing = True
-                self.logger.info(
-                    "Recording stopped; transcribing (language_mode=%s).",
-                    language_mode,
-                )
-                self.recording_overlay.show_transcribing()
-                worker = threading.Thread(
-                    target=self._stop_and_process,
-                    args=(language_mode,),
-                    name="winwhisper-dictation-worker",
-                    daemon=True,
-                )
-                worker.start()
-                beep = (440, 120)
+                beep = self._begin_stop_locked()
             else:
                 language_mode = language_override or self.settings.language_mode
                 self._paste_target_window = get_foreground_window()
@@ -257,9 +239,46 @@ class AppController:
         ).start()
 
     def _handle_max_recording_duration(self) -> None:
-        self.logger.warning("Max recording duration reached; stopping dictation.")
-        self.notify(APP_NAME, "Max recording length reached; stopping.")
-        self.toggle()
+        if self._request_stop():
+            self.logger.warning("Max recording duration reached; stopping dictation.")
+            self.notify(APP_NAME, "Max recording length reached; stopping.")
+        else:
+            self.logger.info("Max recording duration reached after recording had stopped.")
+
+    def _request_stop(self, hide_overlay_if_idle: bool = False) -> bool:
+        beep: tuple[int, int] | None = None
+        hide_overlay = False
+        with self._lock:
+            if self._processing:
+                self.logger.info("Ignoring stop while dictation is being processed.")
+                hide_overlay = hide_overlay_if_idle
+            elif not self.recorder.is_recording():
+                hide_overlay = hide_overlay_if_idle
+            else:
+                beep = self._begin_stop_locked()
+
+        if hide_overlay:
+            self.recording_overlay.hide()
+        if beep is not None:
+            self._beep(*beep)
+        return beep is not None
+
+    def _begin_stop_locked(self) -> tuple[int, int]:
+        language_mode = self._recording_language_mode or self.settings.language_mode
+        self._processing = True
+        self.logger.info(
+            "Recording stopped; transcribing (language_mode=%s).",
+            language_mode,
+        )
+        self.recording_overlay.show_transcribing()
+        worker = threading.Thread(
+            target=self._stop_and_process,
+            args=(language_mode,),
+            name="winwhisper-dictation-worker",
+            daemon=True,
+        )
+        worker.start()
+        return (440, 120)
 
     def _stop_and_process(self, language_mode: LanguageMode) -> None:
         audio_path: Path | None = None
