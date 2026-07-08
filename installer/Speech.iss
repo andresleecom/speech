@@ -4,7 +4,7 @@
 #define MyAppURL "https://github.com/andresleecom/speech"
 #define MyAppVersion GetEnv("APP_VERSION")
 #if MyAppVersion == ""
-#define MyAppVersion "0.1.0"
+#define MyAppVersion "0.1.1"
 #endif
 #define MySourceDir "..\dist\Speech"
 

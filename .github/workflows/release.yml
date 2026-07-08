@@ -39,10 +39,10 @@ jobs:
         run: |
           $exe = "dist\Speech\Speech.exe"
           if (!(Test-Path $exe)) { throw "Packaged executable not found." }
-          & $exe --version
-          if ($LASTEXITCODE -ne 0) { throw "Version smoke test failed." }
-          & $exe --diagnostics
-          if ($LASTEXITCODE -ne 0) { throw "Diagnostics smoke test failed." }
+          $versionProcess = Start-Process -FilePath $exe -ArgumentList "--version" -Wait -PassThru
+          if ($versionProcess.ExitCode -ne 0) { throw "Version smoke test failed with exit code $($versionProcess.ExitCode)." }
+          $diagnosticsProcess = Start-Process -FilePath $exe -ArgumentList "--diagnostics" -Wait -PassThru
+          if ($diagnosticsProcess.ExitCode -ne 0) { throw "Diagnostics smoke test failed with exit code $($diagnosticsProcess.ExitCode)." }
       - name: Publish GitHub release
         shell: pwsh
         env:
