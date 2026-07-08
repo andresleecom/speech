@@ -39,3 +39,29 @@ def test_transcriber_constructor_does_not_import_faster_whisper_or_load_model():
 
     assert "faster_whisper" not in sys.modules
     assert instance._model is None
+    assert instance.is_model_loaded() is False
+
+
+def test_ensure_model_loaded_uses_cached_model():
+    transcriber_mod = importlib.import_module("winwhisper.transcriber")
+    instance = transcriber_mod.Transcriber(Settings())
+    calls: list[str] = []
+    sentinel = object()
+
+    def fake_load(self):
+        if self._model is not None:
+            return self._model
+        calls.append("load")
+        self._model = sentinel
+        return self._model
+
+    original = transcriber_mod.Transcriber._load_model
+    try:
+        transcriber_mod.Transcriber._load_model = fake_load  # type: ignore[method-assign]
+        instance.ensure_model_loaded()
+        instance.ensure_model_loaded()
+        assert instance.is_model_loaded() is True
+        assert calls == ["load"]
+        assert instance._model is sentinel
+    finally:
+        transcriber_mod.Transcriber._load_model = original  # type: ignore[method-assign]

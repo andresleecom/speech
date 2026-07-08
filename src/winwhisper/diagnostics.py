@@ -8,7 +8,7 @@ import tempfile
 from pathlib import Path
 
 from .branding import APP_NAME
-from .config import load_settings
+from .config import app_data_dir, load_settings
 
 
 def run_diagnostics() -> None:
@@ -21,8 +21,16 @@ def run_diagnostics() -> None:
     print(f"Configured model_size: {settings.model_size}")
     print(f"Configured device: {settings.device}")
     print(f"faster-whisper import: {_import_status('faster_whisper')}")
+    print(f"ctranslate2 import: {_import_status('ctranslate2')}")
+    print(f"sounddevice import: {_import_status('sounddevice')}")
     print(f"OPENAI_API_KEY present: {'yes' if os.getenv('OPENAI_API_KEY') else 'no'}")
     print(f"%TEMP%\\{APP_NAME} writable: {'yes' if _temp_dir_writable() else 'no'}")
+    print(f"App data dir: {app_data_dir()}")
+    print(f"Log file: {app_data_dir() / 'logs' / 'app.log'}")
+    print(f"SSLKEYLOGFILE set: {_sslkeylogfile_status()}")
+    print("Antivirus notes:")
+    for line in _antivirus_notes():
+        print(f"  - {line}")
 
 
 def _print_microphone_devices() -> None:
@@ -63,6 +71,67 @@ def _temp_dir_writable() -> bool:
     except OSError:
         return False
     return True
+
+
+def _sslkeylogfile_status() -> str:
+    value = os.environ.get("SSLKEYLOGFILE")
+    if not value:
+        return "no"
+    # Device-namespace paths (common with Norton TLS interception) break OpenSSL.
+    if value.startswith("\\\\.\\"):
+        return f"yes (device path; Speech strips this at startup) value={value!r}"
+    return f"yes value={value!r}"
+
+
+def _antivirus_notes() -> list[str]:
+    notes = [
+        "If stop/transcribe freezes, check antivirus real-time scanning.",
+        "Norton and similar products may inject SSLKEYLOGFILE or scan model DLLs.",
+        "Recommended exclusions: the Speech install folder, %APPDATA%\\Speech, "
+        f"%TEMP%\\{APP_NAME}, and the Hugging Face cache (~/.cache/huggingface).",
+    ]
+    detected = _detect_security_products()
+    if detected:
+        notes.insert(0, f"Security products detected on this machine: {', '.join(detected)}.")
+    else:
+        notes.insert(0, "No well-known third-party AV service names detected via service list.")
+    return notes
+
+
+def _detect_security_products() -> list[str]:
+    """Best-effort Windows service name scan; never fails diagnostics."""
+    if os.name != "nt":
+        return []
+    try:
+        import subprocess
+
+        completed = subprocess.run(
+            ["sc", "query", "type=", "service", "state=", "all"],
+            capture_output=True,
+            text=True,
+            timeout=8,
+            check=False,
+        )
+        output = (completed.stdout or "") + (completed.stderr or "")
+    except Exception:
+        return []
+
+    needles = {
+        "Norton": ("Norton", "Norton Antivirus", "Norton Security"),
+        "Avast": ("Avast",),
+        "AVG": ("AVG",),
+        "McAfee": ("McAfee",),
+        "Bitdefender": ("Bitdefender",),
+        "Kaspersky": ("Kaspersky",),
+        "ESET": ("ESET",),
+        "Malwarebytes": ("Malwarebytes",),
+    }
+    found: list[str] = []
+    upper = output.upper()
+    for label, patterns in needles.items():
+        if any(pattern.upper() in upper for pattern in patterns):
+            found.append(label)
+    return found
 
 
 if __name__ == "__main__":
