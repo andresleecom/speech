@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 import threading
 import time
 from collections.abc import Callable, Mapping
@@ -145,13 +146,29 @@ class HotkeyManager:
         self.reset_state()
 
     def reset_state(self) -> None:
-        """Clear modifier/trigger tracking after synthetic input or missed releases.
+        """Clear all modifier/trigger tracking (listener start/stop lifecycle).
 
         Action debounce timestamps are kept so a still-held chord cannot
-        immediately re-fire after reset_state() runs at the end of a callback.
+        immediately re-fire after reset runs at the end of a callback.
         """
         with self._state_lock:
             self._pressed_modifiers.clear()
+            self._down_triggers.clear()
+            self._trigger_down_at.clear()
+
+    def reset_trigger_state(self) -> None:
+        """Clear only the trigger tracking after an action or synthetic input.
+
+        Unlike :meth:`reset_state`, the pressed-modifier set is preserved. Users
+        routinely hold the chord's modifiers (e.g. Ctrl+Alt) across the start and
+        stop taps, only lifting the trigger key. Held modifier keys do not re-emit
+        key-down events, so wiping ``_pressed_modifiers`` here made every later
+        trigger press fail the ``modifiers <= pressed_modifiers`` check, leaving
+        the hotkey silently dead until the modifiers were fully released and
+        pressed again. Dropping just the trigger tracking still recovers from a
+        missed trigger key-up without breaking a held chord.
+        """
+        with self._state_lock:
             self._down_triggers.clear()
             self._trigger_down_at.clear()
 
@@ -186,6 +203,16 @@ class HotkeyManager:
             pressed_modifiers = set(self._pressed_modifiers)
             bindings = list(self._bindings)
             last_action_at = dict(self._last_action_at)
+
+        # On Windows the OS key state is the authoritative, drift-free answer for
+        # which modifiers are physically held right now. Prefer it over tracked
+        # state, which can drift in either direction: missing a modifier after a
+        # reset (dead hotkey) or retaining a stale one after a missed key-up
+        # (phantom toggle). Fall back to the tracked snapshot only when the live
+        # query is unavailable (non-Windows, or the call failed).
+        live_modifiers = self._live_modifiers()
+        if live_modifiers is not None:
+            pressed_modifiers = live_modifiers
 
         for modifiers, trigger, action in bindings:
             if trigger != name or not modifiers <= pressed_modifiers:
@@ -249,6 +276,34 @@ class HotkeyManager:
             return "key", char.lower()
         return "key", f"vk{vk}"
 
+    def _live_modifiers(self) -> set[str] | None:
+        """Modifiers physically held right now, per the OS key state (Windows).
+
+        Returns ``None`` off Windows or if the query fails, signalling that the
+        caller should fall back to tracked state. GetAsyncKeyState covers every
+        modifier alias (ctrl/alt/shift/cmd), so a non-None result is a complete,
+        authoritative picture of what is physically held.
+        """
+        if os.name != "nt":
+            return None
+        try:
+            import ctypes
+
+            get_state = ctypes.windll.user32.GetAsyncKeyState
+            down = 0x8000
+            held: set[str] = set()
+            if get_state(0x11) & down:  # VK_CONTROL
+                held.add("ctrl")
+            if get_state(0x12) & down:  # VK_MENU (Alt / AltGr)
+                held.add("alt")
+            if get_state(0x10) & down:  # VK_SHIFT
+                held.add("shift")
+            if (get_state(0x5B) & down) or (get_state(0x5C) & down):  # VK_LWIN/RWIN
+                held.add("cmd")
+            return held
+        except Exception:
+            return None
+
     def _dispatch(self, action: str) -> None:
         self._logger.info("Hotkey matched action=%s.", action)
         thread = threading.Thread(
@@ -265,6 +320,7 @@ class HotkeyManager:
         except Exception:
             self._logger.exception("Hotkey callback failed for action %s.", action)
         finally:
-            # After the action runs, drop chord state so a missed Space key-up
-            # cannot block the next take when the user presses the hotkey again.
-            self.reset_state()
+            # After the action runs, drop only the trigger tracking so a missed
+            # Space key-up cannot block the next take. Modifier state is kept so a
+            # user still holding Ctrl+Alt across start and stop keeps matching.
+            self.reset_trigger_state()

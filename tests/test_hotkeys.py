@@ -135,6 +135,98 @@ def test_hotkey_recovers_when_space_release_is_missed_without_modifier_edge(monk
     assert actions == ["toggle", "toggle"]
 
 
+class _ImmediateThread:
+    """Run the dispatch worker inline so its finally-reset happens synchronously."""
+
+    def __init__(self, target=None, args=(), **kwargs):
+        self._target = target
+        self._args = args
+
+    def start(self):
+        if self._target is not None:
+            self._target(*self._args)
+
+
+def test_hotkey_toggle_survives_reset_while_modifiers_are_held(monkeypatch):
+    """Regression for the v0.1.4 "second hotkey does nothing" bug.
+
+    The dispatch worker resets chord state in its finally. Wiping the pressed
+    modifiers there left the second Space tap failing the modifier match while
+    Ctrl+Alt were still physically held, so the hotkey worked once then went
+    dead until the modifiers were released and pressed again.
+    """
+    from winwhisper import hotkeys as hotkeys_mod
+
+    actions = []
+    manager = HotkeyManager(
+        {"toggle_recording": "<ctrl>+<alt>+<space>"},
+        lambda action: actions.append(action),
+    )
+    monkeypatch.setattr(manager, "_describe", _describe_test_key)
+    # Simulate the OS query being unavailable so the match falls back to tracked
+    # state - this isolates the reset fix (preserved modifiers) from the live
+    # OS-key-state safety net.
+    monkeypatch.setattr(manager, "_live_modifiers", lambda: None)
+    # Run the dispatch worker (and its finally reset) inline, as the app does.
+    monkeypatch.setattr(hotkeys_mod.threading, "Thread", _ImmediateThread)
+
+    # Hold Ctrl+Alt, tap Space -> START (dispatch + finally reset run inline).
+    manager._on_press("ctrl")
+    manager._on_press("alt")
+    manager._on_press("space")
+    manager._on_release("space")  # only Space lifted; Ctrl+Alt stay down
+    assert actions == ["toggle"]
+
+    # Debounce legitimately blocks an instant re-fire; let time pass.
+    manager._last_action_at["toggle"] = manager._last_action_at.get("toggle", 0) - 1.0
+
+    # Still holding Ctrl+Alt; tap Space again -> STOP must fire.
+    manager._on_press("space")
+    assert actions == ["toggle", "toggle"]
+
+
+def test_hotkey_live_modifiers_recover_lost_tracking(monkeypatch):
+    """Even if tracked modifiers are lost entirely, an OS-confirmed chord fires."""
+    actions = []
+    manager = HotkeyManager(
+        {"toggle_recording": "<ctrl>+<alt>+<space>"},
+        lambda action: actions.append(action),
+    )
+    monkeypatch.setattr(manager, "_dispatch", lambda action: actions.append(action))
+    monkeypatch.setattr(manager, "_describe", _describe_test_key)
+    # OS reports Ctrl+Alt genuinely held, but tracking never saw the key-downs.
+    monkeypatch.setattr(manager, "_live_modifiers", lambda: {"ctrl", "alt"})
+
+    manager._on_press("space")
+
+    assert actions == ["toggle"]
+
+
+def test_hotkey_live_modifiers_override_stale_tracking(monkeypatch):
+    """A stale tracked modifier must not fire the chord when the OS says it's up.
+
+    Guards against a phantom toggle: if a modifier key-up was missed,
+    _pressed_modifiers keeps a stale 'ctrl'/'alt', but the OS key state (empty,
+    and authoritative on Windows) reports nothing held, so a bare Space is inert.
+    """
+    actions = []
+    manager = HotkeyManager(
+        {"toggle_recording": "<ctrl>+<alt>+<space>"},
+        lambda action: actions.append(action),
+    )
+    monkeypatch.setattr(manager, "_dispatch", lambda action: actions.append(action))
+    monkeypatch.setattr(manager, "_describe", _describe_test_key)
+    # OS reports nothing physically held (empty set is authoritative, not None).
+    monkeypatch.setattr(manager, "_live_modifiers", lambda: set())
+
+    # Poison tracked state as if the Ctrl+Alt key-ups were missed.
+    manager._pressed_modifiers.update({"ctrl", "alt"})
+
+    manager._on_press("space")
+
+    assert actions == []
+
+
 def _test_manager(actions, monkeypatch):
     manager = HotkeyManager(
         {"toggle_recording": "<ctrl>+<alt>+<space>"},
@@ -142,6 +234,9 @@ def _test_manager(actions, monkeypatch):
     )
     monkeypatch.setattr(manager, "_dispatch", lambda action: actions.append(action))
     monkeypatch.setattr(manager, "_describe", _describe_test_key)
+    # Drive matches from the simulated tracked state, not the test machine's real
+    # keys: None makes _on_press fall back to _pressed_modifiers.
+    monkeypatch.setattr(manager, "_live_modifiers", lambda: None)
     return manager
 
 
