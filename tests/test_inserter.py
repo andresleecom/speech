@@ -1,7 +1,7 @@
 import sys
 import types
 
-from winwhisper.inserter import insert_text
+from winwhisper.inserter import insert_text, resolve_paste_shortcut
 
 
 class FakeClipboard(types.ModuleType):
@@ -44,7 +44,7 @@ def test_insert_text_leaves_dictation_on_clipboard(monkeypatch):
     events: list[tuple[str, str]] = []
     keyboard_module = types.ModuleType("pynput.keyboard")
     keyboard_module.Controller = lambda: FakeKeyboard(events)
-    keyboard_module.Key = types.SimpleNamespace(ctrl="ctrl")
+    keyboard_module.Key = types.SimpleNamespace(ctrl="ctrl", shift="shift")
     pynput_module = types.ModuleType("pynput")
     pynput_module.keyboard = keyboard_module
 
@@ -60,3 +60,36 @@ def test_insert_text_leaves_dictation_on_clipboard(monkeypatch):
         ("press", "v"),
         ("release", "v"),
     ]
+
+
+def test_insert_text_can_use_ctrl_shift_v(monkeypatch):
+    clipboard = FakeClipboard()
+    events: list[tuple[str, str]] = []
+    keyboard_module = types.ModuleType("pynput.keyboard")
+    keyboard_module.Controller = lambda: FakeKeyboard(events)
+    keyboard_module.Key = types.SimpleNamespace(ctrl="ctrl", shift="shift")
+    pynput_module = types.ModuleType("pynput")
+    pynput_module.keyboard = keyboard_module
+
+    monkeypatch.setitem(sys.modules, "pyperclip", clipboard)
+    monkeypatch.setitem(sys.modules, "pynput", pynput_module)
+    monkeypatch.setitem(sys.modules, "pynput.keyboard", keyboard_module)
+    monkeypatch.setattr("winwhisper.inserter.time.sleep", lambda _: None)
+
+    assert insert_text("dictated text", shortcut="ctrl_shift_v") is True
+    assert clipboard.value == "dictated text"
+    assert events == [
+        ("pressed", "ctrl"),
+        ("pressed", "shift"),
+        ("press", "v"),
+        ("release", "v"),
+    ]
+
+
+def test_terminal_process_uses_ctrl_shift_v():
+    assert resolve_paste_shortcut("clipboard_ctrl_v", "WindowsTerminal.exe") == "ctrl_shift_v"
+    assert resolve_paste_shortcut("auto", "wezterm-gui.exe") == "ctrl_shift_v"
+
+
+def test_non_terminal_process_uses_ctrl_v():
+    assert resolve_paste_shortcut("auto", "notepad.exe") == "ctrl_v"

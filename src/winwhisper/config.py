@@ -13,6 +13,8 @@ DEFAULT_HOTKEYS = {
     "force_spanish": "<ctrl>+<alt>+s",
 }
 
+PasteMode = Literal["auto", "clipboard_ctrl_v", "clipboard_ctrl_shift_v"]
+
 
 class Settings(BaseModel):
     model_size: str = "small"
@@ -20,7 +22,7 @@ class Settings(BaseModel):
     compute_type: str = "int8"
     language_mode: Literal["auto", "en", "es"] = "auto"
     cleanup_mode: Literal["none", "basic", "llm"] = "basic"
-    paste_mode: Literal["clipboard_ctrl_v"] = "clipboard_ctrl_v"
+    paste_mode: PasteMode = "auto"
     delete_audio_after_transcription: bool = True
     hotkeys: dict[str, str] = Field(default_factory=lambda: DEFAULT_HOTKEYS.copy())
 

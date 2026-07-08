@@ -90,16 +90,21 @@ The app creates the file on first run if it does not exist.
 | `compute_type` | `int8` | faster-whisper compute type. |
 | `language_mode` | `auto` | Use `auto`, `en`, or `es`. |
 | `cleanup_mode` | `basic` | Use `none`, `basic`, or `llm`. |
-| `paste_mode` | `clipboard_ctrl_v` | Clipboard paste mode for the MVP. |
+| `paste_mode` | `auto` | Paste shortcut mode. `auto` uses `Ctrl+Shift+V` for common terminal windows and `Ctrl+V` elsewhere. Older `clipboard_ctrl_v` settings keep the same terminal detection. Use `clipboard_ctrl_shift_v` to force `Ctrl+Shift+V`. |
 | `delete_audio_after_transcription` | `true` | Delete temporary WAV files after transcription. |
 | `hotkeys` | See defaults above. | Global hotkey bindings. |
 
 ## Floating recording button
 
-When recording starts, WinWhisperDictate shows a small floating red `REC` button.
-Click it to stop recording and transcribe. The app remembers the active window
-from the start of recording and tries to focus it again before pasting, so the
-text goes back where your cursor was when dictation began.
+When recording starts, WinWhisperDictate shows a small floating `REC` control
+near the text cursor when Windows exposes it, or near the mouse cursor as a
+fallback. Click it to stop recording and transcribe. The app remembers the
+active window from the start of recording and tries to focus it again before
+pasting, so the text goes back where your cursor was when dictation began.
+
+In `auto` paste mode, terminal windows such as Windows Terminal, WezTerm,
+Alacritty, mintty, and legacy console hosts receive `Ctrl+Shift+V`. Other
+windows receive `Ctrl+V`.
 
 ## Model Recommendations
 

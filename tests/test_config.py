@@ -9,6 +9,7 @@ def test_defaults_when_no_file_exists(monkeypatch, tmp_path):
     settings = load_settings()
 
     assert settings == Settings()
+    assert settings.paste_mode == "auto"
     assert (tmp_path / "settings.json").exists()
 
 
@@ -28,6 +29,15 @@ def test_save_load_round_trip(monkeypatch, tmp_path):
     save_settings(settings)
 
     assert load_settings() == settings
+
+
+def test_ctrl_shift_v_paste_mode_is_valid(monkeypatch, tmp_path):
+    monkeypatch.setenv("WINWHISPER_APPDATA_DIR", str(tmp_path))
+    settings = Settings(paste_mode="clipboard_ctrl_shift_v")
+
+    save_settings(settings)
+
+    assert load_settings().paste_mode == "clipboard_ctrl_shift_v"
 
 
 def test_unknown_keys_ignored(monkeypatch, tmp_path):

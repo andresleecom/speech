@@ -10,10 +10,16 @@ from typing import Literal
 
 from .config import Settings, app_data_dir, load_settings, save_settings
 from .diagnostics import run_diagnostics as run_diagnostics_report
-from .focus import get_foreground_window, restore_foreground_window
+from .focus import (
+    ScreenPoint,
+    get_cursor_anchor,
+    get_foreground_window,
+    get_window_process_name,
+    restore_foreground_window,
+)
 from .formatter import clean_text
 from .hotkeys import HotkeyManager
-from .inserter import insert_text
+from .inserter import PasteShortcut, insert_text, resolve_paste_shortcut
 from .logger import get_logger
 from .overlay import RecordingOverlay
 from .recorder import Recorder
@@ -45,6 +51,8 @@ class AppController:
         self._shutdown = False
         self._recording_language_mode: LanguageMode | None = None
         self._paste_target_window: int | None = None
+        self._paste_target_process_name: str | None = None
+        self._overlay_anchor: ScreenPoint | None = None
         self._restore_paste_target_before_paste = False
 
     def run(self) -> None:
@@ -135,17 +143,21 @@ class AppController:
 
             language_mode = language_override or self.settings.language_mode
             self._paste_target_window = get_foreground_window()
+            self._paste_target_process_name = get_window_process_name(self._paste_target_window)
+            self._overlay_anchor = get_cursor_anchor(self._paste_target_window)
             self._restore_paste_target_before_paste = False
             try:
                 self.recorder.start_recording()
             except Exception:
                 self._paste_target_window = None
+                self._paste_target_process_name = None
+                self._overlay_anchor = None
                 self._handle_error("Recording failed to start.")
                 return
 
             self._recording_language_mode = language_mode
             self.logger.info("Recording started (language_mode=%s).", language_mode)
-            self.recording_overlay.show()
+            self.recording_overlay.show(self._overlay_anchor)
             self._beep(880, 120)
             self.set_status(STATUS_RECORDING)
 
@@ -215,11 +227,18 @@ class AppController:
 
             self.set_status(STATUS_PASTING)
             self._restore_paste_target_if_needed()
-            if insert_text(cleaned):
-                self.logger.info("Paste shortcut sent; dictation text remains on clipboard.")
+            shortcut = self._paste_shortcut()
+            if insert_text(cleaned, shortcut=shortcut):
+                self.logger.info(
+                    "Paste shortcut sent (%s); dictation text remains on clipboard.",
+                    shortcut,
+                )
             else:
                 self.logger.warning("Automatic paste failed; dictation may still be on clipboard.")
-                self.notify("WinWhisperDictate", "Automatic paste failed. Try Ctrl+V.")
+                self.notify(
+                    "WinWhisperDictate",
+                    f"Automatic paste failed. Try {_shortcut_label(shortcut)}.",
+                )
         except Exception:
             failed = True
             self._handle_error("Dictation failed.")
@@ -230,6 +249,8 @@ class AppController:
                 self._processing = False
                 self._recording_language_mode = None
                 self._paste_target_window = None
+                self._paste_target_process_name = None
+                self._overlay_anchor = None
                 self._restore_paste_target_before_paste = False
                 shutdown = self._shutdown
             if not failed and not shutdown:
@@ -247,6 +268,12 @@ class AppController:
             self.logger.info("Restored target window before paste.")
         else:
             self.logger.warning("Could not restore target window before paste.")
+
+    def _paste_shortcut(self) -> PasteShortcut:
+        with self._lock:
+            process_name = self._paste_target_process_name
+
+        return resolve_paste_shortcut(self.settings.paste_mode, process_name)
 
     def _run_diagnostics_worker(self) -> None:
         try:
@@ -358,6 +385,12 @@ def _inject_truststore(logger: logging.Logger) -> None:
             "truststore SSL injection failed with %s; continuing with default trust.",
             exc.__class__.__name__,
         )
+
+
+def _shortcut_label(shortcut: PasteShortcut) -> str:
+    if shortcut == "ctrl_shift_v":
+        return "Ctrl+Shift+V"
+    return "Ctrl+V"
 
 
 if __name__ == "__main__":
