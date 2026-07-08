@@ -231,32 +231,50 @@ class RecordingOverlay:
     def show(self, anchor: ScreenPoint | None = None) -> None:
         self._ensure_thread()
         self._commands.put(OverlayCommand("show", anchor))
+        self._logger.info("Overlay show queued (anchor=%s).", anchor)
 
     def hide(self) -> None:
-        if self._thread is None:
+        if self._thread is None or not self._thread.is_alive():
             return
         self._commands.put(OverlayCommand("hide"))
+        self._logger.info("Overlay hide queued.")
 
     def show_transcribing(self) -> None:
-        if self._thread is None:
-            return
+        if self._thread is None or not self._thread.is_alive():
+            # Ensure the overlay thread exists so "Transcribing..." can appear
+            # even if show() never started a window yet.
+            self._ensure_thread()
         self._commands.put(OverlayCommand("transcribing"))
+        self._logger.info("Overlay transcribing queued.")
 
     def stop(self) -> None:
         if self._thread is None:
             return
-        self._commands.put(OverlayCommand("stop"))
+        if self._thread.is_alive():
+            self._commands.put(OverlayCommand("stop"))
+        self._thread = None
 
     def _ensure_thread(self) -> None:
         with self._lock:
             if self._thread is not None and self._thread.is_alive():
                 return
+            # Drop stale commands from a previous dead overlay loop so a
+            # leftover "stop" cannot kill the replacement window immediately.
+            self._drain_commands_unlocked()
             self._thread = threading.Thread(
                 target=self._run,
                 name="winwhisper-recording-overlay",
                 daemon=True,
             )
             self._thread.start()
+            self._logger.info("Overlay worker thread started.")
+
+    def _drain_commands_unlocked(self) -> None:
+        while True:
+            try:
+                self._commands.get_nowait()
+            except queue.Empty:
+                break
 
     def _run(self) -> None:
         if os.name == "nt":

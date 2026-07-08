@@ -3,6 +3,7 @@ from __future__ import annotations
 import time
 from typing import Literal
 
+from .hotkeys import set_listener_suppressed
 from .logger import get_logger
 
 PasteShortcut = Literal["ctrl_v", "ctrl_shift_v"]
@@ -41,6 +42,9 @@ def insert_text(text: str, shortcut: PasteShortcut = "ctrl_v") -> bool:
         logger.warning("Could not copy text to clipboard: %s.", exc.__class__.__name__)
         return False
 
+    # Synthetic key events from Controller are seen by the global hotkey
+    # listener and can leave modifier/trigger state poisoned for the next take.
+    set_listener_suppressed(True)
     try:
         from pynput.keyboard import Controller, Key
 
@@ -62,5 +66,7 @@ def insert_text(text: str, shortcut: PasteShortcut = "ctrl_v") -> bool:
         except Exception:
             pass
         return False
+    finally:
+        set_listener_suppressed(False)
 
     return True

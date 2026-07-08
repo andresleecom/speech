@@ -137,6 +137,12 @@ class AppController:
         self._request_stop(hide_overlay_if_idle=True)
 
     def on_hotkey(self, action: str) -> None:
+        self.logger.info(
+            "Hotkey dispatch action=%s recording=%s processing=%s.",
+            action,
+            self.recorder.is_recording(),
+            self._processing,
+        )
         if action == "toggle":
             self.toggle()
             return
@@ -176,7 +182,11 @@ class AppController:
                     start_failed = True
                 else:
                     self._recording_language_mode = language_mode
-                    self.logger.info("Recording started (language_mode=%s).", language_mode)
+                    self.logger.info(
+                        "Recording started (language_mode=%s; overlay_anchor=%s).",
+                        language_mode,
+                        self._overlay_anchor,
+                    )
                     self.recording_overlay.show(self._overlay_anchor)
                     self.set_status(STATUS_RECORDING)
                     beep = (880, 120)
@@ -383,6 +393,9 @@ class AppController:
                 self._paste_target_process_name = None
                 self._overlay_anchor = None
                 shutdown = self._shutdown
+            # Synthetic paste and missed key-ups can leave the hotkey tracker
+            # thinking a chord is still held, which blocks the next take.
+            self.hotkeys.reset_state()
             self.recording_overlay.hide()
             if not failed and not shutdown:
                 self.set_status(STATUS_IDLE)
