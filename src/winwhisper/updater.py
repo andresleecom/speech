@@ -90,7 +90,7 @@ def parse_latest_release(
         for asset in payload.get("assets", [])
         if isinstance(asset, dict)
     ]
-    installer, checksum = select_windows_assets(assets)
+    installer, checksum = select_windows_assets(assets, version=tag_name)
     if installer is None or checksum is None:
         return None
 
@@ -104,18 +104,17 @@ def parse_latest_release(
 
 def select_windows_assets(
     assets: list[ReleaseAsset],
+    version: str | None = None,
 ) -> tuple[ReleaseAsset | None, ReleaseAsset | None]:
-    installer = next(
-        (
-            asset
-            for asset in assets
-            if asset.name.lower().endswith(".exe")
-            and "setup" in asset.name.lower()
-            and asset.download_url
-            and _is_safe_asset_name(asset.name)
-        ),
-        None,
-    )
+    installer_candidates = [
+        asset
+        for asset in assets
+        if asset.name.lower().endswith(".exe")
+        and "setup" in asset.name.lower()
+        and asset.download_url
+        and _is_safe_asset_name(asset.name)
+    ]
+    installer = _preferred_installer_asset(installer_candidates, version)
     if installer is None:
         return None, None
 
@@ -130,6 +129,33 @@ def select_windows_assets(
         None,
     )
     return installer, checksum
+
+
+def _preferred_installer_asset(
+    assets: list[ReleaseAsset],
+    version: str | None,
+) -> ReleaseAsset | None:
+    if not assets:
+        return None
+
+    if version:
+        expected = f"speech-setup-{normalized_version(version).lower()}.exe"
+        exact = next(
+            (asset for asset in assets if asset.name.lower() == expected),
+            None,
+        )
+        if exact is not None:
+            return exact
+
+    versioned = next(
+        (
+            asset
+            for asset in assets
+            if re.match(r"^speech-setup-\d", asset.name.lower())
+        ),
+        None,
+    )
+    return versioned or assets[0]
 
 
 def fetch_latest_release(

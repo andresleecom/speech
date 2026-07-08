@@ -58,6 +58,33 @@ def test_select_windows_assets_prefers_installer_and_matching_sha():
     )
 
 
+def test_select_windows_assets_prefers_versioned_installer_over_stable_alias():
+    stable_installer = ReleaseAsset(
+        name="Speech-Setup.exe",
+        download_url="https://example.com/Speech-Setup.exe",
+    )
+    stable_checksum = ReleaseAsset(
+        name="Speech-Setup.exe.sha256",
+        download_url="https://example.com/Speech-Setup.exe.sha256",
+    )
+    versioned_installer = ReleaseAsset(
+        name="Speech-Setup-0.2.0.exe",
+        download_url="https://example.com/Speech-Setup-0.2.0.exe",
+    )
+    versioned_checksum = ReleaseAsset(
+        name="Speech-Setup-0.2.0.exe.sha256",
+        download_url="https://example.com/Speech-Setup-0.2.0.exe.sha256",
+    )
+
+    assert select_windows_assets(
+        [stable_installer, stable_checksum, versioned_checksum, versioned_installer],
+        version="v0.2.0",
+    ) == (
+        versioned_installer,
+        versioned_checksum,
+    )
+
+
 def test_parse_latest_release_returns_update_info_for_new_windows_release():
     payload = {
         "tag_name": "v0.2.0",

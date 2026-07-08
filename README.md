@@ -6,14 +6,15 @@ It supports English, Spanish, or automatic language detection.
 
 ## Installation for users
 
-Download the latest Windows installer from GitHub Releases:
+Download the latest Windows installer from this repository's latest release:
 
 ```text
-https://github.com/andresleecom/speech/releases/latest
+https://github.com/andresleecom/speech/releases/latest/download/Speech-Setup.exe
 ```
 
-Run `Speech-Setup-<version>.exe`. The installer is per-user and
-does not require administrator privileges.
+Run `Speech-Setup.exe`. The installer is per-user and does not require
+administrator privileges. Versioned installers are also attached to each release
+as `Speech-Setup-<version>.exe`.
 
 The app checks GitHub Releases for updates once per day by default. When a new
 version is available, use the tray menu item `Check for Updates` to confirm,
@@ -187,10 +188,13 @@ The build outputs:
 - `dist\Speech\Speech.exe`
 - `dist\installer\Speech-Setup-<version>.exe`
 - `dist\installer\Speech-Setup-<version>.exe.sha256`
+- `dist\installer\Speech-Setup.exe`
+- `dist\installer\Speech-Setup.exe.sha256`
 
 To publish a release, update the version in `pyproject.toml`, then push a tag
 such as `v0.1.0`. The GitHub Actions release workflow builds the installer and
-publishes the `.exe` plus `.sha256` to GitHub Releases.
+publishes both the stable installer URL and the versioned `.exe` plus `.sha256`
+files to GitHub Releases.
 
 ## Roadmap
 
