@@ -18,6 +18,8 @@ _MARGIN = 24
 _CURSOR_OFFSET = 18
 _TRANSPARENT_COLOR = "#01030a"
 _WAVEFORM_COUNT = 18
+_STOP_BUTTON_CENTER = ScreenPoint(29, 27)
+_STOP_BUTTON_RADIUS = 16
 
 
 @dataclass(frozen=True)
@@ -47,6 +49,28 @@ def position_near_anchor(
     x = min(max(_MARGIN, x), max(_MARGIN, screen_width - width - _MARGIN))
     y = min(max(_MARGIN, y), max(_MARGIN, screen_height - height - _MARGIN))
     return x, y
+
+
+def dragged_overlay_position(
+    origin: ScreenPoint,
+    press: ScreenPoint,
+    pointer: ScreenPoint,
+    screen_width: int,
+    screen_height: int,
+    width: int = _WIDTH,
+    height: int = _HEIGHT,
+) -> tuple[int, int]:
+    x = origin.x + pointer.x - press.x
+    y = origin.y + pointer.y - press.y
+    x = min(max(_MARGIN, x), max(_MARGIN, screen_width - width - _MARGIN))
+    y = min(max(_MARGIN, y), max(_MARGIN, screen_height - height - _MARGIN))
+    return x, y
+
+
+def is_stop_button_point(x: int, y: int) -> bool:
+    dx = x - _STOP_BUTTON_CENTER.x
+    dy = y - _STOP_BUTTON_CENTER.y
+    return dx * dx + dy * dy <= _STOP_BUTTON_RADIUS * _STOP_BUTTON_RADIUS
 
 
 def waveform_bar_heights(
@@ -118,6 +142,8 @@ class RecordingOverlay:
         root = tk.Tk()
         is_visible = False
         phase = 0
+        drag_origin: ScreenPoint | None = None
+        drag_press: ScreenPoint | None = None
         root.withdraw()
         root.overrideredirect(True)
         root.attributes("-topmost", True)
@@ -138,16 +164,45 @@ class RecordingOverlay:
         canvas.pack()
         waveform_items = self._draw_overlay(canvas)
 
-        def request_stop(event: Any = None) -> None:
+        def request_stop(event: Any = None) -> str:
             root.withdraw()
             threading.Thread(
                 target=self._on_stop,
                 name="winwhisper-overlay-stop",
                 daemon=True,
             ).start()
+            return "break"
 
-        root.bind("<Button-1>", request_stop)
-        canvas.bind("<Button-1>", request_stop)
+        def begin_drag(event: Any) -> str | None:
+            nonlocal drag_origin, drag_press
+            if is_stop_button_point(int(event.x), int(event.y)):
+                return "break"
+            drag_origin = ScreenPoint(root.winfo_x(), root.winfo_y())
+            drag_press = ScreenPoint(int(event.x_root), int(event.y_root))
+            return None
+
+        def drag(event: Any) -> str | None:
+            if drag_origin is None or drag_press is None:
+                return None
+            x, y = dragged_overlay_position(
+                drag_origin,
+                drag_press,
+                ScreenPoint(int(event.x_root), int(event.y_root)),
+                root.winfo_screenwidth(),
+                root.winfo_screenheight(),
+            )
+            root.geometry(f"{_WIDTH}x{_HEIGHT}+{x}+{y}")
+            return None
+
+        def end_drag(event: Any = None) -> None:
+            nonlocal drag_origin, drag_press
+            drag_origin = None
+            drag_press = None
+
+        canvas.tag_bind("stop_button", "<Button-1>", request_stop)
+        canvas.bind("<ButtonPress-1>", begin_drag)
+        canvas.bind("<B1-Motion>", drag)
+        canvas.bind("<ButtonRelease-1>", end_drag)
 
         def pump() -> None:
             nonlocal is_visible
@@ -195,10 +250,36 @@ class RecordingOverlay:
         root.geometry(f"{_WIDTH}x{_HEIGHT}+{x}+{y}")
 
     def _draw_overlay(self, canvas: Any) -> list[int]:
-        self._rounded_rect(canvas, 2, 4, 186, 51, 21, fill="#f8fafc", outline="#d6dbe4")
-        self._rounded_rect(canvas, 7, 9, 181, 47, 17, fill="#ffffff", outline="#e5e7eb")
-        canvas.create_oval(17, 19, 31, 33, fill="#ff375f", outline="#ffb3c1", width=1)
-        canvas.create_oval(21, 23, 27, 29, fill="#c9184a", outline="#c9184a")
+        self._rounded_rect(canvas, 2, 4, 186, 51, 18, fill="#080808", outline="#252525")
+        self._rounded_rect(canvas, 7, 9, 181, 47, 14, fill="#111111", outline="#303030")
+        canvas.create_oval(
+            13,
+            11,
+            45,
+            43,
+            fill="#ff2d55",
+            outline="#ff6b86",
+            width=1,
+            tags=("stop_button",),
+        )
+        canvas.create_oval(
+            19,
+            17,
+            39,
+            37,
+            fill="#d7003a",
+            outline="#d7003a",
+            tags=("stop_button",),
+        )
+        canvas.create_rectangle(
+            25,
+            23,
+            33,
+            31,
+            fill="#ffffff",
+            outline="#ffffff",
+            tags=("stop_button",),
+        )
 
         waveform_items: list[int] = []
         for index, bar_height in enumerate(waveform_bar_heights(0.0, phase=0)):
@@ -207,25 +288,16 @@ class RecordingOverlay:
                     canvas,
                     index,
                     bar_height,
-                    fill="#0a84ff",
+                    fill="#ffffff",
                 )
             )
 
         canvas.create_text(
-            126,
-            18,
+            130,
+            27,
             text="Recording",
-            fill="#111827",
-            font=("Segoe UI", 8, "bold"),
-            anchor="w",
-        )
-        canvas.create_rectangle(172, 29, 180, 37, fill="#111827", outline="#111827")
-        canvas.create_text(
-            126,
-            35,
-            text="Stop",
-            fill="#6b7280",
-            font=("Segoe UI", 8),
+            fill="#ffffff",
+            font=("Segoe UI", 9, "bold"),
             anchor="w",
         )
         return waveform_items
@@ -254,7 +326,7 @@ class RecordingOverlay:
         )
 
     def _waveform_line(self, index: int, height: int) -> tuple[int, int, int, int]:
-        x = 42 + index * 4
+        x = 56 + index * 4
         center_y = 27
         return x, center_y - height // 2, x, center_y + height // 2
 

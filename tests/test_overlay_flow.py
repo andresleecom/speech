@@ -4,7 +4,12 @@ import winwhisper.main as main_module
 from winwhisper.config import Settings
 from winwhisper.focus import ScreenPoint
 from winwhisper.main import AppController
-from winwhisper.overlay import position_near_anchor, waveform_bar_heights
+from winwhisper.overlay import (
+    dragged_overlay_position,
+    is_stop_button_point,
+    position_near_anchor,
+    waveform_bar_heights,
+)
 from winwhisper.transcriber import TranscriptionResult
 
 
@@ -230,3 +235,32 @@ def test_waveform_bar_heights_shift_with_phase():
     second = waveform_bar_heights(0.5, phase=1, count=9)
 
     assert first != second
+
+
+def test_dragged_overlay_position_follows_pointer_inside_screen():
+    assert dragged_overlay_position(
+        origin=ScreenPoint(258, 291),
+        press=ScreenPoint(300, 310),
+        pointer=ScreenPoint(360, 340),
+        screen_width=1_920,
+        screen_height=1_080,
+        width=188,
+        height=54,
+    ) == (318, 321)
+
+
+def test_dragged_overlay_position_stays_inside_screen():
+    assert dragged_overlay_position(
+        origin=ScreenPoint(10, 10),
+        press=ScreenPoint(20, 20),
+        pointer=ScreenPoint(-200, -200),
+        screen_width=1_920,
+        screen_height=1_080,
+        width=188,
+        height=54,
+    ) == (24, 24)
+
+
+def test_stop_button_hit_area_is_limited_to_red_control():
+    assert is_stop_button_point(28, 27) is True
+    assert is_stop_button_point(80, 27) is False

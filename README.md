@@ -99,10 +99,10 @@ The app creates the file on first run if it does not exist.
 When recording starts, WinWhisperDictate shows a small floating `REC` control
 to the right of the text cursor when Windows exposes it, or near the mouse
 cursor as a fallback. The control includes a live voice waveform that moves
-with your microphone level while you speak. Click it to stop recording and
-transcribe. The app remembers the active window from the start of recording and
-tries to focus it again before pasting, so the text goes back where your cursor
-was when dictation began.
+with your microphone level while you speak. Drag the control to move it. Click
+the red recording button to stop recording and transcribe. The app remembers the
+active window from the start of recording and tries to focus it again before
+pasting, so the text goes back where your cursor was when dictation began.
 
 In `auto` paste mode, terminal windows such as Windows Terminal, WezTerm,
 Alacritty, mintty, and legacy console hosts receive `Ctrl+Shift+V`. Other
