@@ -1,0 +1,11 @@
+faster-whisper
+sounddevice
+numpy
+pynput
+pyperclip
+pystray
+pillow
+python-dotenv
+pydantic
+openai
+truststore
