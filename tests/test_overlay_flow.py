@@ -46,8 +46,16 @@ class FakeTranscriber:
 
     def __init__(self, settings: Settings) -> None:
         self.settings = settings
+        self._loaded = False
+
+    def is_model_loaded(self) -> bool:
+        return self._loaded
+
+    def ensure_model_loaded(self) -> None:
+        self._loaded = True
 
     def transcribe(self, audio_path: Path, language_mode: str) -> TranscriptionResult:
+        self._loaded = True
         return TranscriptionResult(
             text=self.text,
             language="es",

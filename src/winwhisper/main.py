@@ -7,6 +7,7 @@ import logging
 import os
 import sys
 import threading
+import time
 from contextlib import redirect_stdout
 from pathlib import Path
 from typing import Any, Literal
@@ -43,6 +44,11 @@ STATUS_ERROR: Status = "Error"
 
 _SINGLE_INSTANCE_MUTEX_NAME = "Local\\SpeechSingleInstanceMutex"
 _mutex_handle: Any | None = None
+# Notify the user if transcription is still running after this many seconds.
+SLOW_TRANSCRIPTION_NOTIFY_SECONDS = 8.0
+# Capture the real Thread class so progress watchers keep working even when
+# tests replace threading.Thread with a synchronous helper.
+_RealThread = threading.Thread
 
 
 class AppController:
@@ -79,6 +85,8 @@ class AppController:
             self.logger.info("Hotkey listener started.")
         except Exception:
             self._handle_error("Hotkey listener failed to start.")
+
+        self._start_model_warmup()
 
         try:
             self.update_coordinator.maybe_check_for_updates()
@@ -267,9 +275,12 @@ class AppController:
         language_mode = self._recording_language_mode or self.settings.language_mode
         self._processing = True
         self.logger.info(
-            "Recording stopped; transcribing (language_mode=%s).",
+            "Stop requested; switching to transcribing UI (language_mode=%s; model_loaded=%s).",
             language_mode,
+            self.transcriber.is_model_loaded(),
         )
+        # Overlay update intentionally stays inside the lock so the UI state
+        # cannot race a second stop/hotkey before the worker is armed.
         self.recording_overlay.show_transcribing()
         worker = threading.Thread(
             target=self._stop_and_process,
@@ -280,17 +291,53 @@ class AppController:
         worker.start()
         return (440, 120)
 
+    def _start_model_warmup(self) -> None:
+        thread = threading.Thread(
+            target=self._warm_model_worker,
+            name="winwhisper-model-warmup",
+            daemon=True,
+        )
+        thread.start()
+
+    def _warm_model_worker(self) -> None:
+        try:
+            self.logger.info(
+                "Preloading speech model in background (model_size=%s; device=%s).",
+                self.settings.model_size,
+                self.settings.device,
+            )
+            self.transcriber.ensure_model_loaded()
+            self.logger.info("Speech model preload finished.")
+        except Exception:
+            self.logger.exception(
+                "Speech model preload failed; first dictation will retry the load."
+            )
+
     def _stop_and_process(self, language_mode: LanguageMode) -> None:
         audio_path: Path | None = None
         failed = False
+        progress_cancel = threading.Event()
 
         try:
+            self.logger.info("Stopping microphone capture...")
+            stop_started = time.perf_counter()
             audio_path = self.recorder.stop_recording()
+            stop_elapsed = time.perf_counter() - stop_started
             if audio_path is None:
                 self.logger.info("Recording already stopped; skipping dictation.")
                 return
 
+            audio_size = audio_path.stat().st_size if audio_path.exists() else 0
+            self.logger.info(
+                "Microphone stopped in %.2fs; audio_file=%s; bytes=%s.",
+                stop_elapsed,
+                audio_path.name,
+                audio_size,
+            )
+
             self.set_status(STATUS_TRANSCRIBING)
+            self._start_slow_transcription_watcher(progress_cancel)
+
             result = self.transcriber.transcribe(audio_path, language_mode)
             self._delete_audio(audio_path)
             audio_path = None
@@ -300,6 +347,7 @@ class AppController:
                 self.notify(APP_NAME, "No speech detected")
                 return
 
+            self.logger.info("Cleaning transcription text (mode=%s)...", self.settings.cleanup_mode)
             cleaned = clean_text(result.text, self.settings.cleanup_mode)
             if not cleaned.strip():
                 self.logger.info("No speech detected; cleaned transcription text was empty.")
@@ -307,6 +355,7 @@ class AppController:
                 return
 
             self.set_status(STATUS_PASTING)
+            self.logger.info("Restoring focus and pasting transcription...")
             self._restore_paste_target()
             shortcut = self._paste_shortcut()
             if insert_text(cleaned, shortcut=shortcut):
@@ -324,6 +373,7 @@ class AppController:
             failed = True
             self._handle_error("Dictation failed.")
         finally:
+            progress_cancel.set()
             if audio_path is not None:
                 self._delete_audio(audio_path)
             with self._lock:
@@ -336,6 +386,35 @@ class AppController:
             self.recording_overlay.hide()
             if not failed and not shutdown:
                 self.set_status(STATUS_IDLE)
+
+    def _start_slow_transcription_watcher(self, cancel: threading.Event) -> None:
+        def watch() -> None:
+            if cancel.wait(SLOW_TRANSCRIPTION_NOTIFY_SECONDS):
+                return
+            self._notify_slow_transcription()
+
+        _RealThread(
+            target=watch,
+            name="winwhisper-slow-transcription-watch",
+            daemon=True,
+        ).start()
+
+    def _notify_slow_transcription(self) -> None:
+        with self._lock:
+            still_processing = self._processing
+            model_loaded = self.transcriber.is_model_loaded()
+        if not still_processing:
+            return
+        self.logger.warning(
+            "Transcription still running after %.0fs (model_loaded=%s). "
+            "Antivirus real-time scanning can slow model load or CPU inference.",
+            SLOW_TRANSCRIPTION_NOTIFY_SECONDS,
+            model_loaded,
+        )
+        self.notify(
+            APP_NAME,
+            "Still transcribing… first run or antivirus scanning can take longer.",
+        )
 
     def _restore_paste_target(self) -> None:
         with self._lock:
@@ -524,15 +603,29 @@ def _finish_cli(exit_code: int) -> int:
 
 
 def _drop_invalid_sslkeylogfile(logger: logging.Logger) -> None:
+    """Strip TLS key-log paths that break OpenSSL under antivirus interception.
+
+    Products such as Norton sometimes set SSLKEYLOGFILE to a Win32 device
+    namespace path. OpenSSL then crashes with "no OPENSSL_Applink". Speech never
+    needs this variable, so unsafe or non-writable values are removed at boot.
+    """
     value = os.environ.get("SSLKEYLOGFILE")
     if not value:
+        return
+
+    if value.startswith("\\\\.\\"):
+        os.environ.pop("SSLKEYLOGFILE", None)
+        logger.warning(
+            "Removed antivirus-style SSLKEYLOGFILE device path before TLS startup (%s).",
+            value,
+        )
         return
 
     if _is_writable_regular_file(value):
         return
 
     os.environ.pop("SSLKEYLOGFILE", None)
-    logger.warning("Removed invalid SSLKEYLOGFILE value before TLS startup.")
+    logger.warning("Removed invalid SSLKEYLOGFILE value before TLS startup (%s).", value)
 
 
 def _is_writable_regular_file(path_value: str) -> bool:

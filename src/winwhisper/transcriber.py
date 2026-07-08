@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import threading
 import time
 from dataclasses import dataclass
 from pathlib import Path
@@ -39,9 +40,28 @@ class Transcriber:
         self._device = str(settings.device)
         self._compute_type = str(settings.compute_type)
         self._logger = get_logger(__name__)
+        self._load_lock = threading.Lock()
+    def is_model_loaded(self) -> bool:
+        return self._model is not None
+
+    def ensure_model_loaded(self) -> None:
+        """Load the Whisper model if needed (safe to call from a warmup thread)."""
+        self._load_model()
 
     def transcribe(self, audio_path: Path, language_mode: str) -> TranscriptionResult:
+        self._logger.info(
+            "Transcription starting (model_size=%s; device=%s; language_mode=%s; audio=%s).",
+            self._model_size,
+            self._device,
+            language_mode,
+            audio_path.name,
+        )
+        load_started = time.perf_counter()
         model = self._load_model()
+        load_elapsed = time.perf_counter() - load_started
+        if load_elapsed >= 0.05:
+            self._logger.info("Model ready in %.2fs.", load_elapsed)
+
         language = resolve_language(language_mode)
 
         started_at = time.perf_counter()
@@ -81,32 +101,46 @@ class Transcriber:
         )
 
     def _load_model(self) -> Any:
-        if self._model is not None:
-            return self._model
+        with self._load_lock:
+            if self._model is not None:
+                return self._model
 
-        from faster_whisper import WhisperModel
+            from faster_whisper import WhisperModel
 
-        try:
-            self._model = WhisperModel(
+            self._logger.info(
+                "Loading Whisper model (model_size=%s; device=%s; compute_type=%s).",
                 self._model_size,
-                device=self._device,
-                compute_type=self._compute_type,
+                self._device,
+                self._compute_type,
             )
-            return self._model
-        except Exception as exc:
-            if self._device != "cuda":
-                raise
+            started_at = time.perf_counter()
+            try:
+                self._model = WhisperModel(
+                    self._model_size,
+                    device=self._device,
+                    compute_type=self._compute_type,
+                )
+            except Exception as exc:
+                if self._device != "cuda":
+                    raise
 
-            self._logger.warning(
-                "CUDA model load failed with %s; falling back to CPU int8.",
-                exc.__class__.__name__,
-            )
-            self._device = "cpu"
-            self._compute_type = "int8"
-            self._model = WhisperModel(
-                self._model_size,
-                device=self._device,
-                compute_type=self._compute_type,
+                self._logger.warning(
+                    "CUDA model load failed with %s; falling back to CPU int8.",
+                    exc.__class__.__name__,
+                )
+                self._device = "cpu"
+                self._compute_type = "int8"
+                self._model = WhisperModel(
+                    self._model_size,
+                    device=self._device,
+                    compute_type=self._compute_type,
+                )
+
+            self._logger.info(
+                "Whisper model loaded in %.2fs (device=%s; compute_type=%s).",
+                time.perf_counter() - started_at,
+                self._device,
+                self._compute_type,
             )
             return self._model
 

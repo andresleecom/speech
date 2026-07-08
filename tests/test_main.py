@@ -1,3 +1,4 @@
+import os
 import sys
 
 import pytest
@@ -49,3 +50,14 @@ def test_writable_file_is_accepted(tmp_path):
     target.write_text("", encoding="utf-8")
 
     assert _is_writable_regular_file(str(target)) is True
+
+
+def test_sslkeylogfile_device_path_is_stripped(monkeypatch, caplog):
+    import logging
+
+    monkeypatch.setenv("SSLKEYLOGFILE", r"\\.\nllMonFltProxy\TEST")
+    logger = logging.getLogger("test-sslkeylog")
+    with caplog.at_level(logging.WARNING):
+        main_module._drop_invalid_sslkeylogfile(logger)
+
+    assert "SSLKEYLOGFILE" not in os.environ
