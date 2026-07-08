@@ -97,10 +97,11 @@ The app creates the file on first run if it does not exist.
 ## Floating recording button
 
 When recording starts, WinWhisperDictate shows a small floating `REC` control
-near the text cursor when Windows exposes it, or near the mouse cursor as a
-fallback. Click it to stop recording and transcribe. The app remembers the
-active window from the start of recording and tries to focus it again before
-pasting, so the text goes back where your cursor was when dictation began.
+to the right of the text cursor when Windows exposes it, or near the mouse
+cursor as a fallback. Click it to stop recording and transcribe. The app
+remembers the active window from the start of recording and tries to focus it
+again before pasting, so the text goes back where your cursor was when
+dictation began.
 
 In `auto` paste mode, terminal windows such as Windows Terminal, WezTerm,
 Alacritty, mintty, and legacy console hosts receive `Ctrl+Shift+V`. Other

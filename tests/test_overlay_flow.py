@@ -188,7 +188,17 @@ def test_position_near_anchor_keeps_overlay_inside_screen():
         screen_height=1_080,
         width=168,
         height=58,
-    ) == (1_714, 924)
+    ) == (1_714, 971)
+
+
+def test_position_near_anchor_prefers_right_side_of_cursor():
+    assert position_near_anchor(
+        ScreenPoint(240, 320),
+        screen_width=1_920,
+        screen_height=1_080,
+        width=168,
+        height=58,
+    ) == (258, 291)
 
 
 def test_position_near_anchor_uses_bottom_right_without_anchor():

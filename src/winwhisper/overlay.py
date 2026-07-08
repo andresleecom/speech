@@ -38,11 +38,9 @@ def position_near_anchor(
         )
 
     x = anchor.x + _CURSOR_OFFSET
-    y = anchor.y + _CURSOR_OFFSET
+    y = anchor.y - height // 2
     if x + width > screen_width - _MARGIN:
         x = anchor.x - width - _CURSOR_OFFSET
-    if y + height > screen_height - _MARGIN:
-        y = anchor.y - height - _CURSOR_OFFSET
 
     x = min(max(_MARGIN, x), max(_MARGIN, screen_width - width - _MARGIN))
     y = min(max(_MARGIN, y), max(_MARGIN, screen_height - height - _MARGIN))
