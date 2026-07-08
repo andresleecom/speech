@@ -8,7 +8,7 @@ from typing import Literal
 from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
 DEFAULT_HOTKEYS = {
-    "toggle_recording": "<ctrl>+<alt>+space",
+    "toggle_recording": "<ctrl>+<alt>+<space>",
     "force_english": "<ctrl>+<alt>+e",
     "force_spanish": "<ctrl>+<alt>+s",
 }
