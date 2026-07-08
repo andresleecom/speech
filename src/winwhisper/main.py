@@ -133,7 +133,7 @@ class AppController:
                 language_mode = self._recording_language_mode or self.settings.language_mode
                 self._processing = True
                 self.logger.info("Recording stopped; transcribing (language_mode=%s).", language_mode)
-                self.recording_overlay.hide()
+                self.recording_overlay.show_transcribing()
                 self._beep(440, 120)
                 worker = threading.Thread(
                     target=self._stop_and_process,
@@ -256,6 +256,7 @@ class AppController:
                 self._overlay_anchor = None
                 self._restore_paste_target_before_paste = False
                 shutdown = self._shutdown
+            self.recording_overlay.hide()
             if not failed and not shutdown:
                 self.set_status(STATUS_IDLE)
 

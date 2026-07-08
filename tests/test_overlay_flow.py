@@ -8,7 +8,7 @@ from winwhisper.overlay import (
     dragged_overlay_position,
     is_stop_button_point,
     position_near_anchor,
-    waveform_bar_heights,
+    sonar_ring_visuals,
 )
 from winwhisper.transcriber import TranscriptionResult
 
@@ -92,6 +92,9 @@ class FakeOverlay:
     def hide(self) -> None:
         self.events.append("hide")
 
+    def show_transcribing(self) -> None:
+        self.events.append("transcribing")
+
     def stop(self) -> None:
         self.events.append("stop")
 
@@ -150,7 +153,11 @@ def test_overlay_stop_restores_target_window_before_paste(monkeypatch, tmp_path)
 
     assert restored == [777]
     assert inserted == [("Hola mundo", "ctrl_v")]
-    assert FakeOverlay.instances[0].events == ["show:ScreenPoint(x=240, y=320)", "hide"]
+    assert FakeOverlay.instances[0].events == [
+        "show:ScreenPoint(x=240, y=320)",
+        "transcribing",
+        "hide",
+    ]
 
 
 def test_hotkey_stop_does_not_force_restore_before_paste(monkeypatch, tmp_path):
@@ -163,7 +170,11 @@ def test_hotkey_stop_does_not_force_restore_before_paste(monkeypatch, tmp_path):
 
     assert restored == []
     assert inserted == [("Hola mundo", "ctrl_v")]
-    assert FakeOverlay.instances[0].events == ["show:ScreenPoint(x=240, y=320)", "hide"]
+    assert FakeOverlay.instances[0].events == [
+        "show:ScreenPoint(x=240, y=320)",
+        "transcribing",
+        "hide",
+    ]
 
 
 def test_late_overlay_stop_does_not_start_new_recording(monkeypatch, tmp_path):
@@ -220,19 +231,20 @@ def test_position_near_anchor_uses_bottom_right_without_anchor():
     ) == (1_728, 998)
 
 
-def test_waveform_bar_heights_grow_with_voice_level():
-    quiet = waveform_bar_heights(0.0, phase=0, count=9)
-    loud = waveform_bar_heights(0.9, phase=0, count=9)
+def test_sonar_ring_visuals_grow_with_voice_level():
+    quiet = sonar_ring_visuals(0.0, phase=0, count=3)
+    loud = sonar_ring_visuals(0.9, phase=0, count=3)
 
-    assert len(quiet) == 9
-    assert min(quiet) >= 2
-    assert max(loud) <= 13
-    assert max(loud) > max(quiet)
+    assert len(quiet) == 3
+    assert len(loud) == 3
+    assert max(scale for scale, opacity in loud) > max(
+        scale for scale, opacity in quiet
+    )
 
 
-def test_waveform_bar_heights_shift_with_phase():
-    first = waveform_bar_heights(0.5, phase=0, count=9)
-    second = waveform_bar_heights(0.5, phase=1, count=9)
+def test_sonar_ring_visuals_shift_with_phase():
+    first = sonar_ring_visuals(0.5, phase=0, count=3)
+    second = sonar_ring_visuals(0.5, phase=1, count=3)
 
     assert first != second
 
@@ -262,5 +274,5 @@ def test_dragged_overlay_position_stays_inside_screen():
 
 
 def test_stop_button_hit_area_is_limited_to_red_control():
-    assert is_stop_button_point(28, 27) is True
-    assert is_stop_button_point(80, 27) is False
+    assert is_stop_button_point(76, 66) is True
+    assert is_stop_button_point(20, 20) is False

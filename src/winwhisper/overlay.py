@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import math
 import queue
 import threading
 from collections.abc import Callable
@@ -10,16 +9,20 @@ from typing import Any, Literal
 from .focus import ScreenPoint
 from .logger import get_logger
 
-CommandName = Literal["show", "hide", "stop"]
+CommandName = Literal["show", "hide", "stop", "transcribing"]
+OverlayState = Literal["hidden", "recording", "transcribing"]
 
-_WIDTH = 188
-_HEIGHT = 54
+_WIDTH = 152
+_HEIGHT = 132
 _MARGIN = 24
 _CURSOR_OFFSET = 18
 _TRANSPARENT_COLOR = "#01030a"
-_WAVEFORM_COUNT = 18
-_STOP_BUTTON_CENTER = ScreenPoint(29, 27)
-_STOP_BUTTON_RADIUS = 16
+_CENTER = ScreenPoint(76, 66)
+_SURFACE_DIAMETER = 72
+_BUTTON_DIAMETER = 46
+_RING_DIAMETER = 66
+_STOP_BUTTON_CENTER = _CENTER
+_STOP_BUTTON_RADIUS = _BUTTON_DIAMETER // 2
 
 
 @dataclass(frozen=True)
@@ -73,22 +76,29 @@ def is_stop_button_point(x: int, y: int) -> bool:
     return dx * dx + dy * dy <= _STOP_BUTTON_RADIUS * _STOP_BUTTON_RADIUS
 
 
-def waveform_bar_heights(
+def sonar_ring_visuals(
     level: float,
     phase: int,
-    count: int = _WAVEFORM_COUNT,
-    min_height: int = 2,
-    max_height: int = 13,
-) -> list[int]:
+    count: int = 3,
+) -> list[tuple[float, float]]:
     clamped_level = min(1.0, max(0.0, level))
-    activity = 0.16 + clamped_level * 0.84
-    heights: list[int] = []
+    visuals: list[tuple[float, float]] = []
     for index in range(count):
-        wave = (math.sin((phase + index) * 0.68) + 1.0) / 2.0
-        contour = 0.32 + wave * 0.68
-        height = round(min_height + (max_height - min_height) * activity * contour)
-        heights.append(max(min_height, min(max_height, height)))
-    return heights
+        progress = ((phase / 32.0) + (index / count)) % 1.0
+        scale = 1.0 + progress * (1.0 + clamped_level * 0.28)
+        opacity = (1.0 - progress) ** 1.8 * (0.24 + clamped_level * 0.22)
+        visuals.append((scale, opacity))
+    return visuals
+
+
+def _ring_color(opacity: float) -> str:
+    if opacity >= 0.32:
+        return "#db4241"
+    if opacity >= 0.22:
+        return "#a93636"
+    if opacity >= 0.12:
+        return "#6f2f33"
+    return "#3c2024"
 
 
 class RecordingOverlay:
@@ -112,6 +122,11 @@ class RecordingOverlay:
         if self._thread is None:
             return
         self._commands.put(OverlayCommand("hide"))
+
+    def show_transcribing(self) -> None:
+        if self._thread is None:
+            return
+        self._commands.put(OverlayCommand("transcribing"))
 
     def stop(self) -> None:
         if self._thread is None:
@@ -140,14 +155,14 @@ class RecordingOverlay:
             return
 
         root = tk.Tk()
-        is_visible = False
+        state: OverlayState = "hidden"
         phase = 0
         drag_origin: ScreenPoint | None = None
         drag_press: ScreenPoint | None = None
         root.withdraw()
         root.overrideredirect(True)
         root.attributes("-topmost", True)
-        root.attributes("-alpha", 0.96)
+        root.attributes("-alpha", 0.97)
         root.resizable(False, False)
         root.configure(bg=_TRANSPARENT_COLOR)
         self._set_toolwindow(root)
@@ -162,10 +177,11 @@ class RecordingOverlay:
             bd=0,
         )
         canvas.pack()
-        waveform_items = self._draw_overlay(canvas)
+        items = self._draw_overlay(canvas)
+        self._set_overlay_state(canvas, items, "hidden")
 
         def request_stop(event: Any = None) -> str:
-            root.withdraw()
+            self._set_overlay_state(canvas, items, "transcribing")
             threading.Thread(
                 target=self._on_stop,
                 name="winwhisper-overlay-stop",
@@ -205,7 +221,7 @@ class RecordingOverlay:
         canvas.bind("<ButtonRelease-1>", end_drag)
 
         def pump() -> None:
-            nonlocal is_visible
+            nonlocal state
             while True:
                 try:
                     command = self._commands.get_nowait()
@@ -214,13 +230,21 @@ class RecordingOverlay:
 
                 if command.name == "show":
                     self._position(root, command.anchor)
-                    is_visible = True
+                    state = "recording"
+                    self._set_overlay_state(canvas, items, state)
                     root.deiconify()
                     root.lift()
                     root.attributes("-topmost", True)
                 elif command.name == "hide":
-                    is_visible = False
+                    state = "hidden"
+                    self._set_overlay_state(canvas, items, state)
                     root.withdraw()
+                elif command.name == "transcribing":
+                    state = "transcribing"
+                    self._set_overlay_state(canvas, items, state)
+                    root.deiconify()
+                    root.lift()
+                    root.attributes("-topmost", True)
                 elif command.name == "stop":
                     root.destroy()
                     return
@@ -229,14 +253,12 @@ class RecordingOverlay:
 
         def animate() -> None:
             nonlocal phase
-            if is_visible:
+            if state != "hidden":
                 phase += 1
-                self._update_waveform(
-                    canvas,
-                    waveform_items,
-                    self._current_level(),
-                    phase,
-                )
+                if state == "recording":
+                    self._update_rings(canvas, items["rings"], self._current_level(), phase)
+                elif state == "transcribing":
+                    self._update_spinner(canvas, items["spinner"], phase)
             root.after(75, animate)
 
         root.after(50, pump)
@@ -249,86 +271,130 @@ class RecordingOverlay:
         x, y = position_near_anchor(anchor, screen_width, screen_height)
         root.geometry(f"{_WIDTH}x{_HEIGHT}+{x}+{y}")
 
-    def _draw_overlay(self, canvas: Any) -> list[int]:
-        self._rounded_rect(canvas, 2, 4, 186, 51, 18, fill="#080808", outline="#252525")
-        self._rounded_rect(canvas, 7, 9, 181, 47, 14, fill="#111111", outline="#303030")
-        canvas.create_oval(
-            13,
-            11,
-            45,
-            43,
-            fill="#ff2d55",
-            outline="#ff6b86",
+    def _draw_overlay(self, canvas: Any) -> dict[str, Any]:
+        rings = [
+            canvas.create_oval(
+                *self._circle_bounds(_CENTER, _RING_DIAMETER),
+                outline="#6f2528",
+                width=2,
+                tags=("recording",),
+            )
+            for _ in range(3)
+        ]
+
+        surface_shadow = canvas.create_oval(
+            *self._circle_bounds(_CENTER, _SURFACE_DIAMETER + 10),
+            fill="#050506",
+            outline="#050506",
+            tags=("recording", "transcribing"),
+        )
+        surface = canvas.create_oval(
+            *self._circle_bounds(_CENTER, _SURFACE_DIAMETER),
+            fill="#1e1e22",
+            outline="#3d3d43",
             width=1,
-            tags=("stop_button",),
+            tags=("recording", "transcribing"),
         )
-        canvas.create_oval(
-            19,
-            17,
-            39,
-            37,
-            fill="#d7003a",
-            outline="#d7003a",
-            tags=("stop_button",),
+        highlight = canvas.create_arc(
+            *self._circle_bounds(ScreenPoint(_CENTER.x, _CENTER.y - 1), _SURFACE_DIAMETER - 8),
+            start=50,
+            extent=80,
+            style="arc",
+            outline="#55555d",
+            width=1,
+            tags=("recording", "transcribing"),
         )
-        canvas.create_rectangle(
-            25,
-            23,
-            33,
-            31,
+
+        button = canvas.create_oval(
+            *self._circle_bounds(_CENTER, _BUTTON_DIAMETER),
+            fill="#db4241",
+            outline="#e24c4a",
+            width=1,
+            tags=("recording", "stop_button"),
+        )
+        stop_glyph = self._rounded_rect(
+            canvas,
+            _CENTER.x - 8,
+            _CENTER.y - 8,
+            _CENTER.x + 8,
+            _CENTER.y + 8,
+            4,
             fill="#ffffff",
             outline="#ffffff",
-            tags=("stop_button",),
+            tags=("recording", "stop_button"),
         )
 
-        waveform_items: list[int] = []
-        for index, bar_height in enumerate(waveform_bar_heights(0.0, phase=0)):
-            waveform_items.append(
-                self._draw_waveform_bar(
-                    canvas,
-                    index,
-                    bar_height,
-                    fill="#ffffff",
-                )
-            )
-
-        canvas.create_text(
-            130,
-            27,
-            text="Recording",
+        spinner_track = canvas.create_oval(
+            *self._circle_bounds(_CENTER, 30),
+            outline="#4b4b52",
+            width=3,
+            tags=("transcribing",),
+        )
+        spinner = canvas.create_arc(
+            *self._circle_bounds(_CENTER, 30),
+            start=0,
+            extent=285,
+            style="arc",
+            outline="#e24c4a",
+            width=3,
+            tags=("transcribing",),
+        )
+        label = canvas.create_text(
+            _CENTER.x,
+            114,
+            text="Transcribing...",
             fill="#ffffff",
-            font=("Segoe UI", 9, "bold"),
-            anchor="w",
+            font=("Segoe UI", 11, "normal"),
+            tags=("transcribing",),
         )
-        return waveform_items
 
-    def _update_waveform(
+        return {
+            "rings": rings,
+            "recording": [*rings, surface_shadow, surface, highlight, button, stop_glyph],
+            "transcribing": [surface_shadow, surface, highlight, spinner_track, spinner, label],
+            "spinner": spinner,
+        }
+
+    def _set_overlay_state(
         self,
         canvas: Any,
-        waveform_items: list[int],
+        items: dict[str, Any],
+        state: OverlayState,
+    ) -> None:
+        canvas.itemconfigure("recording", state="hidden")
+        canvas.itemconfigure("transcribing", state="hidden")
+        if state == "recording":
+            canvas.itemconfigure("recording", state="normal")
+        elif state == "transcribing":
+            canvas.itemconfigure("transcribing", state="normal")
+
+    def _update_rings(
+        self,
+        canvas: Any,
+        ring_items: list[int],
         level: float,
         phase: int,
     ) -> None:
-        for index, bar_height in enumerate(
-            waveform_bar_heights(level, phase, count=len(waveform_items))
+        for item, (scale, opacity) in zip(
+            ring_items,
+            sonar_ring_visuals(level, phase, count=len(ring_items)),
+            strict=False,
         ):
-            canvas.coords(
-                waveform_items[index],
-                *self._waveform_line(index, bar_height),
-            )
+            diameter = _RING_DIAMETER * scale
+            canvas.coords(item, *self._circle_bounds(_CENTER, diameter))
+            canvas.itemconfigure(item, outline=_ring_color(opacity), width=max(1, round(1 + level * 2)))
 
-    def _draw_waveform_bar(self, canvas: Any, index: int, height: int, **kwargs: Any) -> int:
-        return canvas.create_line(
-            *self._waveform_line(index, height),
-            width=2,
-            capstyle="round",
-            **kwargs,
+    def _update_spinner(self, canvas: Any, spinner_item: int, phase: int) -> None:
+        canvas.itemconfigure(spinner_item, start=(phase * 32) % 360)
+
+    def _circle_bounds(self, center: ScreenPoint, diameter: float) -> tuple[float, float, float, float]:
+        radius = diameter / 2
+        return (
+            center.x - radius,
+            center.y - radius,
+            center.x + radius,
+            center.y + radius,
         )
-
-    def _waveform_line(self, index: int, height: int) -> tuple[int, int, int, int]:
-        x = 56 + index * 4
-        center_y = 27
-        return x, center_y - height // 2, x, center_y + height // 2
 
     def _rounded_rect(
         self,
