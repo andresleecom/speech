@@ -6,6 +6,5 @@ __pycache__/
 build/
 dist/
 *.spec
-.map/out/
 .claude/
 *.egg-info/
