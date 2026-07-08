@@ -43,7 +43,10 @@ class AppController:
         self.recorder = Recorder()
         self.transcriber = Transcriber(settings)
         self.tray = TrayApp(self)
-        self.recording_overlay = RecordingOverlay(self.stop_from_overlay)
+        self.recording_overlay = RecordingOverlay(
+            self.stop_from_overlay,
+            self.recorder.current_level,
+        )
         self.hotkeys = HotkeyManager(settings.hotkeys, self.on_hotkey)
         self._lock = threading.RLock()
         self._status: Status = STATUS_IDLE

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import math
 import queue
 import threading
 from collections.abc import Callable
@@ -11,11 +12,12 @@ from .logger import get_logger
 
 CommandName = Literal["show", "hide", "stop"]
 
-_WIDTH = 168
-_HEIGHT = 58
+_WIDTH = 196
+_HEIGHT = 60
 _MARGIN = 24
 _CURSOR_OFFSET = 18
 _TRANSPARENT_COLOR = "#01030a"
+_WAVEFORM_COUNT = 13
 
 
 @dataclass(frozen=True)
@@ -47,9 +49,32 @@ def position_near_anchor(
     return x, y
 
 
+def waveform_bar_heights(
+    level: float,
+    phase: int,
+    count: int = _WAVEFORM_COUNT,
+    min_height: int = 3,
+    max_height: int = 24,
+) -> list[int]:
+    clamped_level = min(1.0, max(0.0, level))
+    activity = 0.12 + clamped_level * 0.88
+    heights: list[int] = []
+    for index in range(count):
+        wave = (math.sin((phase + index) * 0.85) + 1.0) / 2.0
+        contour = 0.38 + wave * 0.62
+        height = round(min_height + (max_height - min_height) * activity * contour)
+        heights.append(max(min_height, min(max_height, height)))
+    return heights
+
+
 class RecordingOverlay:
-    def __init__(self, on_stop: Callable[[], None]) -> None:
+    def __init__(
+        self,
+        on_stop: Callable[[], None],
+        level_provider: Callable[[], float] | None = None,
+    ) -> None:
         self._on_stop = on_stop
+        self._level_provider = level_provider or (lambda: 0.0)
         self._commands: queue.Queue[OverlayCommand] = queue.Queue()
         self._thread: threading.Thread | None = None
         self._lock = threading.Lock()
@@ -91,6 +116,8 @@ class RecordingOverlay:
             return
 
         root = tk.Tk()
+        is_visible = False
+        phase = 0
         root.withdraw()
         root.overrideredirect(True)
         root.attributes("-topmost", True)
@@ -109,7 +136,7 @@ class RecordingOverlay:
             bd=0,
         )
         canvas.pack()
-        self._draw_overlay(canvas)
+        waveform_items = self._draw_overlay(canvas)
 
         def request_stop(event: Any = None) -> None:
             root.withdraw()
@@ -123,6 +150,7 @@ class RecordingOverlay:
         canvas.bind("<Button-1>", request_stop)
 
         def pump() -> None:
+            nonlocal is_visible
             while True:
                 try:
                     command = self._commands.get_nowait()
@@ -131,10 +159,12 @@ class RecordingOverlay:
 
                 if command.name == "show":
                     self._position(root, command.anchor)
+                    is_visible = True
                     root.deiconify()
                     root.lift()
                     root.attributes("-topmost", True)
                 elif command.name == "hide":
+                    is_visible = False
                     root.withdraw()
                 elif command.name == "stop":
                     root.destroy()
@@ -142,7 +172,20 @@ class RecordingOverlay:
 
             root.after(50, pump)
 
+        def animate() -> None:
+            nonlocal phase
+            if is_visible:
+                phase += 1
+                self._update_waveform(
+                    canvas,
+                    waveform_items,
+                    self._current_level(),
+                    phase,
+                )
+            root.after(75, animate)
+
         root.after(50, pump)
+        root.after(75, animate)
         root.mainloop()
 
     def _position(self, root: Any, anchor: ScreenPoint | None) -> None:
@@ -151,37 +194,66 @@ class RecordingOverlay:
         x, y = position_near_anchor(anchor, screen_width, screen_height)
         root.geometry(f"{_WIDTH}x{_HEIGHT}+{x}+{y}")
 
-    def _draw_overlay(self, canvas: Any) -> None:
-        self._rounded_rect(canvas, 3, 6, 165, 55, 22, fill="#0b1020", outline="#28324a")
-        self._rounded_rect(canvas, 7, 10, 161, 51, 18, fill="#111827", outline="#334155")
-        canvas.create_oval(17, 18, 39, 40, fill="#ef4444", outline="#fecaca", width=2)
-        canvas.create_oval(22, 23, 34, 35, fill="#b91c1c", outline="#b91c1c")
+    def _draw_overlay(self, canvas: Any) -> list[int]:
+        self._rounded_rect(canvas, 2, 5, 194, 57, 23, fill="#07111f", outline="#1d2942")
+        self._rounded_rect(canvas, 7, 10, 189, 52, 18, fill="#101827", outline="#26354f")
+        canvas.create_oval(17, 20, 35, 38, fill="#fb7185", outline="#fecdd3", width=2)
+        canvas.create_oval(22, 25, 30, 33, fill="#be123c", outline="#be123c")
 
-        bar_x = 52
-        heights = [10, 18, 13, 22, 15]
-        for index, bar_height in enumerate(heights):
-            x = bar_x + index * 7
-            y1 = 29 - bar_height // 2
-            y2 = 29 + bar_height // 2
-            self._rounded_rect(canvas, x, y1, x + 4, y2, 2, fill="#38bdf8", outline="#38bdf8")
+        waveform_items: list[int] = []
+        for index, bar_height in enumerate(waveform_bar_heights(0.0, phase=0)):
+            waveform_items.append(
+                self._draw_waveform_bar(
+                    canvas,
+                    index,
+                    bar_height,
+                    fill="#22d3ee",
+                    outline="#22d3ee",
+                )
+            )
 
         canvas.create_text(
-            103,
-            23,
-            text="REC",
+            124,
+            21,
+            text="Recording",
             fill="#f8fafc",
-            font=("Segoe UI", 10, "bold"),
+            font=("Segoe UI", 8, "bold"),
             anchor="w",
         )
-        canvas.create_rectangle(132, 24, 143, 35, fill="#f8fafc", outline="#f8fafc")
+        canvas.create_rectangle(180, 31, 189, 40, fill="#f8fafc", outline="#f8fafc")
         canvas.create_text(
-            103,
+            124,
             38,
             text="Stop",
             fill="#94a3b8",
             font=("Segoe UI", 8),
             anchor="w",
         )
+        return waveform_items
+
+    def _update_waveform(
+        self,
+        canvas: Any,
+        waveform_items: list[int],
+        level: float,
+        phase: int,
+    ) -> None:
+        for index, bar_height in enumerate(
+            waveform_bar_heights(level, phase, count=len(waveform_items))
+        ):
+            canvas.coords(
+                waveform_items[index],
+                *self._rounded_rect_points(*self._waveform_rect(index, bar_height), 2),
+            )
+
+    def _draw_waveform_bar(self, canvas: Any, index: int, height: int, **kwargs: Any) -> int:
+        return self._rounded_rect(canvas, *self._waveform_rect(index, height), 2, **kwargs)
+
+    def _waveform_rect(self, index: int, height: int) -> tuple[int, int, int, int]:
+        x1 = 45 + index * 5
+        x2 = x1 + 3
+        center_y = 31
+        return x1, center_y - height // 2, x2, center_y + height // 2
 
     def _rounded_rect(
         self,
@@ -192,8 +264,23 @@ class RecordingOverlay:
         y2: int,
         radius: int,
         **kwargs: Any,
-    ) -> None:
-        points = [
+    ) -> int:
+        return canvas.create_polygon(
+            self._rounded_rect_points(x1, y1, x2, y2, radius),
+            smooth=True,
+            splinesteps=16,
+            **kwargs,
+        )
+
+    def _rounded_rect_points(
+        self,
+        x1: int,
+        y1: int,
+        x2: int,
+        y2: int,
+        radius: int,
+    ) -> list[int]:
+        return [
             x1 + radius,
             y1,
             x2 - radius,
@@ -219,7 +306,12 @@ class RecordingOverlay:
             x1,
             y1,
         ]
-        canvas.create_polygon(points, smooth=True, splinesteps=16, **kwargs)
+
+    def _current_level(self) -> float:
+        try:
+            return min(1.0, max(0.0, float(self._level_provider())))
+        except Exception:
+            return 0.0
 
     def _set_toolwindow(self, root: Any) -> None:
         try:

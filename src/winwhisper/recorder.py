@@ -13,6 +13,8 @@ SAMPLE_RATE = 16_000
 CHANNELS = 1
 SAMPLE_WIDTH_BYTES = 2
 DTYPE = "int16"
+INT16_PEAK = 32768.0
+LEVEL_DECAY = 0.72
 
 
 class RecorderError(RuntimeError):
@@ -25,6 +27,7 @@ class Recorder:
         self._blocks: list[Any] = []
         self._lock = threading.Lock()
         self._logger = get_logger(__name__)
+        self._level = 0.0
 
     def start_recording(self) -> None:
         if self.is_recording():
@@ -39,12 +42,12 @@ class Recorder:
 
         with self._lock:
             self._blocks = []
+            self._level = 0.0
 
         def callback(indata: Any, frames: int, time: Any, status: Any) -> None:
             if status:
                 self._logger.warning("Audio input status: %s", status)
-            with self._lock:
-                self._blocks.append(indata.copy())
+            self._record_block(indata)
 
         try:
             stream = sd.InputStream(
@@ -85,6 +88,7 @@ class Recorder:
         with self._lock:
             blocks = self._blocks
             self._blocks = []
+            self._level = 0.0
 
         if blocks:
             audio = np.concatenate(blocks, axis=0)
@@ -105,3 +109,36 @@ class Recorder:
 
     def is_recording(self) -> bool:
         return self._stream is not None
+
+    def current_level(self) -> float:
+        with self._lock:
+            return self._level
+
+    def _record_block(self, indata: Any) -> None:
+        block = indata.copy()
+        level = _audio_level_from_block(block)
+        with self._lock:
+            self._blocks.append(block)
+            self._level = _smooth_audio_level(self._level, level)
+
+
+def _audio_level_from_block(block: Any) -> float:
+    try:
+        import numpy as np
+
+        samples = np.asarray(block, dtype="float32")
+        if samples.size == 0:
+            return 0.0
+
+        rms = float(np.sqrt(np.mean(np.square(samples))))
+        if rms > 1.0:
+            rms /= INT16_PEAK
+        return min(1.0, max(0.0, rms))
+    except Exception:
+        return 0.0
+
+
+def _smooth_audio_level(current_level: float, incoming_level: float) -> float:
+    if incoming_level >= current_level:
+        return incoming_level
+    return max(0.0, current_level * LEVEL_DECAY + incoming_level * (1.0 - LEVEL_DECAY))

@@ -4,7 +4,7 @@ import winwhisper.main as main_module
 from winwhisper.config import Settings
 from winwhisper.focus import ScreenPoint
 from winwhisper.main import AppController
-from winwhisper.overlay import position_near_anchor
+from winwhisper.overlay import position_near_anchor, waveform_bar_heights
 from winwhisper.transcriber import TranscriptionResult
 
 
@@ -21,6 +21,9 @@ class FakeRecorder:
 
     def is_recording(self) -> bool:
         return self.recording
+
+    def current_level(self) -> float:
+        return 0.0
 
 
 class FakeTranscriber:
@@ -72,8 +75,9 @@ class FakeHotkeys:
 class FakeOverlay:
     instances: list["FakeOverlay"] = []
 
-    def __init__(self, on_stop) -> None:
+    def __init__(self, on_stop, level_provider=None) -> None:
         self.on_stop = on_stop
+        self.level_provider = level_provider
         self.events: list[str] = []
         self.instances.append(self)
 
@@ -209,3 +213,19 @@ def test_position_near_anchor_uses_bottom_right_without_anchor():
         width=168,
         height=58,
     ) == (1_728, 998)
+
+
+def test_waveform_bar_heights_grow_with_voice_level():
+    quiet = waveform_bar_heights(0.0, phase=0, count=7)
+    loud = waveform_bar_heights(0.9, phase=0, count=7)
+
+    assert len(quiet) == 7
+    assert min(quiet) >= 3
+    assert max(loud) > max(quiet)
+
+
+def test_waveform_bar_heights_shift_with_phase():
+    first = waveform_bar_heights(0.5, phase=0, count=7)
+    second = waveform_bar_heights(0.5, phase=1, count=7)
+
+    assert first != second
