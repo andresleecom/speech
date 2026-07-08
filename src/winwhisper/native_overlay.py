@@ -372,17 +372,12 @@ class NativeOverlayWindow:
                 break
 
             if command.name == "show":
-                self._position(command.anchor)
-                self._state = "recording"
-                self._render()
-                user32.ShowWindow(hwnd, SW_SHOWNOACTIVATE)
+                self._show_recording(command.anchor)
             elif command.name == "hide":
                 self._state = "hidden"
                 user32.ShowWindow(hwnd, SW_HIDE)
             elif command.name == "transcribing":
-                self._state = "transcribing"
-                self._render()
-                user32.ShowWindow(hwnd, SW_SHOWNOACTIVATE)
+                self._show_transcribing()
             elif command.name == "stop":
                 user32.DestroyWindow(hwnd)
                 break
@@ -438,14 +433,81 @@ class NativeOverlayWindow:
             daemon=True,
         ).start()
 
-    def _position(self, anchor: ScreenPoint | None) -> None:
-        origin_x, origin_y, width, height = _monitor_work_area(anchor)
-        self._x, self._y = position_near_anchor(
+    def _show_recording(self, anchor: ScreenPoint | None) -> None:
+        self._position(anchor)
+        self._state = "recording"
+        self._present()
+        self._logger.info(
+            "Native overlay shown recording at (%s,%s) anchor=%s.",
+            self._x,
+            self._y,
             anchor,
+        )
+
+    def _show_transcribing(self) -> None:
+        self._state = "transcribing"
+        self._present()
+        self._logger.info(
+            "Native overlay shown transcribing at (%s,%s).",
+            self._x,
+            self._y,
+        )
+
+    def _present(self) -> None:
+        """Show as topmost layered window and paint (works after SW_HIDE)."""
+        hwnd = self._require_hwnd()
+        # Re-assert Z-order and position before/after paint. After SW_HIDE,
+        # some multi-monitor setups fail to show the layered window unless
+        # SetWindowPos(HWND_TOPMOST) runs again with the target coordinates.
+        user32.SetWindowPos(
+            hwnd,
+            HWND_TOPMOST,
+            self._x,
+            self._y,
+            0,
+            0,
+            SWP_NOSIZE | SWP_NOACTIVATE,
+        )
+        self._render()
+        user32.ShowWindow(hwnd, SW_SHOWNOACTIVATE)
+        user32.SetWindowPos(
+            hwnd,
+            HWND_TOPMOST,
+            self._x,
+            self._y,
+            0,
+            0,
+            SWP_NOSIZE | SWP_NOACTIVATE,
+        )
+        self._render()
+
+    def _position(self, anchor: ScreenPoint | None) -> None:
+        # Prefer the monitor under the mouse when the caret is missing/stale.
+        placement = anchor
+        if placement is None:
+            try:
+                point = _cursor_pos()
+                placement = ScreenPoint(int(point.x), int(point.y))
+            except Exception:
+                placement = None
+
+        origin_x, origin_y, width, height = _monitor_work_area(placement)
+        self._x, self._y = position_near_anchor(
+            placement,
             width,
             height,
             origin_x=origin_x,
             origin_y=origin_y,
+        )
+        self._logger.info(
+            "Overlay position computed x=%s y=%s work_area=(%s,%s %sx%s) placement=%s.",
+            self._x,
+            self._y,
+            origin_x,
+            origin_y,
+            width,
+            height,
+            placement,
         )
 
     def _move(self, x: int, y: int) -> None:

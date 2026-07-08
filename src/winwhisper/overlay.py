@@ -53,7 +53,12 @@ def position_near_anchor(
     max_y = max(min_y, origin_y + screen_height - height - _MARGIN)
 
     if anchor is None:
-        return max_x, max_y
+        # Lower-right of the work area, but not glued to a corner that can
+        # sit under the taskbar on tall portrait displays.
+        return (
+            max(min_x, max_x - _MARGIN),
+            max(min_y, origin_y + int(screen_height * 0.62) - height // 2),
+        )
 
     x = anchor.x + _CURSOR_OFFSET
     y = anchor.y - height // 2

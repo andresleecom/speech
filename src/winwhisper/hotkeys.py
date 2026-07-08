@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import threading
+import time
 from collections.abc import Callable, Mapping
 from typing import Any
 
@@ -27,6 +28,11 @@ _MODIFIER_ALIASES = {
     "cmd_l": "cmd",
     "cmd_r": "cmd",
 }
+
+# Ignore OS key-repeat / the same physical hold.
+_TRIGGER_HOLD_SECONDS = 0.45
+# Ignore a second matched action this soon (start+stop double-fire).
+_ACTION_DEBOUNCE_SECONDS = 0.35
 
 # While synthetic paste injects keys, ignore listener events so Controller
 # keystrokes cannot poison modifier/trigger tracking.
@@ -102,6 +108,8 @@ class HotkeyManager:
         self._state_lock = threading.Lock()
         self._pressed_modifiers: set[str] = set()
         self._down_triggers: set[str] = set()
+        self._trigger_down_at: dict[str, float] = {}
+        self._last_action_at: dict[str, float] = {}
         self._bindings: list[tuple[frozenset[str], str, str]] = []
         for setting_key, action in _ACTIONS.items():
             combo = hotkey_map.get(setting_key)
@@ -137,36 +145,77 @@ class HotkeyManager:
         self.reset_state()
 
     def reset_state(self) -> None:
-        """Clear modifier/trigger tracking after synthetic input or missed releases."""
+        """Clear modifier/trigger tracking after synthetic input or missed releases.
+
+        Action debounce timestamps are kept so a still-held chord cannot
+        immediately re-fire after reset_state() runs at the end of a callback.
+        """
         with self._state_lock:
             self._pressed_modifiers.clear()
             self._down_triggers.clear()
+            self._trigger_down_at.clear()
 
     def _on_press(self, key: Any) -> None:
         if listener_is_suppressed():
             return
 
         kind, name = self._describe(key)
+        now = time.monotonic()
         with self._state_lock:
             if kind == "mod":
                 self._pressed_modifiers.add(name)
                 # A new modifier edge ends the previous chord hold, which
                 # recovers when Windows drops a trigger key-up.
                 self._down_triggers.clear()
+                self._trigger_down_at.clear()
                 return
+
             if name in self._down_triggers:
-                return  # key repeat while held
+                held_for = now - self._trigger_down_at.get(name, now)
+                if held_for < _TRIGGER_HOLD_SECONDS:
+                    return  # OS key-repeat / same physical hold
+                # Missed key-up recovery: treat as a fresh press.
+                self._logger.info(
+                    "Hotkey trigger %r held without release for %.2fs; re-arming.",
+                    name,
+                    held_for,
+                )
+
             self._down_triggers.add(name)
+            self._trigger_down_at[name] = now
             pressed_modifiers = set(self._pressed_modifiers)
             bindings = list(self._bindings)
+            last_action_at = dict(self._last_action_at)
 
         for modifiers, trigger, action in bindings:
-            if trigger == name and modifiers <= pressed_modifiers:
-                self._dispatch(action)
+            if trigger != name or not modifiers <= pressed_modifiers:
+                continue
+            last = last_action_at.get(action, 0.0)
+            if now - last < _ACTION_DEBOUNCE_SECONDS:
+                self._logger.info(
+                    "Hotkey action=%s debounced (%.0fms since last fire).",
+                    action,
+                    (now - last) * 1000,
+                )
                 return
+            with self._state_lock:
+                self._last_action_at[action] = now
+            self._dispatch(action)
+            return
 
     def _on_release(self, key: Any) -> None:
         if listener_is_suppressed():
+            # Still clear state on releases seen while suppressed so we do not
+            # keep phantom "down" keys after paste finishes.
+            kind, name = self._describe(key)
+            with self._state_lock:
+                if kind == "mod":
+                    self._pressed_modifiers.discard(name)
+                    self._down_triggers.clear()
+                    self._trigger_down_at.clear()
+                else:
+                    self._down_triggers.discard(name)
+                    self._trigger_down_at.pop(name, None)
             return
 
         kind, name = self._describe(key)
@@ -174,8 +223,13 @@ class HotkeyManager:
             if kind == "mod":
                 self._pressed_modifiers.discard(name)
                 self._down_triggers.clear()
+                self._trigger_down_at.clear()
+                # Chord finished: allow the next take immediately.
+                if not self._pressed_modifiers:
+                    self._last_action_at.clear()
             else:
                 self._down_triggers.discard(name)
+                self._trigger_down_at.pop(name, None)
 
     def _describe(self, key: Any) -> tuple[str, str]:
         """Classify an event key as ("mod", alias) or ("key", trigger name)."""
@@ -210,3 +264,7 @@ class HotkeyManager:
             self._on_hotkey(action)
         except Exception:
             self._logger.exception("Hotkey callback failed for action %s.", action)
+        finally:
+            # After the action runs, drop chord state so a missed Space key-up
+            # cannot block the next take when the user presses the hotkey again.
+            self.reset_state()

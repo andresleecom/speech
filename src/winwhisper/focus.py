@@ -34,10 +34,47 @@ def get_foreground_window() -> WindowHandle | None:
 
 
 def get_cursor_anchor(hwnd: WindowHandle | None = None) -> ScreenPoint | None:
+    """Best-effort caret/mouse point for overlay placement.
+
+    Prefer the text caret when it is near the mouse (same interaction),
+    otherwise use the mouse. Multi-monitor setups often report a caret on a
+    different display than the one the user is looking at; in that case the
+    mouse is the reliable signal.
+    """
     if os.name != "nt":
         return None
 
-    return _get_caret_position(hwnd) or _get_mouse_position()
+    mouse = _get_mouse_position()
+    caret = _get_caret_position(hwnd)
+    if mouse is None and caret is None:
+        return _fallback_screen_point()
+    if mouse is None:
+        return caret
+    if caret is None:
+        return mouse
+
+    # Caret far from the mouse is usually stale or on another monitor.
+    if abs(caret.x - mouse.x) <= 900 and abs(caret.y - mouse.y) <= 900:
+        return caret
+    get_logger(__name__).info(
+        "Ignoring distant caret (%s,%s); using mouse (%s,%s) for overlay.",
+        caret.x,
+        caret.y,
+        mouse.x,
+        mouse.y,
+    )
+    return mouse
+
+
+def _fallback_screen_point() -> ScreenPoint:
+    """Center of the primary work area when caret and mouse are unavailable."""
+    try:
+        user32 = ctypes.windll.user32
+        width = int(user32.GetSystemMetrics(0)) or 800
+        height = int(user32.GetSystemMetrics(1)) or 600
+        return ScreenPoint(width // 2, height // 2)
+    except Exception:
+        return ScreenPoint(200, 200)
 
 
 def get_window_process_name(hwnd: WindowHandle | None) -> str | None:
