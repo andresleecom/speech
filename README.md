@@ -106,6 +106,10 @@ The app creates the file on first run if it does not exist.
 | `last_update_check_at` | `null` | Internal timestamp for update throttling. |
 | `hotkeys` | See defaults above. | Global hotkey bindings. |
 
+Language and cleanup mode can be changed from the tray menu without a restart.
+After editing `hotkeys`, `model_size`, `device`, or `compute_type` in the
+settings file, restart Speech for those values to take effect.
+
 ## Floating recording button
 
 When recording starts, Speech shows a floating circular recording

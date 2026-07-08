@@ -1,6 +1,9 @@
 from pathlib import Path
 import os
+import sys
+import types
 
+import winwhisper.overlay as overlay_module
 import winwhisper.main as main_module
 import pytest
 from winwhisper.config import Settings
@@ -12,18 +15,22 @@ from winwhisper.overlay import (
     position_near_anchor,
     render_orb_frame,
     sonar_ring_visuals,
+    _tk_monitor_work_area,
+    _tk_virtual_screen_bounds,
 )
 from winwhisper.transcriber import TranscriptionResult
 
 
 class FakeRecorder:
-    def __init__(self) -> None:
+    def __init__(self, *args, **kwargs) -> None:
         self.recording = False
 
     def start_recording(self) -> None:
         self.recording = True
 
-    def stop_recording(self) -> Path:
+    def stop_recording(self) -> Path | None:
+        if not self.recording:
+            return None
         self.recording = False
         return Path("fake-recording.wav")
 
@@ -172,7 +179,7 @@ def test_overlay_stop_restores_target_window_before_paste(monkeypatch, tmp_path)
     ]
 
 
-def test_hotkey_stop_does_not_force_restore_before_paste(monkeypatch, tmp_path):
+def test_hotkey_stop_restores_target_window_before_paste(monkeypatch, tmp_path):
     restored: list[int | None] = []
     inserted: list[str] = []
     controller = make_controller(monkeypatch, tmp_path, restored, inserted)
@@ -180,7 +187,7 @@ def test_hotkey_stop_does_not_force_restore_before_paste(monkeypatch, tmp_path):
     controller.toggle()
     controller.toggle()
 
-    assert restored == []
+    assert restored == [777]
     assert inserted == [("Hola mundo", "ctrl_v")]
     assert FakeOverlay.instances[0].events == [
         "show:ScreenPoint(x=240, y=320)",
@@ -209,6 +216,16 @@ def test_late_overlay_stop_does_not_start_new_recording(monkeypatch, tmp_path):
     assert FakeOverlay.instances[0].events == ["hide"]
 
 
+def test_late_max_duration_stop_does_not_start_new_recording(monkeypatch, tmp_path):
+    controller = make_controller(monkeypatch, tmp_path, [], [])
+
+    controller._handle_max_recording_duration()
+
+    assert controller.recorder.is_recording() is False
+    assert controller.tray.notifications == []
+    assert FakeOverlay.instances[0].events == []
+
+
 def test_windows_terminal_target_uses_ctrl_shift_v(monkeypatch, tmp_path):
     inserted: list[tuple[str, str]] = []
     controller = make_controller(monkeypatch, tmp_path, [], inserted)
@@ -222,6 +239,19 @@ def test_windows_terminal_target_uses_ctrl_shift_v(monkeypatch, tmp_path):
     controller.toggle()
 
     assert inserted == [("Hola mundo", "ctrl_shift_v")]
+
+
+def test_position_near_anchor_respects_negative_origin():
+    # Secondary monitor to the left of primary (virtual coords can be negative).
+    x, y = position_near_anchor(
+        ScreenPoint(-400, 200),
+        screen_width=1920,
+        screen_height=1080,
+        origin_x=-1920,
+        origin_y=0,
+    )
+    assert -1920 + 24 <= x <= -24
+    assert 24 <= y <= 1080 - 152 - 24
 
 
 def test_position_near_anchor_keeps_overlay_inside_screen():
@@ -325,6 +355,30 @@ def test_render_orb_frame_keeps_stop_control_crisp():
     assert glyph_r > 240
     assert glyph_g > 240
     assert glyph_b > 240
+
+
+def test_tk_fallback_uses_native_virtual_screen_bounds(monkeypatch):
+    class FakeRoot:
+        def winfo_screenwidth(self):
+            return 1920
+
+        def winfo_screenheight(self):
+            return 1080
+
+    native_overlay = types.SimpleNamespace(
+        _monitor_work_area=lambda anchor: (-1920, 0, 1920, 1040),
+        _virtual_screen_bounds=lambda: (-1920, 0, 3840, 1080),
+    )
+    monkeypatch.setattr(overlay_module.os, "name", "nt")
+    monkeypatch.setitem(sys.modules, "winwhisper.native_overlay", native_overlay)
+
+    assert _tk_monitor_work_area(FakeRoot(), ScreenPoint(-400, 200)) == (
+        -1920,
+        0,
+        1920,
+        1040,
+    )
+    assert _tk_virtual_screen_bounds(FakeRoot()) == (-1920, 0, 3840, 1080)
 
 
 @pytest.mark.skipif(os.name != "nt", reason="Native overlay is Windows-only")

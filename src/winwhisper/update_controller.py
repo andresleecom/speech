@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 import threading
 import time
 from collections.abc import Callable
@@ -41,8 +42,7 @@ class UpdateCoordinator:
         ):
             return
 
-        self._settings.last_update_check_at = now
-        save_settings(self._settings)
+        # Timestamp is written only after a successful network check.
         self.check_for_updates(manual=False)
 
     def check_for_updates(self, manual: bool = True) -> None:
@@ -64,6 +64,7 @@ class UpdateCoordinator:
     def _check_for_updates_worker(self, manual: bool) -> None:
         try:
             update = fetch_latest_release(__version__)
+            self._mark_check_succeeded()
             if update is None:
                 if manual:
                     self._notify(APP_NAME, "You are up to date.")
@@ -81,8 +82,9 @@ class UpdateCoordinator:
 
             self._notify(APP_NAME, f"Downloading version {update.version}.")
             installer_path, _checksum_path = download_update(update)
-            self._notify(APP_NAME, "Starting installer.")
-            launch_installer(installer_path)
+            self._notify(APP_NAME, "Starting installer after Speech exits.")
+            # Wait for this process to exit so install-dir binaries are unlocked.
+            launch_installer(installer_path, wait_for_pid=os.getpid())
             self._exit_app()
         except Exception as exc:
             self._logger.warning("Update check failed with %s.", exc.__class__.__name__)
@@ -91,6 +93,16 @@ class UpdateCoordinator:
         finally:
             with self._lock:
                 self._checking = False
+
+    def _mark_check_succeeded(self) -> None:
+        self._settings.last_update_check_at = time.time()
+        try:
+            save_settings(self._settings)
+        except Exception as exc:
+            self._logger.warning(
+                "Could not persist last_update_check_at (%s).",
+                exc.__class__.__name__,
+            )
 
     def _confirm_update_install(self, update: UpdateInfo) -> bool:
         try:

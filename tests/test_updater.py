@@ -6,8 +6,10 @@ from winwhisper.updater import (
     ReleaseAsset,
     UpdateInfo,
     download_update,
+    is_allowed_download_url,
     is_newer_version,
     parse_latest_release,
+    safe_asset_filename,
     select_windows_assets,
     should_check_for_updates,
     verify_sha256,
@@ -138,4 +140,41 @@ def test_download_update_requires_checksum(tmp_path):
     )
 
     with pytest.raises(ValueError, match="checksum"):
+        download_update(update, tmp_path)
+
+
+def test_safe_asset_filename_rejects_path_traversal():
+    assert safe_asset_filename("Speech-Setup-0.2.0.exe") == "Speech-Setup-0.2.0.exe"
+    with pytest.raises(ValueError):
+        safe_asset_filename("..\\evil.exe")
+    with pytest.raises(ValueError):
+        safe_asset_filename("subdir/installer.exe")
+
+
+def test_is_allowed_download_url_requires_https_github_hosts():
+    assert is_allowed_download_url(
+        "https://github.com/andresleecom/speech/releases/download/v1/x.exe"
+    )
+    assert is_allowed_download_url(
+        "https://objects.githubusercontent.com/github-production-release-asset/1"
+    )
+    assert not is_allowed_download_url("http://github.com/andresleecom/speech/x.exe")
+    assert not is_allowed_download_url("https://evil.example/setup.exe")
+
+
+def test_download_update_rejects_disallowed_url(tmp_path):
+    update = UpdateInfo(
+        version="0.2.0",
+        release_url="https://github.com/andresleecom/speech/releases/tag/v0.2.0",
+        installer=ReleaseAsset(
+            name="Speech-Setup-0.2.0.exe",
+            download_url="https://evil.example/setup.exe",
+        ),
+        checksum=ReleaseAsset(
+            name="Speech-Setup-0.2.0.exe.sha256",
+            download_url="https://evil.example/setup.exe.sha256",
+        ),
+    )
+
+    with pytest.raises(ValueError, match="allowlisted"):
         download_update(update, tmp_path)
