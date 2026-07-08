@@ -137,11 +137,14 @@ class AppController:
         self._request_stop(hide_overlay_if_idle=True)
 
     def on_hotkey(self, action: str) -> None:
+        with self._lock:
+            recording = self.recorder.is_recording()
+            processing = self._processing
         self.logger.info(
             "Hotkey dispatch action=%s recording=%s processing=%s.",
             action,
-            self.recorder.is_recording(),
-            self._processing,
+            recording,
+            processing,
         )
         if action == "toggle":
             self.toggle()

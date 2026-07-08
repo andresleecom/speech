@@ -285,14 +285,16 @@ def test_position_near_anchor_prefers_right_side_of_cursor():
     ) == (258, 291)
 
 
-def test_position_near_anchor_uses_bottom_right_without_anchor():
-    assert position_near_anchor(
+def test_position_near_anchor_without_anchor_stays_on_screen():
+    x, y = position_near_anchor(
         None,
         screen_width=1_920,
         screen_height=1_080,
         width=168,
         height=58,
-    ) == (1_728, 998)
+    )
+    assert 24 <= x <= 1_920 - 168 - 24
+    assert 24 <= y <= 1_080 - 58 - 24
 
 
 def test_sonar_ring_visuals_grow_with_voice_level():

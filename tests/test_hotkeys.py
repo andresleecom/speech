@@ -102,8 +102,34 @@ def test_hotkey_reset_state_allows_second_chord_without_release(monkeypatch):
     manager._on_press("space")
     # Missed releases + synthetic paste pollution, then explicit reset.
     manager.reset_state()
+    # Debounce is intentional; simulate time passing after the first fire.
+    manager._last_action_at["toggle"] = manager._last_action_at.get("toggle", 0) - 1.0
     manager._on_press("ctrl")
     manager._on_press("alt")
+    manager._on_press("space")
+
+    assert actions == ["toggle", "toggle"]
+
+
+def test_hotkey_recovers_when_space_release_is_missed_without_modifier_edge(monkeypatch):
+    """After first chord, Windows sometimes never delivers Space key-up.
+
+    A second full chord must still fire even if Space stayed "down" in state
+    and the user re-presses Space without a fresh modifier edge clearing it.
+    """
+    actions = []
+    manager = _test_manager(actions, monkeypatch)
+
+    manager._on_press("ctrl")
+    manager._on_press("alt")
+    manager._on_press("space")
+    assert actions == ["toggle"]
+
+    # No space release. Time passes past the hold window (missed key-up).
+    manager._trigger_down_at["space"] = manager._trigger_down_at["space"] - 1.0
+    manager._last_action_at["toggle"] = manager._last_action_at.get("toggle", 0) - 1.0
+
+    # Same modifiers still "down"; second Space press must re-arm.
     manager._on_press("space")
 
     assert actions == ["toggle", "toggle"]
