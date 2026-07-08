@@ -13,8 +13,6 @@ if (-not $version) {
     throw "Could not determine project version."
 }
 
-& $Python -m PyInstaller --noconfirm --clean packaging\Speech.spec
-
 $isccCommand = Get-Command iscc.exe -ErrorAction SilentlyContinue
 if ($null -eq $isccCommand) {
     $candidate = "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe"
@@ -27,6 +25,8 @@ if ($null -eq $isccCommand) {
     $iscc = $isccCommand.Source
 }
 
+& $Python -m PyInstaller --noconfirm --clean packaging\Speech.spec
+
 $env:APP_VERSION = $version
 & $iscc installer\Speech.iss
 
@@ -35,9 +35,26 @@ if ($null -eq $installer) {
     throw "Installer was not created."
 }
 
-$hash = (Get-FileHash -Algorithm SHA256 -LiteralPath $installer.FullName).Hash.ToLowerInvariant()
-$checksumPath = "$($installer.FullName).sha256"
-"$hash  $($installer.Name)" | Set-Content -LiteralPath $checksumPath -Encoding ascii
+function Write-InstallerChecksum {
+    param(
+        [Parameter(Mandatory = $true)]
+        [System.IO.FileInfo]$InstallerFile
+    )
+
+    $hash = (Get-FileHash -Algorithm SHA256 -LiteralPath $InstallerFile.FullName).Hash.ToLowerInvariant()
+    $checksumPath = "$($InstallerFile.FullName).sha256"
+    "$hash  $($InstallerFile.Name)" | Set-Content -LiteralPath $checksumPath -Encoding ascii
+    return $checksumPath
+}
+
+$versionedChecksumPath = Write-InstallerChecksum -InstallerFile $installer
+
+$stableInstallerPath = Join-Path $installer.DirectoryName "Speech-Setup.exe"
+Copy-Item -LiteralPath $installer.FullName -Destination $stableInstallerPath -Force
+$stableInstaller = Get-Item -LiteralPath $stableInstallerPath
+$stableChecksumPath = Write-InstallerChecksum -InstallerFile $stableInstaller
 
 Write-Host "Built $($installer.FullName)"
-Write-Host "Wrote $checksumPath"
+Write-Host "Built $($stableInstaller.FullName)"
+Write-Host "Wrote $versionedChecksumPath"
+Write-Host "Wrote $stableChecksumPath"
