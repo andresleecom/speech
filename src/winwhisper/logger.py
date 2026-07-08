@@ -15,6 +15,10 @@ def get_logger(name: str) -> logging.Logger:
     Privacy warning: never log transcripts, raw audio, or audio-derived content.
     """
     _setup_logging()
+    if name == "__main__":
+        # `python -m winwhisper.main` names the module __main__, which would
+        # fall outside the winwhisper logger hierarchy and lose its records.
+        name = "winwhisper.main"
     logger = logging.getLogger(name)
     logger.setLevel(logging.INFO)
     return logger
