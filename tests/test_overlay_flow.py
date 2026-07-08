@@ -216,16 +216,17 @@ def test_position_near_anchor_uses_bottom_right_without_anchor():
 
 
 def test_waveform_bar_heights_grow_with_voice_level():
-    quiet = waveform_bar_heights(0.0, phase=0, count=7)
-    loud = waveform_bar_heights(0.9, phase=0, count=7)
+    quiet = waveform_bar_heights(0.0, phase=0, count=9)
+    loud = waveform_bar_heights(0.9, phase=0, count=9)
 
-    assert len(quiet) == 7
-    assert min(quiet) >= 3
+    assert len(quiet) == 9
+    assert min(quiet) >= 2
+    assert max(loud) <= 13
     assert max(loud) > max(quiet)
 
 
 def test_waveform_bar_heights_shift_with_phase():
-    first = waveform_bar_heights(0.5, phase=0, count=7)
-    second = waveform_bar_heights(0.5, phase=1, count=7)
+    first = waveform_bar_heights(0.5, phase=0, count=9)
+    second = waveform_bar_heights(0.5, phase=1, count=9)
 
     assert first != second

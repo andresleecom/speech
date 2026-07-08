@@ -12,12 +12,12 @@ from .logger import get_logger
 
 CommandName = Literal["show", "hide", "stop"]
 
-_WIDTH = 196
-_HEIGHT = 60
+_WIDTH = 188
+_HEIGHT = 54
 _MARGIN = 24
 _CURSOR_OFFSET = 18
 _TRANSPARENT_COLOR = "#01030a"
-_WAVEFORM_COUNT = 13
+_WAVEFORM_COUNT = 18
 
 
 @dataclass(frozen=True)
@@ -53,15 +53,15 @@ def waveform_bar_heights(
     level: float,
     phase: int,
     count: int = _WAVEFORM_COUNT,
-    min_height: int = 3,
-    max_height: int = 24,
+    min_height: int = 2,
+    max_height: int = 13,
 ) -> list[int]:
     clamped_level = min(1.0, max(0.0, level))
-    activity = 0.12 + clamped_level * 0.88
+    activity = 0.16 + clamped_level * 0.84
     heights: list[int] = []
     for index in range(count):
-        wave = (math.sin((phase + index) * 0.85) + 1.0) / 2.0
-        contour = 0.38 + wave * 0.62
+        wave = (math.sin((phase + index) * 0.68) + 1.0) / 2.0
+        contour = 0.32 + wave * 0.68
         height = round(min_height + (max_height - min_height) * activity * contour)
         heights.append(max(min_height, min(max_height, height)))
     return heights
@@ -195,10 +195,10 @@ class RecordingOverlay:
         root.geometry(f"{_WIDTH}x{_HEIGHT}+{x}+{y}")
 
     def _draw_overlay(self, canvas: Any) -> list[int]:
-        self._rounded_rect(canvas, 2, 5, 194, 57, 23, fill="#07111f", outline="#1d2942")
-        self._rounded_rect(canvas, 7, 10, 189, 52, 18, fill="#101827", outline="#26354f")
-        canvas.create_oval(17, 20, 35, 38, fill="#fb7185", outline="#fecdd3", width=2)
-        canvas.create_oval(22, 25, 30, 33, fill="#be123c", outline="#be123c")
+        self._rounded_rect(canvas, 2, 4, 186, 51, 21, fill="#f8fafc", outline="#d6dbe4")
+        self._rounded_rect(canvas, 7, 9, 181, 47, 17, fill="#ffffff", outline="#e5e7eb")
+        canvas.create_oval(17, 19, 31, 33, fill="#ff375f", outline="#ffb3c1", width=1)
+        canvas.create_oval(21, 23, 27, 29, fill="#c9184a", outline="#c9184a")
 
         waveform_items: list[int] = []
         for index, bar_height in enumerate(waveform_bar_heights(0.0, phase=0)):
@@ -207,25 +207,24 @@ class RecordingOverlay:
                     canvas,
                     index,
                     bar_height,
-                    fill="#22d3ee",
-                    outline="#22d3ee",
+                    fill="#0a84ff",
                 )
             )
 
         canvas.create_text(
-            124,
-            21,
+            126,
+            18,
             text="Recording",
-            fill="#f8fafc",
+            fill="#111827",
             font=("Segoe UI", 8, "bold"),
             anchor="w",
         )
-        canvas.create_rectangle(180, 31, 189, 40, fill="#f8fafc", outline="#f8fafc")
+        canvas.create_rectangle(172, 29, 180, 37, fill="#111827", outline="#111827")
         canvas.create_text(
-            124,
-            38,
+            126,
+            35,
             text="Stop",
-            fill="#94a3b8",
+            fill="#6b7280",
             font=("Segoe UI", 8),
             anchor="w",
         )
@@ -243,17 +242,21 @@ class RecordingOverlay:
         ):
             canvas.coords(
                 waveform_items[index],
-                *self._rounded_rect_points(*self._waveform_rect(index, bar_height), 2),
+                *self._waveform_line(index, bar_height),
             )
 
     def _draw_waveform_bar(self, canvas: Any, index: int, height: int, **kwargs: Any) -> int:
-        return self._rounded_rect(canvas, *self._waveform_rect(index, height), 2, **kwargs)
+        return canvas.create_line(
+            *self._waveform_line(index, height),
+            width=2,
+            capstyle="round",
+            **kwargs,
+        )
 
-    def _waveform_rect(self, index: int, height: int) -> tuple[int, int, int, int]:
-        x1 = 45 + index * 5
-        x2 = x1 + 3
-        center_y = 31
-        return x1, center_y - height // 2, x2, center_y + height // 2
+    def _waveform_line(self, index: int, height: int) -> tuple[int, int, int, int]:
+        x = 42 + index * 4
+        center_y = 27
+        return x, center_y - height // 2, x, center_y + height // 2
 
     def _rounded_rect(
         self,
