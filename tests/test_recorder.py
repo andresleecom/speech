@@ -30,3 +30,24 @@ def test_recorder_current_level_tracks_recent_blocks():
 
     assert loud_level > 0.9
     assert 0.0 < recorder.current_level() < loud_level
+
+
+def test_stop_recording_is_idempotent_when_not_recording():
+    recorder = Recorder()
+    assert recorder.stop_recording() is None
+
+
+def test_recorder_caps_samples_at_max(monkeypatch):
+    import numpy as np
+
+    calls: list[str] = []
+    recorder = Recorder(max_samples=4, on_max_duration=lambda: calls.append("limit"))
+    recorder._record_block(np.ones((3, 1), dtype="int16"))
+    recorder._record_block(np.ones((3, 1), dtype="int16"))
+    recorder._record_block(np.ones((3, 1), dtype="int16"))
+
+    assert recorder.max_duration_reached() is True
+    assert calls == ["limit"]
+    with recorder._lock:
+        total = sum(int(block.shape[0]) for block in recorder._blocks)
+    assert total == 4

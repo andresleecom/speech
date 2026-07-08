@@ -93,3 +93,16 @@ def test_corrupt_json_falls_back_to_defaults(monkeypatch, tmp_path):
     (tmp_path / "settings.json").write_text("{not json", encoding="utf-8")
 
     assert load_settings() == Settings()
+    assert not (tmp_path / "settings.json").exists()
+    assert (tmp_path / "settings.json.corrupt").exists()
+
+
+def test_save_settings_is_atomic(monkeypatch, tmp_path):
+    monkeypatch.setenv("WINWHISPER_APPDATA_DIR", str(tmp_path))
+    settings = Settings(model_size="medium")
+
+    save_settings(settings)
+
+    assert (tmp_path / "settings.json").exists()
+    assert not (tmp_path / "settings.json.tmp").exists()
+    assert load_settings().model_size == "medium"
