@@ -2,7 +2,7 @@
 
 Speech is a Windows 10/11 tray app for local speech dictation.
 It records your microphone with a global hotkey, transcribes with faster-whisper, optionally cleans the text, and pastes into the focused app.
-It supports English, Spanish, or automatic language detection.
+It transcribes in 99 languages with automatic language detection, and has quick-force hotkeys for English and Spanish.
 
 ![Demo: press the hotkey, speak, and the text is pasted at your cursor](docs/demo.gif)
 
@@ -14,6 +14,27 @@ It supports English, Spanish, or automatic language detection.
 4. Speech transcribes locally and pastes the text right where your cursor was.
 
 Speech remembers which window was active when you started recording and focuses it again before pasting, so the text lands where you were working even if you clicked elsewhere while speaking.
+
+## Works in every app you type in
+
+Speech types wherever your cursor is, so it works with virtually any Windows application.
+
+- Browsers: Chrome, Edge, Firefox, and any web app running in them.
+- Messaging: Slack, WhatsApp Desktop, Telegram, Discord, Teams.
+- Email: Outlook, Gmail, Thunderbird.
+- Notes and documents: Notepad, OneNote, Obsidian, Notion, Word.
+- Coding: VS Code, JetBrains IDEs, Cursor, terminals, and coding agents such as Claude Code.
+
+If you can type there, you can dictate there.
+Speech pastes into the focused window with `Ctrl+V`, and automatically switches to `Ctrl+Shift+V` for terminal windows.
+
+## Languages
+
+In the default `auto` mode, Speech detects the language you speak and transcribes it in that language, covering the 99 languages of Whisper's multilingual models.
+Dedicated hotkeys force English (`Ctrl+Alt+E`) or Spanish (`Ctrl+Alt+S`) for a single dictation when you want to skip detection.
+You can also pin the language from the tray menu or with `language_mode` in the settings file.
+Accuracy varies by language and model size: `small` is strong for widely spoken languages, and `medium` or `large-v3` improve the less common ones.
+Text cleanup preserves the original language and never translates.
 
 ## Installation for users
 
