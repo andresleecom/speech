@@ -220,6 +220,7 @@ class HotkeyManager:
         self._thread: threading.Thread | None = None
         self._thread_id: int | None = None
         self._started = threading.Event()
+        self._stop_requested = False
 
     def start(self) -> None:
         if os.name != "nt":
@@ -228,6 +229,7 @@ class HotkeyManager:
         if self._thread is not None:
             return
         self._started.clear()
+        self._stop_requested = False
         self._thread = threading.Thread(
             target=self._run,
             name="winwhisper-hotkeys",
@@ -239,6 +241,7 @@ class HotkeyManager:
         thread = self._thread
         if thread is None:
             return
+        self._stop_requested = True
         self._started.wait(1.0)
         thread_id = self._thread_id
         if thread_id is not None:
@@ -246,15 +249,17 @@ class HotkeyManager:
                 import ctypes
                 from ctypes import wintypes
 
-                post = ctypes.windll.user32.PostThreadMessageW
-                post.argtypes = [
+                # Private handle: never mutate the process-wide ctypes.windll
+                # cache, whose function objects are shared with other modules.
+                user32 = ctypes.WinDLL("user32", use_last_error=True)
+                user32.PostThreadMessageW.argtypes = [
                     wintypes.DWORD,
                     wintypes.UINT,
                     wintypes.WPARAM,
                     wintypes.LPARAM,
                 ]
-                post.restype = wintypes.BOOL
-                if not post(thread_id, _WM_QUIT, 0, 0):
+                user32.PostThreadMessageW.restype = wintypes.BOOL
+                if not user32.PostThreadMessageW(thread_id, _WM_QUIT, 0, 0):
                     self._logger.warning("Could not signal hotkey thread to stop.")
             except Exception:
                 self._logger.warning("Could not signal hotkey thread to stop.")
@@ -262,11 +267,21 @@ class HotkeyManager:
         self._thread = None
         self._thread_id = None
 
+    # Give up after this many unexpected message-loop crashes in one session.
+    _MAX_LOOP_RESTARTS = 10
+
     def _run(self) -> None:
         import ctypes
         from ctypes import wintypes
 
-        user32 = ctypes.windll.user32
+        # Use private library handles. ctypes.windll caches one function object
+        # per symbol for the whole process, so modules that set their own
+        # argtypes on e.g. windll.user32.GetMessageW (the native overlay does,
+        # with its own MSG struct) would clobber ours mid-session: this thread's
+        # next GetMessageW call then raised ArgumentError, silently killing the
+        # loop and unregistering every hotkey after the first dictation.
+        user32 = ctypes.WinDLL("user32", use_last_error=True)
+        kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
         user32.RegisterHotKey.argtypes = [
             wintypes.HWND,
             ctypes.c_int,
@@ -290,7 +305,6 @@ class HotkeyManager:
             wintypes.UINT,
         ]
         user32.PeekMessageW.restype = wintypes.BOOL
-        kernel32 = ctypes.windll.kernel32
         kernel32.GetCurrentThreadId.restype = wintypes.DWORD
 
         self._thread_id = int(kernel32.GetCurrentThreadId())
@@ -300,39 +314,62 @@ class HotkeyManager:
         primer = wintypes.MSG()
         user32.PeekMessageW(ctypes.byref(primer), None, 0, 0, 0)  # PM_NOREMOVE
 
-        registered: list[tuple[int, str]] = []
-        for hotkey_id, fs_modifiers, vk, action, combo in self._bindings:
-            if user32.RegisterHotKey(None, hotkey_id, fs_modifiers | _MOD_NOREPEAT, vk):
-                registered.append((hotkey_id, action))
-                self._logger.info("Registered global hotkey %s.", combo)
-            else:
-                self._logger.warning(
-                    "Could not register hotkey %s; it may already be in use by "
-                    "another application. Choose a different combo in settings.",
-                    combo,
+        restarts = 0
+        while True:
+            registered: list[tuple[int, str]] = []
+            for hotkey_id, fs_modifiers, vk, action, combo in self._bindings:
+                if user32.RegisterHotKey(
+                    None, hotkey_id, fs_modifiers | _MOD_NOREPEAT, vk
+                ):
+                    registered.append((hotkey_id, action))
+                    self._logger.info("Registered global hotkey %s.", combo)
+                else:
+                    self._logger.warning(
+                        "Could not register hotkey %s; it may already be in use by "
+                        "another application. Choose a different combo in settings.",
+                        combo,
+                    )
+
+            self._started.set()
+            if not registered:
+                self._logger.warning("No global hotkeys were registered.")
+
+            quit_received = False
+            try:
+                message = wintypes.MSG()
+                while True:
+                    result = user32.GetMessageW(ctypes.byref(message), None, 0, 0)
+                    if result in (0, -1):  # WM_QUIT or error
+                        quit_received = True
+                        break
+                    if message.message == _WM_HOTKEY:
+                        fired_id = int(message.wParam)
+                        action = next(
+                            (a for i, a in registered if i == fired_id), None
+                        )
+                        if action is not None:
+                            self._dispatch(action)
+            except Exception:
+                self._logger.exception(
+                    "Hotkey message loop crashed; re-registering hotkeys."
                 )
+            finally:
+                for hotkey_id, _action in registered:
+                    try:
+                        user32.UnregisterHotKey(None, hotkey_id)
+                    except Exception:
+                        pass
 
-        self._started.set()
-        if not registered:
-            self._logger.warning("No global hotkeys were registered.")
-
-        try:
-            message = wintypes.MSG()
-            while True:
-                result = user32.GetMessageW(ctypes.byref(message), None, 0, 0)
-                if result in (0, -1):  # WM_QUIT or error
-                    break
-                if message.message == _WM_HOTKEY:
-                    fired_id = int(message.wParam)
-                    action = next((a for i, a in registered if i == fired_id), None)
-                    if action is not None:
-                        self._dispatch(action)
-        finally:
-            for hotkey_id, _action in registered:
-                try:
-                    user32.UnregisterHotKey(None, hotkey_id)
-                except Exception:
-                    pass
+            if quit_received or self._stop_requested:
+                return
+            # Unexpected crash: keep global hotkeys alive rather than dying
+            # silently, but never spin forever on a persistent failure.
+            restarts += 1
+            if restarts > self._MAX_LOOP_RESTARTS:
+                self._logger.error(
+                    "Hotkey message loop crashed %d times; giving up.", restarts
+                )
+                return
 
     def _dispatch(self, action: str) -> None:
         self._logger.info("Hotkey matched action=%s.", action)

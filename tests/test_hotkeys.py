@@ -1,3 +1,5 @@
+import os
+
 import pytest
 
 from winwhisper.hotkeys import (
@@ -119,3 +121,72 @@ def test_hotkey_manager_start_is_noop_off_windows(monkeypatch):
     manager = HotkeyManager({"toggle_recording": "<f8>"}, lambda action: None)
     manager.start()  # must not raise or start a thread
     assert manager._thread is None
+
+
+@pytest.mark.skipif(os.name != "nt", reason="Windows-only")
+def test_native_overlay_does_not_mutate_shared_windll():
+    """Regression: native_overlay set argtypes on the process-wide windll cache,
+    clobbering the hotkey thread's GetMessageW binding (different MSG struct) and
+    crashing its message loop after the first dictation."""
+    import ctypes
+
+    from winwhisper import native_overlay
+
+    assert native_overlay.user32 is not ctypes.windll.user32
+    assert native_overlay.gdi32 is not ctypes.windll.gdi32
+    assert native_overlay.kernel32 is not ctypes.windll.kernel32
+    assert (
+        native_overlay.user32.GetMessageW is not ctypes.windll.user32.GetMessageW
+    )
+
+
+@pytest.mark.skipif(os.name != "nt", reason="Windows-only")
+def test_message_loop_survives_foreign_argtypes_clobber():
+    """Regression: even if another module clobbers the shared windll bindings
+    (the exact mechanism that killed hotkeys after the first take), the hotkey
+    message loop must keep dispatching because it uses private handles."""
+    import ctypes
+    import time
+    from ctypes import wintypes
+
+    fired: list[str] = []
+    manager = HotkeyManager({"toggle_recording": "<f13>"}, lambda a: fired.append(a))
+    manager.start()
+    assert manager._started.wait(2.0)
+    thread_id = manager._thread_id
+    assert thread_id is not None
+
+    class ForeignMSG(ctypes.Structure):
+        _fields_ = [
+            ("hwnd", wintypes.HWND),
+            ("message", wintypes.UINT),
+            ("wParam", wintypes.WPARAM),
+            ("lParam", wintypes.LPARAM),
+            ("time", wintypes.DWORD),
+            ("pt", wintypes.POINT),
+        ]
+
+    shared = ctypes.windll.user32
+    old_argtypes = getattr(shared.GetMessageW, "argtypes", None)
+    try:
+        # Simulate native_overlay-style clobbering of the shared cache.
+        shared.GetMessageW.argtypes = [
+            ctypes.POINTER(ForeignMSG),
+            wintypes.HWND,
+            wintypes.UINT,
+            wintypes.UINT,
+        ]
+        post = ctypes.WinDLL("user32").PostThreadMessageW
+        WM_HOTKEY = 0x0312
+        for _ in range(2):
+            assert post(thread_id, WM_HOTKEY, 1, 0)
+            time.sleep(0.2)
+        deadline = time.monotonic() + 2.0
+        while len(fired) < 2 and time.monotonic() < deadline:
+            time.sleep(0.05)
+    finally:
+        shared.GetMessageW.argtypes = old_argtypes
+
+    assert fired == ["toggle", "toggle"]
+    assert manager._thread is not None and manager._thread.is_alive()
+    manager.stop()

@@ -20,9 +20,13 @@ from .overlay import (
     render_orb_frame,
 )
 
-user32 = ctypes.windll.user32
-gdi32 = ctypes.windll.gdi32
-kernel32 = ctypes.windll.kernel32
+# Private library handles: ctypes.windll caches one function object per symbol
+# for the whole process, so setting argtypes on e.g. windll.user32.GetMessageW
+# here would clobber other modules' bindings for the same function (this broke
+# the hotkey message loop, which uses a different MSG struct).
+user32 = ctypes.WinDLL("user32", use_last_error=True)
+gdi32 = ctypes.WinDLL("gdi32", use_last_error=True)
+kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
 LRESULT = getattr(wintypes, "LRESULT", wintypes.LPARAM)
 HBITMAP = getattr(wintypes, "HBITMAP", wintypes.HANDLE)
 HBRUSH = getattr(wintypes, "HBRUSH", wintypes.HANDLE)
