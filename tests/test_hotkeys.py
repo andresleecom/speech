@@ -123,6 +123,40 @@ def test_hotkey_manager_start_is_noop_off_windows(monkeypatch):
     assert manager._thread is None
 
 
+def test_accessibility_trusted_is_true_off_macos(monkeypatch):
+    import sys
+
+    from winwhisper.hotkeys import _macos_accessibility_trusted
+
+    monkeypatch.setattr(sys, "platform", "win32")
+    assert _macos_accessibility_trusted(prompt=False) is True
+    monkeypatch.setattr(sys, "platform", "linux")
+    assert _macos_accessibility_trusted(prompt=False) is True
+
+
+def test_start_flags_missing_accessibility(monkeypatch):
+    import winwhisper.hotkeys as hotkeys_mod
+
+    monkeypatch.setattr(hotkeys_mod.os, "name", "posix")
+    monkeypatch.setattr(hotkeys_mod, "_macos_accessibility_trusted", lambda prompt: False)
+
+    started = []
+
+    class FakeBackend:
+        def __init__(self, *args, **kwargs):
+            pass
+
+        def start(self):
+            started.append(True)
+
+    monkeypatch.setattr(hotkeys_mod, "_PynputHotkeyBackend", FakeBackend)
+    manager = HotkeyManager({"toggle_recording": "<f8>"}, lambda action: None)
+    manager.start()
+
+    assert manager.accessibility_missing is True
+    assert started == [True]  # the listener still starts; events just won't arrive
+
+
 def _make_backend(actions):
     from winwhisper.hotkeys import _PynputHotkeyBackend, parse_combo
 

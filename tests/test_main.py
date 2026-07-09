@@ -61,3 +61,28 @@ def test_sslkeylogfile_device_path_is_stripped(monkeypatch, caplog):
         main_module._drop_invalid_sslkeylogfile(logger)
 
     assert "SSLKEYLOGFILE" not in os.environ
+
+
+def test_open_path_uses_platform_opener(monkeypatch, tmp_path):
+    import sys
+
+    import winwhisper.main as main_module
+
+    calls = []
+
+    class FakePopen:
+        def __init__(self, args, **kwargs):
+            calls.append(args)
+
+    import subprocess
+
+    monkeypatch.setattr(subprocess, "Popen", FakePopen)
+    target = tmp_path / "settings.json"
+
+    monkeypatch.setattr(sys, "platform", "darwin")
+    main_module._open_path(target)
+    assert calls[-1] == ["open", str(target)]
+
+    monkeypatch.setattr(sys, "platform", "linux")
+    main_module._open_path(target)
+    assert calls[-1] == ["xdg-open", str(target)]
