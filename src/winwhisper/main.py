@@ -490,12 +490,37 @@ class AppController:
         self.notify(APP_NAME, message)
 
     def _beep(self, frequency: int, duration_ms: int) -> None:
-        try:
-            import winsound
+        if sys.platform == "win32":
+            try:
+                import winsound
 
-            winsound.Beep(frequency, duration_ms)
-        except Exception as exc:
-            self.logger.warning("Beep failed with %s.", exc.__class__.__name__)
+                winsound.Beep(frequency, duration_ms)
+            except Exception as exc:
+                self.logger.warning("Beep failed with %s.", exc.__class__.__name__)
+            return
+
+        if sys.platform == "darwin":
+            # Map the cue tones onto system sounds: high = start, mid = stop,
+            # low = error.
+            if frequency >= 800:
+                sound = "Tink"
+            elif frequency >= 300:
+                sound = "Pop"
+            else:
+                sound = "Basso"
+            try:
+                import subprocess
+
+                subprocess.Popen(
+                    ["afplay", f"/System/Library/Sounds/{sound}.aiff"],
+                    stdout=subprocess.DEVNULL,
+                    stderr=subprocess.DEVNULL,
+                )
+            except Exception as exc:
+                self.logger.warning("Beep failed with %s.", exc.__class__.__name__)
+            return
+
+        # Linux: no reliable beep without extra dependencies; stay silent.
 
 
 def main(argv: list[str] | None = None) -> int:
