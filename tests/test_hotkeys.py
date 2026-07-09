@@ -123,6 +123,133 @@ def test_hotkey_manager_start_is_noop_off_windows(monkeypatch):
     assert manager._thread is None
 
 
+def _make_backend(actions):
+    from winwhisper.hotkeys import _PynputHotkeyBackend, parse_combo
+
+    modifiers, trigger = parse_combo("<ctrl>+<alt>+<space>")
+    backend = _PynputHotkeyBackend(
+        [(modifiers, trigger, "toggle", "<ctrl>+<alt>+<space>")],
+        lambda action: actions.append(action),
+        __import__("logging").getLogger("test"),
+    )
+    backend._describe = _describe_backend_key
+    return backend
+
+
+def _describe_backend_key(key):
+    if key in {"ctrl", "alt", "shift", "cmd"}:
+        return "mod", key
+    return "key", key
+
+
+def test_backend_fires_on_full_chord():
+    actions = []
+    backend = _make_backend(actions)
+
+    backend._on_press("ctrl")
+    backend._on_press("alt")
+    backend._on_press("space")
+
+    assert actions == ["toggle"]
+
+
+def test_backend_requires_exact_modifiers():
+    actions = []
+    backend = _make_backend(actions)
+
+    backend._on_press("ctrl")
+    backend._on_press("alt")
+    backend._on_press("shift")  # extra modifier -> no match
+    backend._on_press("space")
+
+    assert actions == []
+
+
+def test_backend_second_take_with_held_modifiers():
+    """The lesson from the Windows saga: users hold Ctrl+Alt across both taps."""
+    actions = []
+    backend = _make_backend(actions)
+
+    backend._on_press("ctrl")
+    backend._on_press("alt")
+    backend._on_press("space")
+    backend._on_release("space")
+    # Let the debounce window pass.
+    backend._last_action_at["toggle"] -= 1.0
+    backend._on_press("space")
+
+    assert actions == ["toggle", "toggle"]
+
+
+def test_backend_filters_key_repeat():
+    """A held trigger repeats at the OS level; it must not re-fire until released."""
+    actions = []
+    backend = _make_backend(actions)
+
+    backend._on_press("ctrl")
+    backend._on_press("alt")
+    backend._on_press("space")
+    backend._last_action_at["toggle"] -= 1.0  # even outside the debounce window
+    backend._on_press("space")  # OS key-repeat, no release in between
+
+    assert actions == ["toggle"]
+
+
+def test_backend_post_take_reset_unblocks_missed_keyup():
+    """main.py calls reset_trigger_state() after each take; a missed Space
+    key-up must not block the next chord."""
+    actions = []
+    backend = _make_backend(actions)
+
+    backend._on_press("ctrl")
+    backend._on_press("alt")
+    backend._on_press("space")
+    assert actions == ["toggle"]
+
+    backend.reset_trigger_state()  # what the app does when a take finishes
+    backend._last_action_at["toggle"] -= 1.0
+    backend._on_press("space")  # no release ever arrived for the first press
+
+    assert actions == ["toggle", "toggle"]
+
+
+def test_backend_ignores_events_while_suppressed():
+    from winwhisper import hotkeys as hotkeys_mod
+
+    actions = []
+    backend = _make_backend(actions)
+
+    hotkeys_mod.set_listener_suppressed(True)
+    try:
+        backend._on_press("ctrl")
+        backend._on_press("alt")
+        backend._on_press("space")
+    finally:
+        hotkeys_mod.set_listener_suppressed(False)
+
+    assert actions == []
+
+
+def test_backend_handlers_swallow_exceptions():
+    actions = []
+    backend = _make_backend(actions)
+
+    def boom(key):
+        raise RuntimeError("boom")
+
+    backend._describe = boom
+    backend._on_press("space")  # must not raise
+    backend._on_release("space")  # must not raise
+
+
+def test_normalize_char_key_maps_control_characters():
+    from winwhisper.hotkeys import normalize_char_key
+
+    assert normalize_char_key("\x05") == "e"  # Ctrl+E arrives as ENQ
+    assert normalize_char_key("E") == "e"
+    assert normalize_char_key("7") == "7"
+
+
 @pytest.mark.skipif(os.name != "nt", reason="Windows-only")
 def test_native_overlay_does_not_mutate_shared_windll():
     """Regression: native_overlay set argtypes on the process-wide windll cache,

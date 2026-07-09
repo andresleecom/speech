@@ -143,6 +143,9 @@ def make_controller(
 ) -> AppController:
     FakeOverlay.instances.clear()
     FakeTranscriber.text = transcription_text
+    # Flow tests assert Windows paste semantics; pin the platform so they stay
+    # deterministic on the macOS/Linux CI runners.
+    monkeypatch.setattr(sys, "platform", "win32")
     monkeypatch.setenv("WINWHISPER_APPDATA_DIR", str(tmp_path))
     monkeypatch.setattr(main_module, "Recorder", FakeRecorder)
     monkeypatch.setattr(main_module, "Transcriber", FakeTranscriber)

@@ -36,6 +36,18 @@ You can also pin the language from the tray menu or with `language_mode` in the 
 Accuracy varies by language and model size: `small` is strong for widely spoken languages, and `medium` or `large-v3` improve the less common ones.
 Text cleanup preserves the original language and never translates.
 
+## Platform support
+
+Windows 10/11 is the supported, packaged platform today.
+macOS and Linux support is in active development: the core engine (recording, transcription, cleanup, clipboard, tray) is already cross-platform, and the test suite runs on all three systems in CI.
+
+On macOS and Linux you can run from source (see Development setup):
+
+- Global hotkeys use a keyboard listener; macOS asks for the Accessibility permission the first time, and Linux requires X11 (Wayland is not supported yet).
+- Pasting uses `Cmd+V` on macOS automatically.
+- The recording orb uses a simpler fallback window.
+- There are no installers or automatic updates for these platforms yet.
+
 ## Installation for users
 
 Download the latest Windows installer from this repository's latest release:

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import os
+import sys
 import threading
 from pathlib import Path
 from typing import Literal
@@ -52,11 +53,18 @@ def legacy_app_data_dir() -> Path:
 
 
 def _default_app_data_dir(name: str) -> Path:
-    appdata = os.getenv("APPDATA")
-    if appdata:
-        return Path(appdata) / name
+    if sys.platform == "win32":
+        appdata = os.getenv("APPDATA")
+        if appdata:
+            return Path(appdata) / name
+        return Path.home() / "AppData" / "Roaming" / name
 
-    return Path.home() / "AppData" / "Roaming" / name
+    if sys.platform == "darwin":
+        return Path.home() / "Library" / "Application Support" / name
+
+    xdg_config = os.getenv("XDG_CONFIG_HOME")
+    base = Path(xdg_config) if xdg_config else Path.home() / ".config"
+    return base / name.lower()
 
 
 def load_settings() -> Settings:
