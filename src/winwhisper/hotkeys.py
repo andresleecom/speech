@@ -67,6 +67,35 @@ _NAMED_TRIGGER_VK = {
     "print_screen": 0x2C,
     "caps_lock": 0x14,
     "menu": 0x5D,
+    # Numeric keypad keys (conflict-free hotkey candidates). VK_ADD etc. are the
+    # same regardless of Num Lock.
+    "numpad_plus": 0x6B,
+    "num_plus": 0x6B,
+    "kp_plus": 0x6B,
+    "add": 0x6B,
+    "numpad_minus": 0x6D,
+    "num_minus": 0x6D,
+    "subtract": 0x6D,
+    "numpad_multiply": 0x6A,
+    "num_multiply": 0x6A,
+    "multiply": 0x6A,
+    "numpad_divide": 0x6F,
+    "num_divide": 0x6F,
+    "divide": 0x6F,
+    "numpad_decimal": 0x6E,
+    "numpad0": 0x60,
+    "numpad1": 0x61,
+    "numpad2": 0x62,
+    "numpad3": 0x63,
+    "numpad4": 0x64,
+    "numpad5": 0x65,
+    "numpad6": 0x66,
+    "numpad7": 0x67,
+    "numpad8": 0x68,
+    "numpad9": 0x69,
+    # Main-keyboard OEM keys.
+    "plus": 0xBB,  # VK_OEM_PLUS (the '+' key, any layout)
+    "minus": 0xBD,  # VK_OEM_MINUS
 }
 
 _WM_HOTKEY = 0x0312
