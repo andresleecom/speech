@@ -227,6 +227,54 @@ def test_hotkey_live_modifiers_override_stale_tracking(monkeypatch):
     assert actions == []
 
 
+def test_hotkey_rearms_listener_after_each_dispatch(monkeypatch):
+    """The listener is re-armed after a press so a hook killed after its first
+    callback (security software) still has a live hook for the next press."""
+    from winwhisper import hotkeys as hotkeys_mod
+
+    actions = []
+    manager = HotkeyManager(
+        {"toggle_recording": "<f8>"},
+        lambda action: actions.append(action),
+    )
+    monkeypatch.setattr(manager, "_describe", lambda key: ("key", "f8"))
+    monkeypatch.setattr(manager, "_live_modifiers", lambda: None)
+    monkeypatch.setattr(hotkeys_mod.threading, "Thread", _ImmediateThread)
+    installs = []
+    monkeypatch.setattr(manager, "_install_listener", lambda: installs.append(1))
+    manager._should_run = True  # simulate a running listener
+
+    manager._on_press("f8")
+
+    assert actions == ["toggle"]
+    assert installs == [1]  # re-armed exactly once after the dispatch
+
+
+def test_hotkey_rearm_is_noop_when_not_running(monkeypatch):
+    manager = HotkeyManager({"toggle_recording": "<f8>"}, lambda action: None)
+    installs = []
+    monkeypatch.setattr(manager, "_install_listener", lambda: installs.append(1))
+
+    manager.rearm()  # _should_run is False
+
+    assert installs == []
+
+
+def test_hotkey_callbacks_swallow_handler_exceptions(monkeypatch):
+    """pynput stops the listener if a callback raises, so the wrappers must not
+    let an exception escape - otherwise one bad event kills the hotkey."""
+    manager = HotkeyManager({"toggle_recording": "<f8>"}, lambda action: None)
+
+    def boom(key):
+        raise RuntimeError("boom")
+
+    monkeypatch.setattr(manager, "_on_press_impl", boom)
+    monkeypatch.setattr(manager, "_on_release_impl", boom)
+
+    manager._on_press("f8")  # must not raise
+    manager._on_release("f8")  # must not raise
+
+
 def _test_manager(actions, monkeypatch):
     manager = HotkeyManager(
         {"toggle_recording": "<ctrl>+<alt>+<space>"},
