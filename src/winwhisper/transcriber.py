@@ -19,6 +19,21 @@ class TranscriptionResult:
     device: str
 
 
+def build_hotwords(vocabulary: list[str] | None) -> str | None:
+    """Join the custom vocabulary into a hotwords hint for faster-whisper.
+
+    Hotwords bias every decoding window toward these exact spellings, which is
+    how user-specific names and jargon (e.g. "README", product names) survive
+    transcription intact.
+    """
+    if not vocabulary:
+        return None
+    terms = [term.strip() for term in vocabulary if term and term.strip()]
+    if not terms:
+        return None
+    return ", ".join(terms)
+
+
 def resolve_language(language_mode: str) -> str | None:
     if language_mode == "auto":
         return None
@@ -39,6 +54,7 @@ class Transcriber:
         self._model_size = str(settings.model_size)
         self._device = str(settings.device)
         self._compute_type = str(settings.compute_type)
+        self._hotwords = build_hotwords(getattr(settings, "custom_vocabulary", None))
         self._logger = get_logger(__name__)
         self._load_lock = threading.Lock()
     def is_model_loaded(self) -> bool:
@@ -70,6 +86,7 @@ class Transcriber:
             language=language,
             vad_filter=True,
             beam_size=5,
+            hotwords=self._hotwords,
         )
         text = " ".join(
             segment_text

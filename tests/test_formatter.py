@@ -1,4 +1,21 @@
-from winwhisper.formatter import clean_text
+from winwhisper.formatter import CLEANUP_PROMPT, build_cleanup_prompt, clean_text
+
+
+def test_cleanup_prompt_without_vocabulary_is_unchanged():
+    assert build_cleanup_prompt(None) == CLEANUP_PROMPT
+    assert build_cleanup_prompt([]) == CLEANUP_PROMPT
+    assert build_cleanup_prompt(["  ", ""]) == CLEANUP_PROMPT
+
+
+def test_cleanup_prompt_includes_custom_vocabulary():
+    prompt = build_cleanup_prompt(["README", " Claude Code "])
+
+    assert prompt.startswith(CLEANUP_PROMPT)
+    assert "README, Claude Code" in prompt
+
+
+def test_basic_cleanup_accepts_vocabulary_argument():
+    assert clean_text("hello world", "basic", ["README"]) == "Hello world"
 
 
 def test_basic_english_capitalizes_first_character_only():
