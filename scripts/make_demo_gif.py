@@ -29,8 +29,8 @@ LINE1_Y = 108
 LINE2_Y = 152
 CARET_H = 22
 
-EXISTING_TEXT = "Reunión de hoy:"
-DICTATED_TEXT = "Hola equipo, aquí van las notas de la reunión."
+EXISTING_TEXT = "Meeting notes:"
+DICTATED_TEXT = "Hi team, here are today's meeting notes."
 CAPTION_Y = 12
 KEYS_Y = 352
 
@@ -84,7 +84,7 @@ def make_background() -> Image.Image:
     )
     draw.text(
         (WINDOW_BOX[0] + 14, WINDOW_BOX[1] + 8),
-        "Notas — cualquier aplicación",
+        "Notes — any application",
         font=font(14),
         fill=(90, 90, 100),
     )
