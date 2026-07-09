@@ -59,6 +59,20 @@ def test_trigger_to_vk_function_keys():
     assert trigger_to_vk("f12") == 0x7B
 
 
+def test_trigger_to_vk_numpad_and_oem_keys():
+    assert trigger_to_vk("numpad_plus") == 0x6B
+    assert trigger_to_vk("add") == 0x6B
+    assert trigger_to_vk("numpad_minus") == 0x6D
+    assert trigger_to_vk("numpad5") == 0x65
+    assert trigger_to_vk("plus") == 0xBB
+
+
+def test_combo_to_hotkey_ctrl_shift_numpad_plus():
+    fs, vk = combo_to_hotkey("<ctrl>+<shift>+<numpad_plus>")
+    assert fs == _MOD_CONTROL | _MOD_SHIFT
+    assert vk == 0x6B
+
+
 def test_trigger_to_vk_rejects_unknown():
     with pytest.raises(ValueError):
         trigger_to_vk("nonsense_key")
