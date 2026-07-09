@@ -554,20 +554,22 @@ def _acquire_single_instance() -> bool:
         return True
 
     try:
-        kernel32 = ctypes.windll.kernel32
+        # Private handle: never set argtypes on the shared ctypes.windll cache.
+        kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
         kernel32.CreateMutexW.argtypes = [
             wintypes_lpsecurityattributes(),
             ctypes.c_bool,
             ctypes.c_wchar_p,
         ]
         kernel32.CreateMutexW.restype = ctypes.c_void_p
-        kernel32.GetLastError.restype = ctypes.c_ulong
 
         handle = kernel32.CreateMutexW(None, False, _SINGLE_INSTANCE_MUTEX_NAME)
         if not handle:
             return True  # Fail open if mutex cannot be created.
 
-        error = int(kernel32.GetLastError())
+        # use_last_error=True captures the error at call time; read it via
+        # ctypes.get_last_error() (a raw GetLastError() call is unreliable here).
+        error = int(ctypes.get_last_error())
         # ERROR_ALREADY_EXISTS
         if error == 183:
             kernel32.CloseHandle(handle)
