@@ -3,6 +3,7 @@ from __future__ import annotations
 import queue
 import threading
 import os
+import sys
 from collections.abc import Callable
 from dataclasses import dataclass
 from typing import Any, Literal
@@ -298,6 +299,20 @@ class RecordingOverlay:
                     "Native recording overlay is unavailable; falling back to Tkinter (%s).",
                     exc.__class__.__name__,
                 )
+
+        if sys.platform == "darwin":
+            # AppKit (and therefore Tk) must run on the main thread on macOS;
+            # creating a Tk window here aborts the whole process with an
+            # NSException. Until a native NSPanel overlay exists, run without
+            # a visual orb - the tray icon still shows the recording status.
+            self._logger.info(
+                "Recording overlay is not yet available on macOS; "
+                "watch the tray icon for recording status."
+            )
+            while True:
+                command = self._commands.get()
+                if command.name == "stop":
+                    return
 
         try:
             import tkinter as tk

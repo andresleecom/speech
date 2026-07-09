@@ -400,6 +400,34 @@ def test_tk_fallback_uses_native_virtual_screen_bounds(monkeypatch):
     assert _tk_virtual_screen_bounds(FakeRoot()) == (-1920, 0, 3840, 1080)
 
 
+def test_overlay_run_never_touches_tk_on_macos(monkeypatch):
+    """Regression: creating a Tk window on a worker thread aborts the whole
+    process on macOS (NSException in Tk). The darwin path must consume
+    commands without importing tkinter and exit on stop."""
+    calls = []
+
+    def forbidden_import(name, *args, **kwargs):
+        if name == "tkinter":
+            raise AssertionError("tkinter must not be imported on macOS")
+        return real_import(name, *args, **kwargs)
+
+    import builtins
+
+    real_import = builtins.__import__
+    monkeypatch.setattr(overlay_module.os, "name", "posix")
+    monkeypatch.setattr(overlay_module.sys, "platform", "darwin")
+    monkeypatch.setattr(builtins, "__import__", forbidden_import)
+
+    overlay = overlay_module.RecordingOverlay(lambda: calls.append("stop"))
+    overlay._commands.put(overlay_module.OverlayCommand("show", None))
+    overlay._commands.put(overlay_module.OverlayCommand("transcribing"))
+    overlay._commands.put(overlay_module.OverlayCommand("stop"))
+
+    overlay._run()  # must return promptly without touching Tk
+
+    assert overlay._commands.empty()
+
+
 @pytest.mark.skipif(os.name != "nt", reason="Native overlay is Windows-only")
 def test_native_overlay_premultiplies_rgba_for_layered_window():
     from PIL import Image
