@@ -24,6 +24,12 @@ from .focus import (
     restore_foreground_window,
 )
 from .formatter import clean_text
+from .hotkey_settings import (
+    HotkeyConfigurationError,
+    display_hotkey,
+    normalize_hotkey_profile,
+)
+from .hotkey_settings_window import HotkeySettingsWindow
 from .hotkeys import HotkeyManager
 from .inserter import PasteShortcut, insert_text, resolve_paste_shortcut
 from .logger import get_logger
@@ -62,6 +68,7 @@ class AppController:
             self.stop_from_overlay,
             self.recorder.current_level,
         )
+        self.hotkey_settings_window = HotkeySettingsWindow()
         self.hotkeys = HotkeyManager(settings.hotkeys, self.on_hotkey)
         self._lock = threading.RLock()
         self._status: Status = STATUS_IDLE
@@ -81,8 +88,19 @@ class AppController:
     def run(self) -> None:
         self.set_status(STATUS_IDLE)
         try:
-            self.hotkeys.start()
-            self.logger.info("Hotkey listener started.")
+            activation = self.hotkeys.start()
+            if activation.successful:
+                self.logger.info("Hotkey listener started.")
+            else:
+                failed = ", ".join(
+                    display_hotkey(combo) for combo in activation.failed
+                )
+                self.logger.warning("Hotkeys could not be registered: %s.", failed)
+                self.notify(
+                    APP_NAME,
+                    f"{failed} could not be registered. Open Hotkey Settings "
+                    "and choose another shortcut.",
+                )
         except Exception:
             self._handle_error("Hotkey listener failed to start.")
         if getattr(self.hotkeys, "accessibility_missing", False):
@@ -229,13 +247,67 @@ class AppController:
         save_settings(self.settings)
         self.logger.info("Cleanup mode set to %s.", mode)
 
+    def set_hotkeys(self, hotkeys: dict[str, str]) -> None:
+        normalized = normalize_hotkey_profile(hotkeys)
+        replacement = HotkeyManager(normalized, self.on_hotkey)
+        previous = self.hotkeys
+        previous_settings = dict(self.settings.hotkeys)
+        previous.stop()
+        try:
+            activation = replacement.start()
+            if not activation.successful:
+                failed = ", ".join(display_hotkey(combo) for combo in activation.failed)
+                raise HotkeyConfigurationError(
+                    f"{failed} could not be registered; another application may "
+                    "already be using it."
+                )
+            self.settings.hotkeys = normalized
+            try:
+                save_settings(self.settings)
+            except Exception as exc:
+                self.settings.hotkeys = previous_settings
+                raise HotkeyConfigurationError(
+                    "The hotkey settings could not be saved."
+                ) from exc
+        except Exception as update_error:
+            replacement.stop()
+            try:
+                rollback = previous.start()
+            except Exception as rollback_error:
+                self.logger.exception("Previous hotkeys could not be restored.")
+                raise HotkeyConfigurationError(
+                    "The previous hotkeys could not be restored. Restart Speech "
+                    "and choose a different shortcut."
+                ) from rollback_error
+            if not rollback.successful:
+                failed = ", ".join(
+                    display_hotkey(combo) for combo in rollback.failed
+                )
+                self.logger.error(
+                    "Previous hotkeys could not be restored: %s.",
+                    failed,
+                )
+                raise HotkeyConfigurationError(
+                    f"The previous hotkeys could not be restored ({failed}). "
+                    "Restart Speech and choose a different shortcut."
+                ) from update_error
+            raise
+        self.hotkeys = replacement
+        self.logger.info("Hotkey settings updated and applied without restart.")
+
+    def open_hotkey_settings(self) -> None:
+        self.hotkey_settings_window.show(self.settings.hotkeys, self.set_hotkeys)
+
     def open_settings_file(self) -> None:
         try:
-            save_settings(self.settings)
-            _open_path(app_data_dir() / "settings.json")
+            settings_path = app_data_dir() / "settings.json"
+            if not settings_path.exists():
+                save_settings(self.settings)
+            _open_path(settings_path)
             self.notify(
                 APP_NAME,
-                "Restart Speech after editing hotkeys or model settings.",
+                "Use Hotkey Settings for shortcuts. Restart after editing "
+                "model or advanced settings.",
             )
         except Exception:
             self._handle_error("Settings file could not be opened.")

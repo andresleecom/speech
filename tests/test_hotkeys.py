@@ -123,6 +123,25 @@ def test_hotkey_manager_start_is_noop_off_windows(monkeypatch):
     assert manager._thread is None
 
 
+@pytest.mark.skipif(os.name != "nt", reason="Windows-only")
+def test_start_reports_native_registration_conflict():
+    combo = "<ctrl>+<alt>+<shift>+<f24>"
+    first = HotkeyManager({"toggle_recording": combo}, lambda action: None)
+    second = HotkeyManager({"toggle_recording": combo}, lambda action: None)
+
+    try:
+        first_result = first.start()
+        second_result = second.start()
+
+        assert first_result.active == (combo,)
+        assert first_result.failed == ()
+        assert second_result.active == ()
+        assert second_result.failed == (combo,)
+    finally:
+        second.stop()
+        first.stop()
+
+
 def test_accessibility_trusted_is_true_off_macos(monkeypatch):
     import sys
 

@@ -10,12 +10,7 @@ from typing import Literal
 from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
 from .branding import APP_NAME, LEGACY_APP_NAME
-
-DEFAULT_HOTKEYS = {
-    "toggle_recording": "<ctrl>+<alt>+<space>",
-    "force_english": "<ctrl>+<alt>+e",
-    "force_spanish": "<ctrl>+<alt>+s",
-}
+from .hotkey_actions import DEFAULT_HOTKEYS
 
 PasteMode = Literal["auto", "clipboard_ctrl_v", "clipboard_ctrl_shift_v"]
 

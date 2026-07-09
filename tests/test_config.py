@@ -23,6 +23,11 @@ def test_defaults_when_no_file_exists(monkeypatch, tmp_path):
     assert (tmp_path / "settings.json").exists()
 
 
+def test_default_force_language_hotkeys_avoid_altgr_and_macos_option():
+    assert DEFAULT_HOTKEYS["force_english"] == "<ctrl>+<shift>+e"
+    assert DEFAULT_HOTKEYS["force_spanish"] == "<ctrl>+<shift>+s"
+
+
 def test_custom_vocabulary_round_trips_through_settings_file(monkeypatch, tmp_path):
     monkeypatch.setenv("WINWHISPER_APPDATA_DIR", str(tmp_path))
     save_settings(Settings(custom_vocabulary=["README", "Claude Code"]))

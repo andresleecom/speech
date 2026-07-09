@@ -31,7 +31,7 @@ Speech pastes into the focused window with `Ctrl+V`, and automatically switches 
 ## Languages
 
 In the default `auto` mode, Speech detects the language you speak and transcribes it in that language, covering the 99 languages of Whisper's multilingual models.
-Dedicated hotkeys force English (`Ctrl+Alt+E`) or Spanish (`Ctrl+Alt+S`) for a single dictation when you want to skip detection.
+Dedicated hotkeys force English (`Ctrl+Shift+E`) or Spanish (`Ctrl+Shift+S`) for a single dictation when you want to skip detection.
 You can also pin the language from the tray menu or with `language_mode` in the settings file.
 Accuracy varies by language and model size: `small` is strong for widely spoken languages, and `medium` or `large-v3` improve the less common ones.
 Text cleanup preserves the original language and never translates.
@@ -134,9 +134,9 @@ The transcribed text should paste into Notepad.
 ## Spanish Test
 
 Open Notepad.
-Press `Ctrl+Alt+S`.
+Press `Ctrl+Shift+S`.
 Say, "Hola este es un mensaje de prueba."
-Click the floating red recording button or press `Ctrl+Alt+S` again.
+Click the floating red recording button or press `Ctrl+Shift+S` again.
 The Spanish transcription should paste into Notepad.
 
 ## Hotkeys table
@@ -144,12 +144,16 @@ The Spanish transcription should paste into Notepad.
 | Action | Default hotkey |
 | --- | --- |
 | Start or stop recording | `Ctrl+Alt+Space` |
-| Start or stop with English for this dictation | `Ctrl+Alt+E` |
-| Start or stop with Spanish for this dictation | `Ctrl+Alt+S` |
+| Start or stop with English for this dictation | `Ctrl+Shift+E` |
+| Start or stop with Spanish for this dictation | `Ctrl+Shift+S` |
 
 ## Customizing hotkeys
 
-Edit the `hotkeys` object in `%APPDATA%\Speech\settings.json`, then restart Speech.
+Open the tray menu and choose **Hotkey Settings...**. Select a suggested shortcut or type one, then choose **Save hotkeys**. Speech validates the shortcuts, rejects duplicates, saves them, and applies them immediately without a restart. On Windows, an operating-system registration conflict also leaves the previous working hotkeys in place.
+
+The editor uses platform names: `Win` on Windows is `Command` on macOS, and `Alt` on Windows is `Option` on macOS. Choose **Disabled** to leave an action without a hotkey. Printable keys require a modifier so normal typing cannot start dictation; function keys such as `F8` can be used alone.
+
+The advanced settings file still accepts the serialized form below:
 
 ```json
 "hotkeys": {
@@ -158,18 +162,16 @@ Edit the `hotkeys` object in `%APPDATA%\Speech\settings.json`, then restart Spee
 ```
 
 A combo is zero or more modifiers plus exactly one trigger key.
-Supported modifiers are `<ctrl>`, `<alt>`, `<shift>`, and `<cmd>` (the Windows key).
+Supported modifiers are `<ctrl>`, `<alt>`, `<shift>`, and `<cmd>` (`Win` on Windows, `Command` on macOS).
 The trigger can be a letter or digit, a function key such as `<f8>`, or a named key such as `<space>`, `<numpad_plus>`, `<numpad_minus>`, `<numpad0>` through `<numpad9>`, `<plus>`, or `<minus>`.
 Remove an action from `hotkeys` to leave it without a hotkey.
-If a combo is already registered by another application, Speech logs a warning and skips it.
+If a combo is already registered by another application, the editor keeps the previous working hotkeys and asks for a different shortcut.
 
-On Spanish and other international layouts, `Ctrl+Alt` is the same key as `AltGr`.
-That makes the default `Ctrl+Alt+E` fire when you type `€` with `AltGr+E`, and `Ctrl+Alt+S` when you type `AltGr+S`.
-If that gets in your way, rebind those actions to combos without `Ctrl+Alt`, or use a numpad key such as `<ctrl>+<shift>+<numpad_plus>`, which never collides with typing.
+The English and Spanish defaults use `Ctrl+Shift` so they do not collide with `AltGr` on international Windows layouts or Option-modified letters on macOS. Existing installations keep their saved shortcuts until you change them in **Hotkey Settings...**.
 
 ## Settings file location and keys
 
-The settings file is `%APPDATA%\Speech\settings.json`.
+The settings file is `%APPDATA%\Speech\settings.json` on Windows and `~/Library/Application Support/Speech/settings.json` on macOS.
 The app creates the file on first run if it does not exist.
 
 | Key | Default | Description |
@@ -186,10 +188,9 @@ The app creates the file on first run if it does not exist.
 | `hotkeys` | See defaults above. | Global hotkey bindings. |
 | `custom_vocabulary` | `[]` | Names and terms you use often, transcribed with these exact spellings. |
 
-Language and cleanup mode can be changed from the tray menu without a restart.
-After editing `hotkeys`, `model_size`, `device`, `compute_type`, or
-`custom_vocabulary` in the settings file, restart Speech for those values to
-take effect.
+Language, cleanup mode, and hotkeys can be changed from the tray menu without a restart.
+After editing `model_size`, `device`, `compute_type`, or `custom_vocabulary` in
+the advanced settings file, restart Speech for those values to take effect.
 
 ## Custom vocabulary
 

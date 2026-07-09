@@ -5,15 +5,11 @@ import sys
 import threading
 import time
 from collections.abc import Callable, Mapping
+from dataclasses import dataclass
 from typing import Any
 
+from .hotkey_actions import HOTKEY_ACTIONS
 from .logger import get_logger
-
-_ACTIONS = {
-    "toggle_recording": "toggle",
-    "force_english": "force_en",
-    "force_spanish": "force_es",
-}
 
 _MODIFIER_ALIASES = {
     "ctrl": "ctrl",
@@ -187,6 +183,16 @@ def combo_to_hotkey(combo: str) -> tuple[int, int]:
     return fs_modifiers, trigger_to_vk(trigger)
 
 
+@dataclass(frozen=True)
+class HotkeyActivationResult:
+    active: tuple[str, ...]
+    failed: tuple[str, ...]
+
+    @property
+    def successful(self) -> bool:
+        return not self.failed
+
+
 class HotkeyManager:
     """Global hotkey dispatcher built on the Win32 ``RegisterHotKey`` API.
 
@@ -206,30 +212,53 @@ class HotkeyManager:
     ) -> None:
         self._on_hotkey = on_hotkey
         self._logger = get_logger(__name__)
+        self._requested_combos = tuple(
+            combo
+            for action in HOTKEY_ACTIONS
+            if (combo := hotkey_map.get(action.setting_key))
+        )
+        self._rejected_combos: list[str] = []
+        self._activation_result = HotkeyActivationResult(active=(), failed=())
         # Windows RegisterHotKey bindings: (id, fsModifiers, vk, action, combo).
         self._bindings: list[tuple[int, int, int, str, str]] = []
         # Listener-backend bindings: (modifiers, trigger name, action, combo).
         self._name_bindings: list[tuple[frozenset[str], str, str, str]] = []
         hotkey_id = 1
-        for setting_key, action in _ACTIONS.items():
-            combo = hotkey_map.get(setting_key)
+        for action in HOTKEY_ACTIONS:
+            combo = hotkey_map.get(action.setting_key)
             if not combo:
                 continue
             try:
                 modifiers, trigger = parse_combo(combo)
             except ValueError:
-                self._logger.warning("Ignoring invalid hotkey combo for %s.", setting_key)
+                self._logger.warning(
+                    "Ignoring invalid hotkey combo for %s.",
+                    action.setting_key,
+                )
+                self._rejected_combos.append(combo)
                 continue
-            self._name_bindings.append((modifiers, trigger, action, combo))
+            self._name_bindings.append(
+                (modifiers, trigger, action.dispatch_action, combo)
+            )
             try:
                 fs_modifiers, vk = combo_to_hotkey(combo)
             except ValueError:
                 if os.name == "nt":
                     self._logger.warning(
-                        "Ignoring unsupported hotkey combo for %s.", setting_key
+                        "Ignoring unsupported hotkey combo for %s.",
+                        action.setting_key,
                     )
+                    self._rejected_combos.append(combo)
                 continue
-            self._bindings.append((hotkey_id, fs_modifiers, vk, action, combo))
+            self._bindings.append(
+                (
+                    hotkey_id,
+                    fs_modifiers,
+                    vk,
+                    action.dispatch_action,
+                    combo,
+                )
+            )
             hotkey_id += 1
 
         self._thread: threading.Thread | None = None
@@ -239,10 +268,10 @@ class HotkeyManager:
         self._backend: _PynputHotkeyBackend | None = None
         self.accessibility_missing = False
 
-    def start(self) -> None:
+    def start(self) -> HotkeyActivationResult:
         if os.name == "nt":
             if self._thread is not None:
-                return
+                return self._activation_result
             self._started.clear()
             self._stop_requested = False
             self._thread = threading.Thread(
@@ -251,13 +280,18 @@ class HotkeyManager:
                 daemon=True,
             )
             self._thread.start()
-            return
+            if not self._started.wait(1.0):
+                self._activation_result = HotkeyActivationResult(
+                    active=(),
+                    failed=self._requested_combos,
+                )
+            return self._activation_result
 
         # macOS and Linux: listener-based backend. On macOS this requires the
         # Accessibility permission; on Linux it requires X11 (Wayland needs
         # compositor-specific portals and is not supported yet).
         if self._backend is not None:
-            return
+            return self._activation_result
         if not _macos_accessibility_trusted(prompt=True):
             # The listener starts fine without the permission but receives no
             # events, which looks like "hotkeys silently do nothing". Surface
@@ -280,10 +314,19 @@ class HotkeyManager:
                 "Global hotkeys are unavailable on this system; "
                 "use the tray menu to start and stop recording."
             )
-            return
+            self._activation_result = HotkeyActivationResult(
+                active=(),
+                failed=self._requested_combos,
+            )
+            return self._activation_result
         self._backend = backend
         for _modifiers, _trigger, _action, combo in self._name_bindings:
             self._logger.info("Registered global hotkey %s (listener backend).", combo)
+        self._activation_result = HotkeyActivationResult(
+            active=tuple(combo for *_binding, combo in self._name_bindings),
+            failed=tuple(self._rejected_combos),
+        )
+        return self._activation_result
 
     def stop(self) -> None:
         backend = self._backend
@@ -373,19 +416,27 @@ class HotkeyManager:
         restarts = 0
         while True:
             registered: list[tuple[int, str]] = []
+            active_combos: list[str] = []
+            failed_combos = list(self._rejected_combos)
             for hotkey_id, fs_modifiers, vk, action, combo in self._bindings:
                 if user32.RegisterHotKey(
                     None, hotkey_id, fs_modifiers | _MOD_NOREPEAT, vk
                 ):
                     registered.append((hotkey_id, action))
+                    active_combos.append(combo)
                     self._logger.info("Registered global hotkey %s.", combo)
                 else:
+                    failed_combos.append(combo)
                     self._logger.warning(
                         "Could not register hotkey %s; it may already be in use by "
                         "another application. Choose a different combo in settings.",
                         combo,
                     )
 
+            self._activation_result = HotkeyActivationResult(
+                active=tuple(active_combos),
+                failed=tuple(failed_combos),
+            )
             self._started.set()
             if not registered:
                 self._logger.warning("No global hotkeys were registered.")

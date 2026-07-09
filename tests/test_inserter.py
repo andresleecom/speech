@@ -42,6 +42,7 @@ class FakeKeyboard:
 def test_insert_text_leaves_dictation_on_clipboard(monkeypatch):
     clipboard = FakeClipboard()
     events: list[tuple[str, str]] = []
+    sleeps: list[float] = []
     keyboard_module = types.ModuleType("pynput.keyboard")
     keyboard_module.Controller = lambda: FakeKeyboard(events)
     keyboard_module.Key = types.SimpleNamespace(ctrl="ctrl", shift="shift")
@@ -51,7 +52,8 @@ def test_insert_text_leaves_dictation_on_clipboard(monkeypatch):
     monkeypatch.setitem(sys.modules, "pyperclip", clipboard)
     monkeypatch.setitem(sys.modules, "pynput", pynput_module)
     monkeypatch.setitem(sys.modules, "pynput.keyboard", keyboard_module)
-    monkeypatch.setattr("winwhisper.inserter.time.sleep", lambda _: None)
+    monkeypatch.setattr(sys, "platform", "win32")
+    monkeypatch.setattr("winwhisper.inserter.time.sleep", sleeps.append)
 
     assert insert_text("dictated text") is True
     assert clipboard.value == "dictated text"
@@ -60,6 +62,7 @@ def test_insert_text_leaves_dictation_on_clipboard(monkeypatch):
         ("press", "v"),
         ("release", "v"),
     ]
+    assert sleeps == []
 
 
 def test_insert_text_can_use_ctrl_shift_v(monkeypatch):
