@@ -38,17 +38,18 @@ Text cleanup preserves the original language and never translates.
 
 ## Platform support
 
-Windows 10/11 is the supported, packaged platform today.
-macOS and Linux support is in active development: the core engine (recording, transcription, cleanup, clipboard, tray) is already cross-platform, and the test suite runs on all three systems in CI.
+Windows 10/11 and macOS 12+ ship as downloadable apps.
+Linux support is in development: the engine works on X11 from source, and the test suite runs on all three systems in CI (Wayland is not supported yet).
 
-On macOS and Linux you can run from source (see Development setup):
+macOS notes:
 
-- Global hotkeys use a keyboard listener; macOS asks for the Accessibility permission the first time, and Linux requires X11 (Wayland is not supported yet).
-- Pasting uses `Cmd+V` on macOS automatically.
-- The recording orb uses a simpler fallback window.
-- There are no installers or automatic updates for these platforms yet.
+- Global hotkeys need the Accessibility permission; macOS prompts on first use (System Settings > Privacy & Security > Accessibility > enable Speech).
+- The hotkey combo uses the Option key where the docs say Alt (same key), and pasting uses `Cmd+V` automatically.
+- Automatic in-app updates are Windows-only for now; download new DMGs from Releases.
 
 ## Installation for users
+
+### Windows
 
 Download the latest Windows installer from this repository's latest release:
 
@@ -63,6 +64,19 @@ as `Speech-Setup-<version>.exe`.
 The app checks GitHub Releases for updates once per day by default. When a new
 version is available, use the tray menu item `Check for Updates` to confirm,
 download, verify, and launch the installer.
+
+### macOS
+
+Download the latest DMG from this repository's latest release:
+
+```text
+https://github.com/andresleecom/speech/releases/latest/download/Speech.dmg
+```
+
+Open the DMG and drag `Speech.app` into `Applications`.
+The app is not yet code-signed, so the first launch needs one extra step: right-click `Speech.app`, choose `Open`, and confirm.
+Grant the Microphone permission when prompted, and enable Speech under System Settings > Privacy & Security > Accessibility so the global hotkey works.
+Speech lives in the menu bar (no Dock icon); the icon color shows the recording state.
 
 ## Development setup
 

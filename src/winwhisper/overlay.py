@@ -301,14 +301,25 @@ class RecordingOverlay:
                 )
 
         if sys.platform == "darwin":
-            # AppKit (and therefore Tk) must run on the main thread on macOS;
-            # creating a Tk window here aborts the whole process with an
-            # NSException. Until a native NSPanel overlay exists, run without
-            # a visual orb - the tray icon still shows the recording status.
-            self._logger.info(
-                "Recording overlay is not yet available on macOS; "
-                "watch the tray icon for recording status."
-            )
+            # AppKit (and therefore Tk) must run on the main thread on macOS,
+            # so the Tk fallback would abort the process. The native macOS orb
+            # schedules its AppKit work onto the main queue instead.
+            try:
+                from .native_overlay_mac import run_native_overlay_mac
+
+                run_native_overlay_mac(
+                    self._commands,
+                    self._on_stop,
+                    self._current_level,
+                    self._logger,
+                )
+                return
+            except Exception as exc:
+                self._logger.warning(
+                    "macOS recording orb is unavailable (%s); running without "
+                    "a visual orb - watch the tray icon for recording status.",
+                    exc.__class__.__name__,
+                )
             while True:
                 command = self._commands.get()
                 if command.name == "stop":

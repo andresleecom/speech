@@ -56,3 +56,32 @@ jobs:
           if ($assets.Count -lt 4) { throw "Expected stable and versioned installer assets." }
           $assetPaths = @($assets | ForEach-Object { $_.FullName })
           gh release create $env:TAG_NAME @assetPaths --title $env:TAG_NAME --generate-notes
+
+  macos:
+    runs-on: macos-latest
+    # The windows job creates the release; this one appends the DMG to it.
+    needs: windows
+    if: github.repository == 'andresleecom/speech'
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+      - name: Install Python dependencies
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -r requirements-dev.txt
+      - name: Run tests
+        run: python -m pytest -q
+      - name: Build macOS app and DMG
+        run: bash scripts/build_macos.sh python
+      - name: Smoke packaged app
+        run: |
+          BIN="dist/Speech.app/Contents/MacOS/Speech"
+          test -x "$BIN" || { echo "Packaged app not found."; exit 1; }
+          "$BIN" --version
+      - name: Upload DMG to release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG_NAME: ${{ github.ref_name }}
+        run: gh release upload "$TAG_NAME" dist/installer/Speech*.dmg dist/installer/Speech*.dmg.sha256 --clobber
