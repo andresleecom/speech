@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+import sys
 import threading
 import time
 from collections.abc import Callable, Mapping
@@ -236,6 +237,7 @@ class HotkeyManager:
         self._started = threading.Event()
         self._stop_requested = False
         self._backend: _PynputHotkeyBackend | None = None
+        self.accessibility_missing = False
 
     def start(self) -> None:
         if os.name == "nt":
@@ -256,6 +258,16 @@ class HotkeyManager:
         # compositor-specific portals and is not supported yet).
         if self._backend is not None:
             return
+        if not _macos_accessibility_trusted(prompt=True):
+            # The listener starts fine without the permission but receives no
+            # events, which looks like "hotkeys silently do nothing". Surface
+            # it: the prompt above opens the System Settings flow.
+            self.accessibility_missing = True
+            self._logger.warning(
+                "Accessibility permission is not granted; global hotkeys will "
+                "not work until Speech is enabled under System Settings > "
+                "Privacy & Security > Accessibility and the app is relaunched."
+            )
         try:
             backend = _PynputHotkeyBackend(
                 self._name_bindings,
@@ -441,6 +453,31 @@ class HotkeyManager:
         backend = self._backend
         if backend is not None:
             backend.reset_trigger_state()
+
+
+def _macos_accessibility_trusted(prompt: bool) -> bool:
+    """True unless this is macOS and the Accessibility permission is missing.
+
+    With ``prompt=True`` macOS shows its own dialog that deep-links into
+    System Settings the first time. Returns True on other platforms or when
+    the check itself is unavailable, so callers only warn on a confirmed miss.
+    """
+    if sys.platform != "darwin":
+        return True
+    try:
+        from ApplicationServices import (
+            AXIsProcessTrusted,
+            AXIsProcessTrustedWithOptions,
+            kAXTrustedCheckOptionPrompt,
+        )
+
+        if AXIsProcessTrusted():
+            return True
+        if prompt:
+            AXIsProcessTrustedWithOptions({kAXTrustedCheckOptionPrompt: True})
+        return False
+    except Exception:
+        return True
 
 
 # Ignore a second matched action this soon (start+stop double-fire).

@@ -85,6 +85,12 @@ class AppController:
             self.logger.info("Hotkey listener started.")
         except Exception:
             self._handle_error("Hotkey listener failed to start.")
+        if getattr(self.hotkeys, "accessibility_missing", False):
+            self.notify(
+                APP_NAME,
+                "Enable Speech under Privacy & Security > Accessibility, "
+                "then relaunch, to use the dictation hotkey.",
+            )
 
         self._start_model_warmup()
 
@@ -226,7 +232,7 @@ class AppController:
     def open_settings_file(self) -> None:
         try:
             save_settings(self.settings)
-            os.startfile(str(app_data_dir() / "settings.json"))  # type: ignore[attr-defined]
+            _open_path(app_data_dir() / "settings.json")
             self.notify(
                 APP_NAME,
                 "Restart Speech after editing hotkeys or model settings.",
@@ -704,6 +710,22 @@ def _inject_truststore(logger: logging.Logger) -> None:
             "truststore SSL injection failed with %s; continuing with default trust.",
             exc.__class__.__name__,
         )
+
+
+def _open_path(path: Path) -> None:
+    """Open a file with the platform's default application."""
+    if sys.platform == "win32":
+        os.startfile(str(path))  # type: ignore[attr-defined]
+        return
+
+    import subprocess
+
+    opener = "open" if sys.platform == "darwin" else "xdg-open"
+    subprocess.Popen(
+        [opener, str(path)],
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+    )
 
 
 def _shortcut_label(shortcut: PasteShortcut) -> str:
