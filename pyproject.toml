@@ -16,6 +16,7 @@ dependencies = [
   "pynput",
   "pyperclip",
   "pystray",
+  "pyobjc-framework-Cocoa; sys_platform == 'darwin'",
   "pillow",
   "python-dotenv",
   "pydantic",
