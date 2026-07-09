@@ -4,6 +4,17 @@ Speech is a Windows 10/11 tray app for local speech dictation.
 It records your microphone with a global hotkey, transcribes with faster-whisper, optionally cleans the text, and pastes into the focused app.
 It supports English, Spanish, or automatic language detection.
 
+![Demo: press the hotkey, speak, and the text is pasted at your cursor](docs/demo.gif)
+
+## How it works
+
+1. Click where you want your words to go, in any app.
+2. Press `Ctrl+Alt+Space` to start recording. A floating orb appears near your cursor.
+3. Speak, then press `Ctrl+Alt+Space` again or click the red button to stop.
+4. Speech transcribes locally and pastes the text right where your cursor was.
+
+Speech remembers which window was active when you started recording and focuses it again before pasting, so the text lands where you were working even if you clicked elsewhere while speaking.
+
 ## Installation for users
 
 Download the latest Windows installer from this repository's latest release:
@@ -88,6 +99,26 @@ The Spanish transcription should paste into Notepad.
 | Start or stop recording | `Ctrl+Alt+Space` |
 | Start or stop with English for this dictation | `Ctrl+Alt+E` |
 | Start or stop with Spanish for this dictation | `Ctrl+Alt+S` |
+
+## Customizing hotkeys
+
+Edit the `hotkeys` object in `%APPDATA%\Speech\settings.json`, then restart Speech.
+
+```json
+"hotkeys": {
+  "toggle_recording": "<ctrl>+<shift>+<numpad_plus>"
+}
+```
+
+A combo is zero or more modifiers plus exactly one trigger key.
+Supported modifiers are `<ctrl>`, `<alt>`, `<shift>`, and `<cmd>` (the Windows key).
+The trigger can be a letter or digit, a function key such as `<f8>`, or a named key such as `<space>`, `<numpad_plus>`, `<numpad_minus>`, `<numpad0>` through `<numpad9>`, `<plus>`, or `<minus>`.
+Remove an action from `hotkeys` to leave it without a hotkey.
+If a combo is already registered by another application, Speech logs a warning and skips it.
+
+On Spanish and other international layouts, `Ctrl+Alt` is the same key as `AltGr`.
+That makes the default `Ctrl+Alt+E` fire when you type `€` with `AltGr+E`, and `Ctrl+Alt+S` when you type `AltGr+S`.
+If that gets in your way, rebind those actions to combos without `Ctrl+Alt`, or use a numpad key such as `<ctrl>+<shift>+<numpad_plus>`, which never collides with typing.
 
 ## Settings file location and keys
 
@@ -195,6 +226,13 @@ To publish a release, update the version in `pyproject.toml`, then push a tag
 such as `v0.1.0`. The GitHub Actions release workflow builds the installer and
 publishes both the stable installer URL and the versioned `.exe` plus `.sha256`
 files to GitHub Releases.
+
+The README demo GIF is generated, not screen-recorded.
+Regenerate `docs/demo.gif` after visual changes to the overlay.
+
+```powershell
+python scripts\make_demo_gif.py
+```
 
 ## Roadmap
 
