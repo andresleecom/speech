@@ -34,6 +34,13 @@ _MODIFIER_ALIASES = {
 _TRIGGER_HOLD_SECONDS = 0.45
 # Ignore a second matched action this soon (start+stop double-fire).
 _ACTION_DEBOUNCE_SECONDS = 0.35
+# Some environments (notably security software with a keyboard filter driver)
+# tear down the pynput low-level hook after its first callback, so the hotkey
+# works exactly once and then goes silent. Re-arm the listener after every
+# dispatch, and if no key event is seen for this long, proactively re-arm so a
+# silently-killed hook recovers before the next press.
+_HOTKEY_IDLE_REARM_SECONDS = 6.0
+_HOTKEY_WATCHDOG_INTERVAL_SECONDS = 2.0
 
 # While synthetic paste injects keys, ignore listener events so Controller
 # keystrokes cannot poison modifier/trigger tracking.
@@ -107,6 +114,11 @@ class HotkeyManager:
         self._listener: Any | None = None
         self._logger = get_logger(__name__)
         self._state_lock = threading.Lock()
+        self._lifecycle_lock = threading.RLock()
+        self._should_run = False
+        self._last_event_at = 0.0
+        self._watchdog: threading.Thread | None = None
+        self._watchdog_stop = threading.Event()
         self._pressed_modifiers: set[str] = set()
         self._down_triggers: set[str] = set()
         self._trigger_down_at: dict[str, float] = {}
@@ -124,26 +136,79 @@ class HotkeyManager:
             self._bindings.append((modifiers, trigger, action))
 
     def start(self) -> None:
-        if self._listener is not None:
-            return
+        with self._lifecycle_lock:
+            if self._should_run:
+                return
+            self._should_run = True
+            self._install_listener()
+            self._start_watchdog()
 
+    def stop(self) -> None:
+        with self._lifecycle_lock:
+            self._should_run = False
+            self._watchdog_stop.set()
+            listener = self._listener
+            self._listener = None
+        if listener is not None:
+            try:
+                listener.stop()
+            except Exception:
+                self._logger.warning("Hotkey listener did not stop cleanly.")
+        self.reset_state()
+
+    def _install_listener(self) -> None:
+        """Create and start a fresh pynput listener (caller holds lifecycle_lock)."""
         from pynput import keyboard
 
         self.reset_state()
+        self._last_event_at = time.monotonic()
         self._listener = keyboard.Listener(
             on_press=self._on_press,
             on_release=self._on_release,
         )
         self._listener.start()
 
-    def stop(self) -> None:
-        listener = self._listener
-        if listener is None:
-            return
+    def rearm(self) -> None:
+        """Tear down and reinstall the listener so the next press gets a live hook.
 
-        listener.stop()
-        self._listener = None
-        self.reset_state()
+        A no-op unless the manager is running. Safe to call from the dispatch
+        or watchdog thread; never call it from the listener thread itself.
+        """
+        with self._lifecycle_lock:
+            if not self._should_run:
+                return
+            old = self._listener
+            self._listener = None
+            if old is not None:
+                try:
+                    old.stop()
+                except Exception:
+                    self._logger.warning("Previous hotkey listener did not stop cleanly.")
+            try:
+                self._install_listener()
+                self._logger.info("Hotkey listener re-armed.")
+            except Exception:
+                self._logger.exception("Hotkey listener re-arm failed.")
+
+    def _start_watchdog(self) -> None:
+        self._watchdog_stop.clear()
+        self._watchdog = threading.Thread(
+            target=self._watchdog_loop,
+            name="winwhisper-hotkey-watchdog",
+            daemon=True,
+        )
+        self._watchdog.start()
+
+    def _watchdog_loop(self) -> None:
+        while not self._watchdog_stop.wait(_HOTKEY_WATCHDOG_INTERVAL_SECONDS):
+            if not self._should_run:
+                return
+            idle = time.monotonic() - self._last_event_at
+            if idle >= _HOTKEY_IDLE_REARM_SECONDS:
+                self._logger.info(
+                    "Hotkey listener idle %.1fs; re-arming as a safety net.", idle
+                )
+                self.rearm()
 
     def reset_state(self) -> None:
         """Clear all modifier/trigger tracking (listener start/stop lifecycle).
@@ -173,6 +238,15 @@ class HotkeyManager:
             self._trigger_down_at.clear()
 
     def _on_press(self, key: Any) -> None:
+        # pynput stops the listener if a callback raises; swallow and log so a
+        # handler error can never silently kill the global hotkey.
+        self._last_event_at = time.monotonic()
+        try:
+            self._on_press_impl(key)
+        except Exception:
+            self._logger.exception("Hotkey on_press handler failed; listener kept alive.")
+
+    def _on_press_impl(self, key: Any) -> None:
         if listener_is_suppressed():
             return
 
@@ -231,6 +305,13 @@ class HotkeyManager:
             return
 
     def _on_release(self, key: Any) -> None:
+        self._last_event_at = time.monotonic()
+        try:
+            self._on_release_impl(key)
+        except Exception:
+            self._logger.exception("Hotkey on_release handler failed; listener kept alive.")
+
+    def _on_release_impl(self, key: Any) -> None:
         if listener_is_suppressed():
             # Still clear state on releases seen while suppressed so we do not
             # keep phantom "down" keys after paste finishes.
@@ -324,3 +405,7 @@ class HotkeyManager:
             # Space key-up cannot block the next take. Modifier state is kept so a
             # user still holding Ctrl+Alt across start and stop keeps matching.
             self.reset_trigger_state()
+            # Some environments kill the low-level hook after its first callback,
+            # so the hotkey works exactly once. Re-arm now so the next press
+            # (e.g. the stop tap) lands on a fresh, live listener.
+            self.rearm()
