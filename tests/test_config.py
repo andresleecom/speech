@@ -33,6 +33,9 @@ def test_custom_vocabulary_round_trips_through_settings_file(monkeypatch, tmp_pa
 
 
 def test_default_app_data_dir_uses_speech_name(monkeypatch, tmp_path):
+    import sys
+
+    monkeypatch.setattr(sys, "platform", "win32")
     monkeypatch.delenv("WINWHISPER_APPDATA_DIR", raising=False)
     monkeypatch.setenv("APPDATA", str(tmp_path))
 
@@ -40,7 +43,34 @@ def test_default_app_data_dir_uses_speech_name(monkeypatch, tmp_path):
     assert legacy_app_data_dir() == tmp_path / "WinWhisperDictate"
 
 
+def test_default_app_data_dir_on_macos(monkeypatch):
+    import sys
+    from pathlib import Path
+
+    monkeypatch.setattr(sys, "platform", "darwin")
+    monkeypatch.delenv("WINWHISPER_APPDATA_DIR", raising=False)
+
+    assert app_data_dir() == Path.home() / "Library" / "Application Support" / "Speech"
+
+
+def test_default_app_data_dir_on_linux_respects_xdg(monkeypatch, tmp_path):
+    import sys
+    from pathlib import Path
+
+    monkeypatch.setattr(sys, "platform", "linux")
+    monkeypatch.delenv("WINWHISPER_APPDATA_DIR", raising=False)
+
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path))
+    assert app_data_dir() == tmp_path / "speech"
+
+    monkeypatch.delenv("XDG_CONFIG_HOME", raising=False)
+    assert app_data_dir() == Path.home() / ".config" / "speech"
+
+
 def test_legacy_settings_are_migrated_to_speech_appdata(monkeypatch, tmp_path):
+    import sys
+
+    monkeypatch.setattr(sys, "platform", "win32")
     monkeypatch.delenv("WINWHISPER_APPDATA_DIR", raising=False)
     monkeypatch.setenv("APPDATA", str(tmp_path))
     legacy_dir = tmp_path / "WinWhisperDictate"

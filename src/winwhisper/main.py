@@ -88,13 +88,18 @@ class AppController:
 
         self._start_model_warmup()
 
-        try:
-            self.update_coordinator.maybe_check_for_updates()
-        except Exception as exc:
-            self.logger.warning(
-                "Automatic update check could not start with %s.",
-                exc.__class__.__name__,
-            )
+        if sys.platform == "win32":
+            try:
+                self.update_coordinator.maybe_check_for_updates()
+            except Exception as exc:
+                self.logger.warning(
+                    "Automatic update check could not start with %s.",
+                    exc.__class__.__name__,
+                )
+        else:
+            # Release assets are Windows installers; other platforms run from
+            # source until native packages exist.
+            self.logger.info("Automatic updates are Windows-only for now.")
 
         try:
             self.tray.run()
@@ -677,6 +682,8 @@ def _inject_truststore(logger: logging.Logger) -> None:
 
 
 def _shortcut_label(shortcut: PasteShortcut) -> str:
+    if shortcut == "cmd_v":
+        return "Cmd+V"
     if shortcut == "ctrl_shift_v":
         return "Ctrl+Shift+V"
     return "Ctrl+V"

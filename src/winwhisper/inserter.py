@@ -1,12 +1,13 @@
 from __future__ import annotations
 
+import sys
 import time
 from typing import Literal
 
 from .hotkeys import set_listener_suppressed
 from .logger import get_logger
 
-PasteShortcut = Literal["ctrl_v", "ctrl_shift_v"]
+PasteShortcut = Literal["ctrl_v", "ctrl_shift_v", "cmd_v"]
 
 _SHIFT_PASTE_PROCESSES = {
     "alacritty.exe",
@@ -20,6 +21,9 @@ _SHIFT_PASTE_PROCESSES = {
 
 
 def resolve_paste_shortcut(paste_mode: str, process_name: str | None) -> PasteShortcut:
+    if sys.platform == "darwin":
+        # macOS pastes with Cmd+V everywhere, including terminals.
+        return "cmd_v"
     if paste_mode == "clipboard_ctrl_shift_v":
         return "ctrl_shift_v"
     if process_name and process_name.lower() in _SHIFT_PASTE_PROCESSES:
@@ -42,14 +46,18 @@ def insert_text(text: str, shortcut: PasteShortcut = "ctrl_v") -> bool:
         logger.warning("Could not copy text to clipboard: %s.", exc.__class__.__name__)
         return False
 
-    # Synthetic key events from Controller are seen by the global hotkey
-    # listener and can leave modifier/trigger state poisoned for the next take.
+    # Synthetic key events from Controller are seen by listener-based hotkey
+    # backends and can leave modifier/trigger state poisoned for the next take.
     set_listener_suppressed(True)
     try:
         from pynput.keyboard import Controller, Key
 
         keyboard = Controller()
-        if shortcut == "ctrl_shift_v":
+        if shortcut == "cmd_v":
+            with keyboard.pressed(Key.cmd):
+                keyboard.press("v")
+                keyboard.release("v")
+        elif shortcut == "ctrl_shift_v":
             with keyboard.pressed(Key.ctrl):
                 with keyboard.pressed(Key.shift):
                     keyboard.press("v")

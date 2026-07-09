@@ -2,7 +2,9 @@ from __future__ import annotations
 
 import os
 import threading
+import time
 from collections.abc import Callable, Mapping
+from typing import Any
 
 from .logger import get_logger
 
@@ -203,16 +205,28 @@ class HotkeyManager:
     ) -> None:
         self._on_hotkey = on_hotkey
         self._logger = get_logger(__name__)
+        # Windows RegisterHotKey bindings: (id, fsModifiers, vk, action, combo).
         self._bindings: list[tuple[int, int, int, str, str]] = []
+        # Listener-backend bindings: (modifiers, trigger name, action, combo).
+        self._name_bindings: list[tuple[frozenset[str], str, str, str]] = []
         hotkey_id = 1
         for setting_key, action in _ACTIONS.items():
             combo = hotkey_map.get(setting_key)
             if not combo:
                 continue
             try:
-                fs_modifiers, vk = combo_to_hotkey(combo)
+                modifiers, trigger = parse_combo(combo)
             except ValueError:
                 self._logger.warning("Ignoring invalid hotkey combo for %s.", setting_key)
+                continue
+            self._name_bindings.append((modifiers, trigger, action, combo))
+            try:
+                fs_modifiers, vk = combo_to_hotkey(combo)
+            except ValueError:
+                if os.name == "nt":
+                    self._logger.warning(
+                        "Ignoring unsupported hotkey combo for %s.", setting_key
+                    )
                 continue
             self._bindings.append((hotkey_id, fs_modifiers, vk, action, combo))
             hotkey_id += 1
@@ -221,23 +235,53 @@ class HotkeyManager:
         self._thread_id: int | None = None
         self._started = threading.Event()
         self._stop_requested = False
+        self._backend: _PynputHotkeyBackend | None = None
 
     def start(self) -> None:
-        if os.name != "nt":
-            self._logger.info("Global hotkeys require Windows; hotkey listener disabled.")
+        if os.name == "nt":
+            if self._thread is not None:
+                return
+            self._started.clear()
+            self._stop_requested = False
+            self._thread = threading.Thread(
+                target=self._run,
+                name="winwhisper-hotkeys",
+                daemon=True,
+            )
+            self._thread.start()
             return
-        if self._thread is not None:
+
+        # macOS and Linux: listener-based backend. On macOS this requires the
+        # Accessibility permission; on Linux it requires X11 (Wayland needs
+        # compositor-specific portals and is not supported yet).
+        if self._backend is not None:
             return
-        self._started.clear()
-        self._stop_requested = False
-        self._thread = threading.Thread(
-            target=self._run,
-            name="winwhisper-hotkeys",
-            daemon=True,
-        )
-        self._thread.start()
+        try:
+            backend = _PynputHotkeyBackend(
+                self._name_bindings,
+                self._dispatch,
+                self._logger,
+            )
+            backend.start()
+        except Exception:
+            self._logger.exception(
+                "Global hotkeys are unavailable on this system; "
+                "use the tray menu to start and stop recording."
+            )
+            return
+        self._backend = backend
+        for _modifiers, _trigger, _action, combo in self._name_bindings:
+            self._logger.info("Registered global hotkey %s (listener backend).", combo)
 
     def stop(self) -> None:
+        backend = self._backend
+        if backend is not None:
+            self._backend = None
+            try:
+                backend.stop()
+            except Exception:
+                self._logger.warning("Hotkey listener did not stop cleanly.")
+
         thread = self._thread
         if thread is None:
             return
@@ -386,10 +430,148 @@ class HotkeyManager:
         except Exception:
             self._logger.exception("Hotkey callback failed for action %s.", action)
 
-    # Retained as no-ops so callers written for the old hook engine keep working;
-    # RegisterHotKey needs no modifier/trigger state to reset.
+    # RegisterHotKey needs no modifier/trigger state to reset; the listener
+    # backend does (missed key-ups and synthetic paste can poison tracking).
     def reset_state(self) -> None:
-        pass
+        backend = self._backend
+        if backend is not None:
+            backend.reset_state()
 
     def reset_trigger_state(self) -> None:
-        pass
+        backend = self._backend
+        if backend is not None:
+            backend.reset_trigger_state()
+
+
+# Ignore a second matched action this soon (start+stop double-fire).
+_ACTION_DEBOUNCE_SECONDS = 0.35
+
+
+def normalize_char_key(char: str) -> str:
+    """Normalize a character key event to a trigger name.
+
+    Ctrl+letter arrives as a control character (\\x01-\\x1a) on some
+    platforms; map it back to the letter so combos keep matching.
+    """
+    code = ord(char[0])
+    if 1 <= code <= 26:
+        return chr(code + 96)
+    return char.lower()
+
+
+class _PynputHotkeyBackend:
+    """Listener-based hotkey matching for macOS and Linux (X11).
+
+    Windows uses RegisterHotKey instead (see HotkeyManager). This backend
+    tracks modifier state across press/release events and matches trigger
+    keys by name, with the hard-won guards from the old Windows listener:
+    handlers never raise (pynput kills the listener on an exception), synthetic
+    paste keystrokes are ignored while suppressed, key-repeat is filtered, and
+    trigger state is dropped after each action so a missed key-up cannot block
+    the next take.
+    """
+
+    def __init__(
+        self,
+        bindings: list[tuple[frozenset[str], str, str, str]],
+        dispatch: Callable[[str], None],
+        logger: Any,
+    ) -> None:
+        self._bindings = [(m, t, a) for m, t, a, _combo in bindings]
+        self._dispatch = dispatch
+        self._logger = logger
+        self._listener: Any | None = None
+        self._state_lock = threading.Lock()
+        self._pressed_modifiers: set[str] = set()
+        self._down_triggers: set[str] = set()
+        self._last_action_at: dict[str, float] = {}
+
+    def start(self) -> None:
+        from pynput import keyboard
+
+        self.reset_state()
+        self._listener = keyboard.Listener(
+            on_press=self._on_press,
+            on_release=self._on_release,
+        )
+        self._listener.start()
+
+    def stop(self) -> None:
+        listener = self._listener
+        self._listener = None
+        if listener is not None:
+            listener.stop()
+        self.reset_state()
+
+    def reset_state(self) -> None:
+        with self._state_lock:
+            self._pressed_modifiers.clear()
+            self._down_triggers.clear()
+
+    def reset_trigger_state(self) -> None:
+        with self._state_lock:
+            self._down_triggers.clear()
+
+    def _on_press(self, key: Any) -> None:
+        try:
+            self._on_press_impl(key)
+        except Exception:
+            self._logger.exception("Hotkey on_press handler failed; listener kept alive.")
+
+    def _on_release(self, key: Any) -> None:
+        try:
+            self._on_release_impl(key)
+        except Exception:
+            self._logger.exception("Hotkey on_release handler failed; listener kept alive.")
+
+    def _on_press_impl(self, key: Any) -> None:
+        if listener_is_suppressed():
+            return
+
+        kind, name = self._describe(key)
+        now = time.monotonic()
+        with self._state_lock:
+            if kind == "mod":
+                self._pressed_modifiers.add(name)
+                # A modifier edge ends the previous chord; recovers missed key-ups.
+                self._down_triggers.clear()
+                return
+            if name in self._down_triggers:
+                return  # OS key-repeat while held
+            self._down_triggers.add(name)
+            pressed_modifiers = set(self._pressed_modifiers)
+            last_action_at = dict(self._last_action_at)
+
+        for modifiers, trigger, action in self._bindings:
+            if trigger != name or modifiers != pressed_modifiers:
+                continue
+            if now - last_action_at.get(action, 0.0) < _ACTION_DEBOUNCE_SECONDS:
+                return
+            with self._state_lock:
+                self._last_action_at[action] = now
+            self._dispatch(action)
+            return
+
+    def _on_release_impl(self, key: Any) -> None:
+        kind, name = self._describe(key)
+        with self._state_lock:
+            if kind == "mod":
+                self._pressed_modifiers.discard(name)
+                self._down_triggers.clear()
+            else:
+                self._down_triggers.discard(name)
+
+    def _describe(self, key: Any) -> tuple[str, str]:
+        """Classify an event key as ("mod", alias) or ("key", trigger name)."""
+        from pynput import keyboard
+
+        if isinstance(key, keyboard.Key):
+            alias = _MODIFIER_ALIASES.get(key.name)
+            if alias is not None:
+                return "mod", alias
+            return "key", key.name
+        char = getattr(key, "char", None)
+        if char:
+            return "key", normalize_char_key(char)
+        vk = getattr(key, "vk", None)
+        return "key", f"vk{vk}"
