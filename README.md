@@ -137,10 +137,25 @@ The app creates the file on first run if it does not exist.
 | `check_for_updates` | `true` | Check GitHub Releases for updates at most once per day. |
 | `last_update_check_at` | `null` | Internal timestamp for update throttling. |
 | `hotkeys` | See defaults above. | Global hotkey bindings. |
+| `custom_vocabulary` | `[]` | Names and terms you use often, transcribed with these exact spellings. |
 
 Language and cleanup mode can be changed from the tray menu without a restart.
-After editing `hotkeys`, `model_size`, `device`, or `compute_type` in the
-settings file, restart Speech for those values to take effect.
+After editing `hotkeys`, `model_size`, `device`, `compute_type`, or
+`custom_vocabulary` in the settings file, restart Speech for those values to
+take effect.
+
+## Custom vocabulary
+
+Whisper guesses unfamiliar names and jargon phonetically, so "README" can come out as "Rhythmi" and product names get mangled.
+List the words you use often in `custom_vocabulary` and Speech biases both transcription and LLM cleanup toward those exact spellings.
+
+```json
+"custom_vocabulary": ["README", "Claude Code", "winwhisper", "Andres Lee"]
+```
+
+Good candidates are product names, people's names, company jargon, and technical terms.
+Keep the list short and specific; a few dozen entries work better than hundreds.
+Restart Speech after editing it.
 
 ## Floating recording button
 

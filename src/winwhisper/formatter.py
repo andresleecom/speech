@@ -20,13 +20,26 @@ _SPACE_RE = re.compile(r"\s+")
 _SPACE_BEFORE_PUNCTUATION_RE = re.compile(r"\s+([.,!?;:])")
 
 
-def clean_text(text: str, mode: str) -> str:
+def build_cleanup_prompt(vocabulary: list[str] | None = None) -> str:
+    """The LLM cleanup system prompt, with the user's custom vocabulary if any."""
+    terms = [term.strip() for term in (vocabulary or []) if term and term.strip()]
+    if not terms:
+        return CLEANUP_PROMPT
+    glossary = ", ".join(terms)
+    return (
+        CLEANUP_PROMPT
+        + "\nWhen a word sounds like one of these names or terms, use this exact "
+        + f"spelling: {glossary}."
+    )
+
+
+def clean_text(text: str, mode: str, vocabulary: list[str] | None = None) -> str:
     if mode == "none":
         return text
     if mode == "basic":
         return _basic_cleanup(text)
     if mode == "llm":
-        return _llm_cleanup(text)
+        return _llm_cleanup(text, vocabulary)
     raise ValueError(f"Unsupported cleanup mode: {mode}")
 
 
@@ -44,7 +57,7 @@ def _uppercase_first_alphabetic(text: str) -> str:
     return text
 
 
-def _llm_cleanup(text: str) -> str:
+def _llm_cleanup(text: str, vocabulary: list[str] | None = None) -> str:
     logger = get_logger(__name__)
 
     if not os.getenv("OPENAI_API_KEY"):
@@ -58,7 +71,7 @@ def _llm_cleanup(text: str) -> str:
         response = client.chat.completions.create(
             model=os.getenv("WINWHISPER_OPENAI_CLEANUP_MODEL", "gpt-4o-mini"),
             messages=[
-                {"role": "system", "content": CLEANUP_PROMPT},
+                {"role": "system", "content": build_cleanup_prompt(vocabulary)},
                 {"role": "user", "content": text},
             ],
             temperature=0,

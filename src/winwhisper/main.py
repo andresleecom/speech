@@ -361,7 +361,11 @@ class AppController:
                 return
 
             self.logger.info("Cleaning transcription text (mode=%s)...", self.settings.cleanup_mode)
-            cleaned = clean_text(result.text, self.settings.cleanup_mode)
+            cleaned = clean_text(
+                result.text,
+                self.settings.cleanup_mode,
+                self.settings.custom_vocabulary,
+            )
             if not cleaned.strip():
                 self.logger.info("No speech detected; cleaned transcription text was empty.")
                 self.notify(APP_NAME, "No speech detected")

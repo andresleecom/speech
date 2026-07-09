@@ -19,7 +19,17 @@ def test_defaults_when_no_file_exists(monkeypatch, tmp_path):
     assert settings.paste_mode == "auto"
     assert settings.check_for_updates is True
     assert settings.last_update_check_at is None
+    assert settings.custom_vocabulary == []
     assert (tmp_path / "settings.json").exists()
+
+
+def test_custom_vocabulary_round_trips_through_settings_file(monkeypatch, tmp_path):
+    monkeypatch.setenv("WINWHISPER_APPDATA_DIR", str(tmp_path))
+    save_settings(Settings(custom_vocabulary=["README", "Claude Code"]))
+
+    settings = load_settings()
+
+    assert settings.custom_vocabulary == ["README", "Claude Code"]
 
 
 def test_default_app_data_dir_uses_speech_name(monkeypatch, tmp_path):

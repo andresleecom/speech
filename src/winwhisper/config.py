@@ -32,6 +32,9 @@ class Settings(BaseModel):
     check_for_updates: bool = True
     last_update_check_at: float | None = None
     hotkeys: dict[str, str] = Field(default_factory=lambda: DEFAULT_HOTKEYS.copy())
+    # Names and terms you use often (e.g. product names, people, jargon).
+    # They bias transcription and cleanup toward these exact spellings.
+    custom_vocabulary: list[str] = Field(default_factory=list)
 
     model_config = ConfigDict(extra="ignore")
 
