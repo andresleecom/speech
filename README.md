@@ -1,6 +1,12 @@
 # Speech
 
-Speech is a Windows 10/11 tray app for local speech dictation.
+[![CI](https://github.com/andresleecom/speech/actions/workflows/ci.yml/badge.svg)](https://github.com/andresleecom/speech/actions/workflows/ci.yml)
+[![CodeQL](https://github.com/andresleecom/speech/actions/workflows/codeql.yml/badge.svg)](https://github.com/andresleecom/speech/actions/workflows/codeql.yml)
+[![Latest release](https://img.shields.io/github/v/release/andresleecom/speech)](https://github.com/andresleecom/speech/releases/latest)
+[![License: MIT](https://img.shields.io/github/license/andresleecom/speech)](LICENSE)
+![Platforms](https://img.shields.io/badge/platforms-Windows%20%7C%20macOS-blue)
+
+Speech is a Windows 10/11 and macOS tray app for local speech dictation.
 It records your microphone with a global hotkey, transcribes with faster-whisper, optionally cleans the text, and pastes into the focused app.
 It transcribes in 99 languages with automatic language detection, and has quick-force hotkeys for English and Spanish.
 
@@ -9,8 +15,8 @@ It transcribes in 99 languages with automatic language detection, and has quick-
 ## How it works
 
 1. Click where you want your words to go, in any app.
-2. Press `Ctrl+Alt+Space` to start recording. A floating orb appears near your cursor.
-3. Speak, then press `Ctrl+Alt+Space` again or click the red button to stop.
+2. Press `Ctrl+Alt+Space` (`Ctrl+Option+Space` on a Mac) to start recording. A floating orb appears near your cursor.
+3. Speak, then press the same combo again or click the red button to stop.
 4. Speech transcribes locally and pastes the text right where your cursor was.
 
 Speech remembers which window was active when you started recording and focuses it again before pasting, so the text lands where you were working even if you clicked elsewhere while speaking.
@@ -67,15 +73,22 @@ download, verify, and launch the installer.
 
 ### macOS
 
-Download the latest DMG from this repository's latest release:
+Pick the DMG that matches your Mac's chip (check under ` > About This Mac`):
 
-```text
-https://github.com/andresleecom/speech/releases/latest/download/Speech.dmg
-```
+| Your Mac | Download |
+| --- | --- |
+| Apple Silicon (M1 and later) | `https://github.com/andresleecom/speech/releases/latest/download/Speech.dmg` |
+| Intel | `Speech-<version>-intel.dmg` from the [latest release](https://github.com/andresleecom/speech/releases/latest) |
 
-Open the DMG and drag `Speech.app` into `Applications`.
-The app is not yet code-signed, so the first launch needs one extra step: right-click `Speech.app`, choose `Open`, and confirm.
-Grant the Microphone permission when prompted, and enable Speech under System Settings > Privacy & Security > Accessibility and Input Monitoring so the global hotkey works.
+Downloading the wrong architecture makes macOS refuse to open the app with an "incorrect executable format" or "Launch failed" error.
+
+Then:
+
+1. Open the DMG and drag `Speech.app` into `Applications`.
+2. First launch: right-click `Speech.app`, choose `Open`, and confirm (the app is not yet code-signed).
+3. Enable Speech under System Settings > Privacy & Security > Accessibility and Input Monitoring, then quit Speech (menu bar icon > Exit) and open it again. Input Monitoring lets Speech receive global hotkeys; Accessibility lets it paste into other apps.
+4. Allow the Microphone permission on your first recording.
+
 Speech lives in the menu bar (no Dock icon); the icon color shows the recording state.
 
 ## Development setup
@@ -123,29 +136,35 @@ Start the tray app from the activated virtual environment.
 python -m winwhisper.main
 ```
 
-## First Test
+## Using Speech on Windows
 
-Open Notepad.
+Open Notepad and click into it.
 Press `Ctrl+Alt+Space`.
 Say, "Hello this is a test."
-Click the floating red recording button or press `Ctrl+Alt+Space` again.
-The transcribed text should paste into Notepad.
+Press `Ctrl+Alt+Space` again, or click the floating red recording button.
+The transcribed text pastes into Notepad at your cursor.
 
-## Spanish Test
+To force Spanish for one dictation, use `Ctrl+Shift+S` to start and stop instead (`Ctrl+Shift+E` forces English).
 
-Open Notepad.
-Press `Ctrl+Shift+S`.
-Say, "Hola este es un mensaje de prueba."
-Click the floating red recording button or press `Ctrl+Shift+S` again.
-The Spanish transcription should paste into Notepad.
+## Using Speech on macOS
+
+On a Mac keyboard, Alt is the Option key.
+
+Open Notes and click into a note.
+Press `Ctrl+Option+Space`.
+Say, "Hello this is a test."
+Press `Ctrl+Option+Space` again, or click the floating red recording button.
+The transcribed text pastes into Notes at your cursor via `Cmd+V`, sent automatically.
+
+If the hotkey does not respond, enable Speech under System Settings > Privacy & Security > Accessibility and Input Monitoring, then relaunch the app. Input Monitoring lets Speech listen for global hotkeys; Accessibility lets it send the paste keystroke.
 
 ## Hotkeys table
 
-| Action | Default hotkey |
-| --- | --- |
-| Start or stop recording | `Ctrl+Alt+Space` |
-| Start or stop with English for this dictation | `Ctrl+Shift+E` |
-| Start or stop with Spanish for this dictation | `Ctrl+Shift+S` |
+| Action | Windows | macOS |
+| --- | --- | --- |
+| Start or stop recording | `Ctrl+Alt+Space` | `Ctrl+Option+Space` |
+| Start or stop with English for this dictation | `Ctrl+Shift+E` | `Ctrl+Shift+E` |
+| Start or stop with Spanish for this dictation | `Ctrl+Shift+S` | `Ctrl+Shift+S` |
 
 ## Customizing hotkeys
 
@@ -231,13 +250,47 @@ Use `medium` if you want better accuracy and can accept slower transcription.
 Use `large-v3` if you want the highest accuracy and have enough memory and patience.
 Use `cuda` with `float16` or `int8_float16` when you have a supported NVIDIA GPU.
 
-## Privacy
+## Security and privacy
 
-Transcription runs locally by default.
-Temporary WAV files are written under `%TEMP%\Speech\`.
-Temporary WAV files are deleted after transcription when `delete_audio_after_transcription` is `true`.
-LLM cleanup is off by default.
-LLM cleanup only runs when `cleanup_mode` is `llm` and `OPENAI_API_KEY` is set.
+Speech is built so you do not have to take anyone's word for it - the code is open and every claim below can be checked in the source.
+
+**Your voice never leaves your machine.**
+Recording and transcription run entirely locally with faster-whisper; there is no cloud speech service, no account, and no telemetry or analytics of any kind.
+Temporary WAV files are written under the app's temp folder and deleted after transcription by default (`delete_audio_after_transcription`).
+Logs never contain your dictated text.
+
+**The app makes exactly three kinds of network connections, all inspectable in the source:**
+
+1. Downloading the Whisper model from Hugging Face on first run (or when you change `model_size`).
+2. A daily update check against this repository's GitHub Releases (Windows only; disable with `"check_for_updates": false`).
+3. Optional LLM text cleanup via the OpenAI API - only if you set `cleanup_mode` to `llm` **and** provide your own `OPENAI_API_KEY`; it is off by default, and then only the transcribed text (never audio) is sent.
+
+Nothing else talks to the network.
+
+**Supply-chain and code checks:**
+
+- The full source is MIT-licensed in this repository; the installers are built from it by the public GitHub Actions [release workflow](.github/workflows/release.yml), so you can trace any release to its exact commit.
+- [CodeQL](https://github.com/andresleecom/speech/security/code-scanning) scans every pull request and runs weekly.
+- The test suite runs on Windows, macOS, and Linux in [CI](https://github.com/andresleecom/speech/actions/workflows/ci.yml) for every change.
+- CI runs with least-privilege permissions; only the release workflow can write, and only to Releases.
+
+**Verify your download.**
+Every release asset ships with a `.sha256` checksum file.
+
+```powershell
+# Windows
+certutil -hashfile Speech-Setup-<version>.exe SHA256
+```
+
+```bash
+# macOS
+shasum -a 256 Speech-<version>.dmg
+```
+
+Compare the output to the matching `.sha256` asset on the release page.
+The binaries are not yet code-signed (Windows SmartScreen and macOS Gatekeeper will warn); checksum verification plus the auditable build pipeline is the current chain of trust, and code signing is on the roadmap.
+
+Found a vulnerability? Please report it privately - see [SECURITY.md](SECURITY.md).
 
 ## Diagnostics
 
