@@ -16,9 +16,17 @@ class FakeMenuItem:
 class FakeController:
     def __init__(self) -> None:
         self.hotkey_settings_opened = False
+        self.language_settings_opened = False
+        self.settings = type("Settings", (), {"language_mode": "auto"})()
 
     def open_hotkey_settings(self) -> None:
         self.hotkey_settings_opened = True
+
+    def open_language_settings(self) -> None:
+        self.language_settings_opened = True
+
+    def set_language_mode(self, mode: str) -> None:
+        self.settings.language_mode = mode
 
 
 class FakeIcon:
@@ -80,3 +88,24 @@ def test_tray_opens_in_app_hotkey_settings():
     settings_item.action(None, None)
 
     assert controller.hotkey_settings_opened is True
+
+
+def test_tray_exposes_featured_and_searchable_language_settings():
+    controller = FakeController()
+    tray = TrayApp(controller)
+
+    menu = tray._make_menu(FakeMenu, FakeMenuItem)
+    language_item = next(item for item in menu.items if item.label == "Language")
+    labels = [item.label for item in language_item.action.items]
+    french_item = next(item for item in language_item.action.items if item.label == "French")
+    settings_item = next(
+        item for item in language_item.action.items if item.label == "Language Settings..."
+    )
+    french_item.action(None, None)
+    settings_item.action(None, None)
+
+    assert "Auto" in labels
+    assert "English" in labels
+    assert "Portuguese" in labels
+    assert controller.settings.language_mode == "fr"
+    assert controller.language_settings_opened is True

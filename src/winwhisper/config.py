@@ -7,10 +7,11 @@ import threading
 from pathlib import Path
 from typing import Literal
 
-from pydantic import BaseModel, ConfigDict, Field, ValidationError
+from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_validator
 
 from .branding import APP_NAME, LEGACY_APP_NAME
 from .hotkey_actions import DEFAULT_HOTKEYS
+from .languages import AUTO_LANGUAGE_MODE, normalize_language_mode
 
 PasteMode = Literal["auto", "clipboard_ctrl_v", "clipboard_ctrl_shift_v"]
 
@@ -21,7 +22,7 @@ class Settings(BaseModel):
     model_size: str = "small"
     device: str = "cpu"
     compute_type: str = "int8"
-    language_mode: Literal["auto", "en", "es"] = "auto"
+    language_mode: str = AUTO_LANGUAGE_MODE
     cleanup_mode: Literal["none", "basic", "llm"] = "basic"
     paste_mode: PasteMode = "auto"
     delete_audio_after_transcription: bool = True
@@ -33,6 +34,14 @@ class Settings(BaseModel):
     custom_vocabulary: list[str] = Field(default_factory=list)
 
     model_config = ConfigDict(extra="ignore")
+
+    @field_validator("language_mode", mode="before")
+    @classmethod
+    def validate_language_mode(cls, value: object) -> str:
+        normalized = normalize_language_mode(value)
+        if normalized is None:
+            raise ValueError(f"Unsupported language mode: {value!r}")
+        return normalized
 
 
 def app_data_dir() -> Path:
@@ -77,6 +86,7 @@ def load_settings() -> Settings:
         data = json.loads(settings_path.read_text(encoding="utf-8"))
         if not isinstance(data, dict):
             raise ValueError("settings file must contain a JSON object")
+        _migrate_language_mode(data)
         return Settings(**data)
     except (OSError, ValueError, json.JSONDecodeError, ValidationError) as exc:
         _log_warning(
@@ -139,6 +149,21 @@ def _migrate_legacy_settings(settings_path: Path) -> None:
             "Legacy settings could not be migrated (%s).",
             exc.__class__.__name__,
         )
+
+
+def _migrate_language_mode(data: dict[str, object]) -> None:
+    """Keep a hand-edited obsolete language value from discarding all settings."""
+    if "language_mode" not in data:
+        return
+    normalized = normalize_language_mode(data["language_mode"])
+    if normalized is None:
+        _log_warning(
+            "Unknown language mode %r; using automatic detection.",
+            data["language_mode"],
+        )
+        data["language_mode"] = AUTO_LANGUAGE_MODE
+        return
+    data["language_mode"] = normalized
 
 
 def _load_dotenv() -> None:

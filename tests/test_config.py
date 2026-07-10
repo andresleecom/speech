@@ -1,5 +1,7 @@
 import json
 
+import pytest
+
 from winwhisper.config import (
     DEFAULT_HOTKEYS,
     Settings,
@@ -26,6 +28,29 @@ def test_defaults_when_no_file_exists(monkeypatch, tmp_path):
 def test_default_force_language_hotkeys_avoid_altgr_and_macos_option():
     assert DEFAULT_HOTKEYS["force_english"] == "<ctrl>+<shift>+e"
     assert DEFAULT_HOTKEYS["force_spanish"] == "<ctrl>+<shift>+s"
+
+
+def test_settings_accept_every_catalog_language_and_normalize_picker_labels():
+    assert Settings(language_mode="French (fr)").language_mode == "fr"
+    assert Settings(language_mode="yue").language_mode == "yue"
+
+    with pytest.raises(ValueError, match="Unsupported language mode"):
+        Settings(language_mode="not-a-language")
+
+
+def test_invalid_saved_language_falls_back_to_auto_without_losing_other_settings(
+    monkeypatch, tmp_path
+):
+    monkeypatch.setenv("WINWHISPER_APPDATA_DIR", str(tmp_path))
+    (tmp_path / "settings.json").write_text(
+        json.dumps({"language_mode": "not-a-language", "model_size": "medium"}),
+        encoding="utf-8",
+    )
+
+    settings = load_settings()
+
+    assert settings.language_mode == "auto"
+    assert settings.model_size == "medium"
 
 
 def test_custom_vocabulary_round_trips_through_settings_file(monkeypatch, tmp_path):

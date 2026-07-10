@@ -12,6 +12,8 @@ def test_resolve_language_maps_supported_modes(monkeypatch, tmp_path):
     assert transcriber.resolve_language("auto") is None
     assert transcriber.resolve_language("en") == "en"
     assert transcriber.resolve_language("es") == "es"
+    assert transcriber.resolve_language("French (fr)") == "fr"
+    assert transcriber.resolve_language("yue") == "yue"
     assert transcriber.resolve_language("garbage") is None
 
 
@@ -66,6 +68,19 @@ def test_transcribe_passes_no_hotwords_without_vocabulary(tmp_path):
     instance.transcribe(audio, "auto")
 
     assert captured["hotwords"] is None
+
+
+def test_transcribe_passes_selected_catalog_language_to_whisper(tmp_path):
+    transcriber_mod = importlib.import_module("winwhisper.transcriber")
+    instance = transcriber_mod.Transcriber(Settings(language_mode="fr"))
+    captured: dict = {}
+    instance._model = _FakeModel(captured)
+    audio = tmp_path / "take.wav"
+    audio.write_bytes(b"")
+
+    instance.transcribe(audio, "fr")
+
+    assert captured["language"] == "fr"
 
 
 def test_transcription_result_fields_match_plan():

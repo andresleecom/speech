@@ -5,6 +5,7 @@ from collections.abc import Callable
 from typing import Any
 
 from .branding import APP_NAME
+from .languages import language_name, tray_language_modes
 
 _STATUS_COLORS = {
     "Idle": (128, 128, 128, 255),
@@ -76,34 +77,15 @@ class TrayApp:
             except Exception:
                 pass
 
+    def refresh_menu(self) -> None:
+        self._update_menu()
+
     def _make_menu(self, menu_cls: Any, item_cls: Any) -> Any:
         return menu_cls(
             item_cls("Start/Stop Recording", self._on_toggle),
             item_cls(
                 "Language",
-                menu_cls(
-                    self._radio_item(
-                        item_cls,
-                        "Auto",
-                        "auto",
-                        self._current_language,
-                        self._select_language,
-                    ),
-                    self._radio_item(
-                        item_cls,
-                        "English",
-                        "en",
-                        self._current_language,
-                        self._select_language,
-                    ),
-                    self._radio_item(
-                        item_cls,
-                        "Spanish",
-                        "es",
-                        self._current_language,
-                        self._select_language,
-                    ),
-                ),
+                self._make_language_menu(menu_cls, item_cls),
             ),
             item_cls(
                 "Cleanup",
@@ -137,6 +119,29 @@ class TrayApp:
             item_cls("Diagnostics", self._on_diagnostics),
             item_cls("Exit", self._on_exit),
         )
+
+    def _make_language_menu(self, menu_cls: Any, item_cls: Any) -> Any:
+        items = [
+            self._radio_item(
+                item_cls,
+                "Auto",
+                "auto",
+                self._current_language,
+                self._select_language,
+            )
+        ]
+        for mode in tray_language_modes(self._current_language()):
+            items.append(
+                self._radio_item(
+                    item_cls,
+                    language_name(mode),
+                    mode,
+                    self._current_language,
+                    self._select_language,
+                )
+            )
+        items.append(item_cls("Language Settings...", self._on_language_settings))
+        return menu_cls(*items)
 
     def _radio_item(
         self,
@@ -173,6 +178,9 @@ class TrayApp:
 
     def _on_hotkey_settings(self, icon: Any, item: Any) -> None:
         self._controller.open_hotkey_settings()
+
+    def _on_language_settings(self, icon: Any, item: Any) -> None:
+        self._controller.open_language_settings()
 
     def _on_diagnostics(self, icon: Any, item: Any) -> None:
         self._controller.run_diagnostics()
