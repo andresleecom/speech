@@ -43,6 +43,14 @@ You can also set `language_mode` to `auto` or a supported code such as `fr`, `ja
 Accuracy varies by language and model size: `small` is strong for widely spoken languages, and `medium` or `large-v3` improve the less common ones.
 Text cleanup preserves the original language and never translates.
 
+## Microphone
+
+Choose **Microphone** from the tray/menu-bar icon to use **System Default** or select a specific input device. System Default is the safe default and follows the microphone selected in Windows or macOS.
+
+Choose **Test Microphone** to open the floating recording orb for five seconds. Its rings react to the live input level, and Speech reports whether it detected sound. The test never writes audio to disk or transcribes it. Click the red stop control or press a dictation hotkey to stop the test early.
+
+If a selected device is disconnected or cannot be opened, Speech keeps the selection visible as unavailable and tells you to choose **System Default** or another microphone. Check the operating system's microphone permission when no sound is detected.
+
 ## Text cleanup
 
 `Cleanup` is the optional step between transcription and pasting. It changes text only; the audio always stays local.
@@ -228,6 +236,7 @@ The app creates the file on first run if it does not exist.
 | `model_size` | `small` | faster-whisper model size. |
 | `device` | `cpu` | Inference device such as `cpu` or `cuda`. |
 | `compute_type` | `int8` | faster-whisper compute type. |
+| `audio_input_device` | `null` | Use `null` for System Default or a non-negative sound-device index selected from the Microphone menu. |
 | `language_mode` | `auto` | Use `auto` or any supported Whisper language code, such as `en`, `es`, `fr`, `ja`, `ar`, `zh`, or `yue`. |
 | `language_favorites` | `["en", "es", null]` | Three distinct non-auto language codes for quick actions. Use `null` to leave a slot unpinned. |
 | `cleanup_mode` | `basic` | Use `none`, `basic`, or `llm`; see [Text cleanup](#text-cleanup). |
@@ -321,7 +330,7 @@ Run diagnostics from the activated virtual environment.
 python -m winwhisper.diagnostics
 ```
 
-The diagnostics report includes Python, OS, microphone, model, dependency, API key presence, and temp directory checks.
+The diagnostics report includes Python, OS, the configured and available microphone inputs, model, dependency, API key presence, and temp directory checks.
 
 ## Known limitations
 
@@ -414,7 +423,6 @@ python scripts/make_hotkeys_gif.py
 ### Next
 
 - Sign and notarize macOS releases, then add a native macOS update flow. A stable signed identity will also make permission changes less disruptive after upgrades.
-- Add an audio-device selector, microphone test, and visible input-level diagnostics so users can resolve microphone problems without reading logs.
 - Make the recording-duration limit configurable and stream long recordings safely instead of keeping all audio in memory.
 - Add explicit post-dictation controls: copy again, retry transcription, and opt-in local-only history with a clear-delete action.
 

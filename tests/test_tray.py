@@ -1,3 +1,5 @@
+import winwhisper.tray as tray_module
+from winwhisper.audio_inputs import AudioInputDevice
 from winwhisper.tray import TrayApp
 
 
@@ -20,8 +22,14 @@ class FakeController:
         self.settings = type(
             "Settings",
             (),
-            {"language_mode": "auto", "language_favorites": ["en", "es", None]},
+            {
+                "language_mode": "auto",
+                "language_favorites": ["en", "es", None],
+                "audio_input_device": None,
+            },
         )()
+        self.microphone_test_started = False
+        self.notifications: list[tuple[str, str]] = []
 
     def open_hotkey_settings(self) -> None:
         self.hotkey_settings_opened = True
@@ -31,6 +39,15 @@ class FakeController:
 
     def set_language_mode(self, mode: str) -> None:
         self.settings.language_mode = mode
+
+    def set_audio_input_device(self, device: int | None) -> None:
+        self.settings.audio_input_device = device
+
+    def start_microphone_test(self) -> None:
+        self.microphone_test_started = True
+
+    def notify(self, title: str, message: str) -> None:
+        self.notifications.append((title, message))
 
 
 class FakeIcon:
@@ -125,3 +142,55 @@ def test_tray_places_language_favorites_before_the_featured_languages():
     labels = [item.label for item in language_item.action.items]
 
     assert labels[:3] == ["Auto", "French", "Japanese"]
+
+
+def test_tray_exposes_microphone_selection_and_test(monkeypatch):
+    monkeypatch.setattr(
+        tray_module,
+        "list_audio_input_devices",
+        lambda: (
+            AudioInputDevice(index=2, name="Built-in Mic", input_channels=2),
+            AudioInputDevice(index=5, name="USB Mic", input_channels=1),
+        ),
+    )
+    controller = FakeController()
+    tray = TrayApp(controller)
+
+    menu = tray._make_menu(FakeMenu, FakeMenuItem)
+    microphone_item = next(item for item in menu.items if item.label == "Microphone")
+    labels = [item.label for item in microphone_item.action.items]
+    usb_item = next(
+        item for item in microphone_item.action.items if item.label == "USB Mic [5]"
+    )
+    test_item = next(
+        item for item in microphone_item.action.items if item.label == "Test Microphone"
+    )
+
+    usb_item.action(None, None)
+    test_item.action(None, None)
+
+    assert labels == [
+        "System Default",
+        "Built-in Mic [2]",
+        "USB Mic [5]",
+        "Test Microphone",
+    ]
+    assert controller.settings.audio_input_device == 5
+    assert controller.microphone_test_started is True
+
+
+def test_tray_shows_unavailable_saved_microphone(monkeypatch):
+    monkeypatch.setattr(tray_module, "list_audio_input_devices", lambda: ())
+    controller = FakeController()
+    controller.settings.audio_input_device = 9
+    tray = TrayApp(controller)
+
+    menu = tray._make_menu(FakeMenu, FakeMenuItem)
+    microphone_item = next(item for item in menu.items if item.label == "Microphone")
+    unavailable = next(
+        item
+        for item in microphone_item.action.items
+        if item.label == "Unavailable microphone [9]"
+    )
+
+    assert unavailable.options["enabled"] is False

@@ -13,6 +13,7 @@ from pathlib import Path
 from typing import Any, Literal
 
 from . import __version__
+from .audio_inputs import normalize_audio_input_device
 from .branding import APP_NAME
 from .config import Settings, app_data_dir, load_settings, save_settings
 from .diagnostics import run_diagnostics as run_diagnostics_report
@@ -40,15 +41,23 @@ from .languages import (
 )
 from .logger import get_logger
 from .overlay import RecordingOverlay
-from .recorder import Recorder
+from .recorder import MicrophoneTest, Recorder
 from .transcriber import Transcriber
 from .tray import TrayApp
 from .update_controller import UpdateCoordinator
 
-Status = Literal["Idle", "Recording", "Transcribing", "Pasting", "Error"]
+Status = Literal[
+    "Idle",
+    "Recording",
+    "Testing microphone",
+    "Transcribing",
+    "Pasting",
+    "Error",
+]
 
 STATUS_IDLE: Status = "Idle"
 STATUS_RECORDING: Status = "Recording"
+STATUS_TESTING_MICROPHONE: Status = "Testing microphone"
 STATUS_TRANSCRIBING: Status = "Transcribing"
 STATUS_PASTING: Status = "Pasting"
 STATUS_ERROR: Status = "Error"
@@ -57,6 +66,8 @@ _SINGLE_INSTANCE_MUTEX_NAME = "Local\\SpeechSingleInstanceMutex"
 _mutex_handle: Any | None = None
 # Notify the user if transcription is still running after this many seconds.
 SLOW_TRANSCRIPTION_NOTIFY_SECONDS = 8.0
+MICROPHONE_TEST_SECONDS = 5.0
+MICROPHONE_TEST_SIGNAL_THRESHOLD = 0.01
 # Capture the real Thread class so progress watchers keep working even when
 # tests replace threading.Thread with a synchronous helper.
 _RealThread = threading.Thread
@@ -66,17 +77,22 @@ class AppController:
     def __init__(self, settings: Settings) -> None:
         self.settings = settings
         self.logger = get_logger(__name__)
-        self.recorder = Recorder(on_max_duration=self._on_max_recording_duration)
+        self._lock = threading.RLock()
+        self._microphone_test: MicrophoneTest | None = None
+        self._microphone_test_cancel: threading.Event | None = None
+        self.recorder = Recorder(
+            on_max_duration=self._on_max_recording_duration,
+            audio_input_device=settings.audio_input_device,
+        )
         self.transcriber = Transcriber(settings)
         self.tray = TrayApp(self)
         self.recording_overlay = RecordingOverlay(
             self.stop_from_overlay,
-            self.recorder.current_level,
+            self._current_microphone_level,
         )
         self.hotkey_settings_window = HotkeySettingsWindow()
         self.language_settings_window = LanguageSettingsWindow()
         self.hotkeys = HotkeyManager(settings.hotkeys, self.on_hotkey)
-        self._lock = threading.RLock()
         self._status: Status = STATUS_IDLE
         self._processing = False
         self._shutdown = False
@@ -157,6 +173,8 @@ class AppController:
         except Exception:
             self.logger.exception("Hotkey listener failed to stop cleanly.")
 
+        self._stop_microphone_test(notify=False)
+
         if self.recorder.is_recording():
             try:
                 self.recording_overlay.hide()
@@ -175,6 +193,8 @@ class AppController:
         self.stop()
 
     def stop_from_overlay(self) -> None:
+        if self._stop_microphone_test():
+            return
         self._request_stop(hide_overlay_if_idle=True)
 
     def on_hotkey(self, action: str) -> None:
@@ -204,7 +224,10 @@ class AppController:
 
     def toggle(self, language_override: LanguageMode | None = None) -> None:
         beep: tuple[int, int] | None = None
-        start_failed = False
+        start_error: str | None = None
+
+        if self._stop_microphone_test():
+            return
 
         with self._lock:
             if self._processing:
@@ -222,11 +245,11 @@ class AppController:
                 self._overlay_anchor = get_cursor_anchor(self._paste_target_window)
                 try:
                     self.recorder.start_recording()
-                except Exception:
+                except Exception as exc:
                     self._paste_target_window = None
                     self._paste_target_process_name = None
                     self._overlay_anchor = None
-                    start_failed = True
+                    start_error = str(exc) or "Recording failed to start."
                 else:
                     self._recording_language_mode = language_mode
                     self.logger.info(
@@ -238,8 +261,8 @@ class AppController:
                     self.set_status(STATUS_RECORDING)
                     beep = (880, 120)
 
-        if start_failed:
-            self._handle_error("Recording failed to start.")
+        if start_error is not None:
+            self._handle_error(start_error)
             return
         if beep is not None:
             self._beep(*beep)
@@ -287,6 +310,60 @@ class AppController:
         self.settings.cleanup_mode = mode  # type: ignore[assignment]
         save_settings(self.settings)
         self.logger.info("Cleanup mode set to %s.", mode)
+
+    def set_audio_input_device(self, value: object) -> None:
+        selected_device = normalize_audio_input_device(value)
+        with self._lock:
+            if self._processing or self.recorder.is_recording() or self._microphone_test:
+                raise RuntimeError("Stop microphone capture before changing the microphone.")
+
+            previous_device = self.settings.audio_input_device
+            self.recorder.set_audio_input_device(selected_device)
+            self.settings.audio_input_device = selected_device
+            try:
+                save_settings(self.settings)
+            except Exception:
+                self.settings.audio_input_device = previous_device
+                self.recorder.set_audio_input_device(previous_device)
+                raise
+
+        self.tray.refresh_menu()
+        self.logger.info("Audio input device set to %s.", selected_device)
+
+    def start_microphone_test(self) -> None:
+        with self._lock:
+            if self._shutdown:
+                raise RuntimeError("Speech is shutting down.")
+            if self._processing or self.recorder.is_recording():
+                raise RuntimeError("Stop dictation before testing the microphone.")
+            if self._microphone_test is not None:
+                raise RuntimeError("A microphone test is already running.")
+
+            microphone_test = MicrophoneTest(self.settings.audio_input_device)
+            microphone_test.start()
+            cancel = threading.Event()
+            self._microphone_test = microphone_test
+            self._microphone_test_cancel = cancel
+            overlay_anchor = get_cursor_anchor(get_foreground_window())
+
+        self.recording_overlay.show(overlay_anchor)
+        self.set_status(STATUS_TESTING_MICROPHONE)
+        self.notify(APP_NAME, "Testing microphone. Speak now.")
+        _RealThread(
+            target=self._finish_microphone_test_after_delay,
+            args=(microphone_test, cancel),
+            name="winwhisper-microphone-test",
+            daemon=True,
+        ).start()
+
+    def _finish_microphone_test_after_delay(
+        self,
+        microphone_test: MicrophoneTest,
+        cancel: threading.Event,
+    ) -> None:
+        if cancel.wait(MICROPHONE_TEST_SECONDS):
+            return
+        self._stop_microphone_test(microphone_test, completed=True)
 
     def set_hotkeys(self, hotkeys: dict[str, str]) -> None:
         normalized = normalize_hotkey_profile(
@@ -361,7 +438,7 @@ class AppController:
             _open_path(settings_path)
             self.notify(
                 APP_NAME,
-                "Use Language Settings and Hotkey Settings for live changes. "
+                "Use the Language, Microphone, and Hotkey menus for live changes. "
                 "Restart after editing model or advanced settings.",
             )
         except Exception:
@@ -389,6 +466,13 @@ class AppController:
     def is_recording(self) -> bool:
         return self.recorder.is_recording()
 
+    def _current_microphone_level(self) -> float:
+        with self._lock:
+            microphone_test = self._microphone_test
+        if microphone_test is not None:
+            return microphone_test.current_level()
+        return self.recorder.current_level()
+
     def _on_max_recording_duration(self) -> None:
         # Called from the audio callback; hop to a worker immediately.
         threading.Thread(
@@ -410,6 +494,55 @@ class AppController:
             )
             return
         self.toggle(language)
+
+    def _stop_microphone_test(
+        self,
+        expected_test: MicrophoneTest | None = None,
+        *,
+        completed: bool = False,
+        notify: bool = True,
+    ) -> bool:
+        peak_level = 0.0
+        stop_failed = False
+        with self._lock:
+            microphone_test = self._microphone_test
+            if microphone_test is None or (
+                expected_test is not None and microphone_test is not expected_test
+            ):
+                return False
+            cancel = self._microphone_test_cancel
+            shutdown = self._shutdown
+            if cancel is not None:
+                cancel.set()
+            try:
+                peak_level = microphone_test.stop()
+            except Exception:
+                stop_failed = True
+                self.logger.exception("Microphone test failed to stop cleanly.")
+            finally:
+                self._microphone_test = None
+                self._microphone_test_cancel = None
+                # Hide before another toggle can begin a real dictation and
+                # publish a new recording overlay.
+                self.recording_overlay.hide()
+                if not shutdown:
+                    self.set_status(STATUS_IDLE)
+
+        if stop_failed and notify and not shutdown:
+            self.notify(APP_NAME, "Microphone test could not stop cleanly.")
+
+        if notify and not shutdown and not stop_failed:
+            if peak_level >= MICROPHONE_TEST_SIGNAL_THRESHOLD:
+                self.notify(APP_NAME, "Microphone test complete. Signal detected.")
+            elif completed:
+                self.notify(
+                    APP_NAME,
+                    "No sound detected. Check the microphone, its permission, "
+                    "and the selected input.",
+                )
+            else:
+                self.notify(APP_NAME, "Microphone test stopped before sound was detected.")
+        return True
 
     def _handle_max_recording_duration(self) -> None:
         if self._request_stop():

@@ -9,6 +9,7 @@ from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_validator
 
+from .audio_inputs import normalize_audio_input_device
 from .branding import APP_NAME, LEGACY_APP_NAME
 from .hotkey_actions import DEFAULT_HOTKEYS
 from .languages import (
@@ -27,6 +28,7 @@ class Settings(BaseModel):
     model_size: str = "small"
     device: str = "cpu"
     compute_type: str = "int8"
+    audio_input_device: int | None = None
     language_mode: str = AUTO_LANGUAGE_MODE
     language_favorites: list[str | None] = Field(
         default_factory=lambda: list(DEFAULT_LANGUAGE_FAVORITES)
@@ -50,6 +52,11 @@ class Settings(BaseModel):
         if normalized is None:
             raise ValueError(f"Unsupported language mode: {value!r}")
         return normalized
+
+    @field_validator("audio_input_device", mode="before")
+    @classmethod
+    def validate_audio_input_device(cls, value: object) -> int | None:
+        return normalize_audio_input_device(value)
 
     @field_validator("language_favorites", mode="before")
     @classmethod
@@ -101,6 +108,7 @@ def load_settings() -> Settings:
             raise ValueError("settings file must contain a JSON object")
         _migrate_language_mode(data)
         _migrate_language_favorites(data)
+        _migrate_audio_input_device(data)
         return Settings(**data)
     except (OSError, ValueError, json.JSONDecodeError, ValidationError) as exc:
         _log_warning(
@@ -190,6 +198,18 @@ def _migrate_language_favorites(data: dict[str, object]) -> None:
     except ValueError:
         _log_warning("Invalid language favorites; restoring default favorites.")
         data["language_favorites"] = list(DEFAULT_LANGUAGE_FAVORITES)
+
+
+def _migrate_audio_input_device(data: dict[str, object]) -> None:
+    if "audio_input_device" not in data:
+        return
+    try:
+        data["audio_input_device"] = normalize_audio_input_device(
+            data["audio_input_device"]
+        )
+    except ValueError:
+        _log_warning("Invalid audio input device; restoring System Default.")
+        data["audio_input_device"] = None
 
 
 def _load_dotenv() -> None:
