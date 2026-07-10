@@ -6,16 +6,16 @@
 [![License: MIT](https://img.shields.io/github/license/andresleecom/speech)](LICENSE)
 ![Platforms](https://img.shields.io/badge/platforms-Windows%20%7C%20macOS-blue)
 
-Speech is a Windows 10/11 and macOS tray app for local speech dictation.
-It records your microphone with a global hotkey, transcribes with faster-whisper, optionally cleans the text, and pastes into the focused app.
+Speech is a Windows 10/11 and macOS menu-bar/tray app for local speech dictation.
+It records your microphone with a global hotkey, transcribes with faster-whisper, optionally formats the text, and pastes into the focused app.
 It transcribes in 99 languages with automatic language detection, and has quick-force hotkeys for English and Spanish.
 
-![Demo: press the hotkey, speak, and the text is pasted at your cursor](docs/demo.gif)
+![Default Speech hotkeys: Ctrl + Alt + Space on Windows and Control + Option + Space on macOS](docs/hotkeys.gif)
 
 ## How it works
 
 1. Click where you want your words to go, in any app.
-2. Press `Ctrl+Alt+Space` (`Ctrl+Option+Space` on a Mac) to start recording. A floating orb appears near your cursor.
+2. Press the start/stop hotkey: `Ctrl+Alt+Space` on Windows or `Control+Option+Space` on macOS. A floating orb appears near your cursor.
 3. Speak, then press the same combo again or click the red button to stop.
 4. Speech transcribes locally and pastes the text right where your cursor was.
 
@@ -23,7 +23,7 @@ Speech remembers which window was active when you started recording and focuses 
 
 ## Works in every app you type in
 
-Speech types wherever your cursor is, so it works with virtually any Windows application.
+Speech types wherever your cursor is, so it works with virtually any application that accepts a standard paste shortcut.
 
 - Browsers: Chrome, Edge, Firefox, and any web app running in them.
 - Messaging: Slack, WhatsApp Desktop, Telegram, Discord, Teams.
@@ -32,7 +32,7 @@ Speech types wherever your cursor is, so it works with virtually any Windows app
 - Coding: VS Code, JetBrains IDEs, Cursor, terminals, and coding agents such as Claude Code.
 
 If you can type there, you can dictate there.
-Speech pastes into the focused window with `Ctrl+V`, and automatically switches to `Ctrl+Shift+V` for terminal windows.
+On Windows, Speech pastes with `Ctrl+V` and automatically switches to `Ctrl+Shift+V` for supported terminal windows. On macOS, it always pastes with `Cmd+V`.
 
 ## Languages
 
@@ -42,15 +42,30 @@ You can also pin the language from the tray menu or with `language_mode` in the 
 Accuracy varies by language and model size: `small` is strong for widely spoken languages, and `medium` or `large-v3` improve the less common ones.
 Text cleanup preserves the original language and never translates.
 
+## Text cleanup
+
+`Cleanup` is the optional step between transcription and pasting. It changes text only; the audio always stays local.
+
+| Mode | What it does | Network use |
+| --- | --- | --- |
+| `None` | Pastes the transcription exactly as returned by the speech model. Use it when you need the most literal result. | None. |
+| `Basic` (default) | Removes leading/trailing and repeated whitespace, removes spaces before punctuation, and capitalizes the first alphabetic character. It does not rewrite or translate your words. | None. |
+| `LLM` | Uses your own OpenAI API key to improve punctuation, capitalization, spacing, obvious disfluencies, and spelling from custom vocabulary. It preserves the language, does not translate, and does not add ideas. | The transcript text only, never audio, is sent to OpenAI. |
+
+Choose the mode from the tray/menu-bar icon under **Cleanup**, or set `cleanup_mode` in the settings file. `LLM` needs `OPENAI_API_KEY` in the environment before Speech starts and uses `gpt-4o-mini` by default. If the key is missing, the request fails, or it times out, Speech automatically falls back to `Basic` so dictation can still complete.
+
+For most users, leave `Basic` selected. Choose `None` for verbatim technical notes or commands, and choose `LLM` only when you want more editorial cleanup and are comfortable sending the transcript text to your OpenAI account.
+
 ## Platform support
 
-Windows 10/11 and macOS 12+ ship as downloadable apps.
+Windows 10/11 and macOS ship as downloadable apps.
 Linux support is in development: the engine works on X11 from source, and the test suite runs on all three systems in CI (Wayland is not supported yet).
 
 macOS notes:
 
-- Global hotkeys need both the Accessibility and Input Monitoring permissions. macOS prompts on first use; enable Speech under System Settings > Privacy & Security > Accessibility and Input Monitoring.
-- The hotkey combo uses the Option key where the docs say Alt (same key), and pasting uses `Cmd+V` automatically.
+- Global hotkeys need both the Accessibility and Input Monitoring permissions. Enable Speech under System Settings > Privacy & Security > Accessibility and Input Monitoring, then fully quit and reopen the app.
+- The default hotkey is `Control+Option+Space`; Option is sometimes labeled Alt on Mac-compatible keyboards. Speech pastes with `Cmd+V` automatically.
+- Replacing or deleting an unsigned build can make macOS require permission approval again. If the hotkey stops responding after an update, switch Speech off and back on in both permission lists, then quit and reopen it.
 - Automatic in-app updates are Windows-only for now; download new DMGs from Releases.
 
 ## Installation for users
@@ -73,7 +88,7 @@ download, verify, and launch the installer.
 
 ### macOS
 
-Pick the DMG that matches your Mac's chip (check under ` > About This Mac`):
+Pick the DMG that matches your Mac's chip (check **Apple menu > About This Mac**):
 
 | Your Mac | Download |
 | --- | --- |
@@ -89,13 +104,15 @@ Then:
 3. Enable Speech under System Settings > Privacy & Security > Accessibility and Input Monitoring, then quit Speech (menu bar icon > Exit) and open it again. Input Monitoring lets Speech receive global hotkeys; Accessibility lets it paste into other apps.
 4. Allow the Microphone permission on your first recording.
 
+When replacing an older `Speech.app`, repeat step 3 even if Speech already appears enabled. Toggle both permissions off and back on, then relaunch the app. This is especially important while releases are unsigned.
+
 Speech lives in the menu bar (no Dock icon); the icon color shows the recording state.
 
 ## Development setup
 
-Clone the repository.
+Clone the repository on either platform.
 
-```powershell
+```bash
 git clone https://github.com/andresleecom/speech.git
 cd speech
 ```
@@ -103,25 +120,31 @@ cd speech
 Create a Python 3.11 or 3.12 virtual environment.
 
 ```powershell
+# Windows PowerShell
 py -3.12 -m venv .venv
 ```
 
-Use `py -3.11 -m venv .venv` instead if you want Python 3.11.
-Activate the virtual environment.
+```bash
+# macOS
+python3.12 -m venv .venv
+```
+
+Use the equivalent Python 3.11 command if needed. Activate the virtual environment.
 
 ```powershell
+# Windows PowerShell
 .\.venv\Scripts\Activate.ps1
 ```
 
-Upgrade pip.
-
-```powershell
-python -m pip install --upgrade pip
+```bash
+# macOS
+source .venv/bin/activate
 ```
 
-Install the runtime requirements.
+Upgrade pip and install the runtime requirements.
 
-```powershell
+```bash
+python -m pip install --upgrade pip
 pip install -r requirements.txt
 ```
 
@@ -132,7 +155,7 @@ runtime dependencies declared in `pyproject.toml`.
 
 Start the tray app from the activated virtual environment.
 
-```powershell
+```bash
 python -m winwhisper.main
 ```
 
@@ -151,20 +174,22 @@ To force Spanish for one dictation, use `Ctrl+Shift+S` to start and stop instead
 On a Mac keyboard, Alt is the Option key.
 
 Open Notes and click into a note.
-Press `Ctrl+Option+Space`.
+Press `Control+Option+Space`.
 Say, "Hello this is a test."
-Press `Ctrl+Option+Space` again, or click the floating red recording button.
+Press `Control+Option+Space` again, or click the floating red recording button.
 The transcribed text pastes into Notes at your cursor via `Cmd+V`, sent automatically.
 
 If the hotkey does not respond, enable Speech under System Settings > Privacy & Security > Accessibility and Input Monitoring, then relaunch the app. Input Monitoring lets Speech listen for global hotkeys; Accessibility lets it send the paste keystroke.
 
-## Hotkeys table
+## Default hotkeys
 
 | Action | Windows | macOS |
 | --- | --- | --- |
-| Start or stop recording | `Ctrl+Alt+Space` | `Ctrl+Option+Space` |
-| Start or stop with English for this dictation | `Ctrl+Shift+E` | `Ctrl+Shift+E` |
-| Start or stop with Spanish for this dictation | `Ctrl+Shift+S` | `Ctrl+Shift+S` |
+| Start or stop recording | `Ctrl+Alt+Space` | `Control+Option+Space` |
+| Start or stop with English for this dictation | `Ctrl+Shift+E` | `Control+Shift+E` |
+| Start or stop with Spanish for this dictation | `Ctrl+Shift+S` | `Control+Shift+S` |
+
+![Windows dictation example: press the Windows hotkey, speak, and the text is pasted at the cursor](docs/demo.gif)
 
 ## Customizing hotkeys
 
@@ -172,7 +197,7 @@ Open the tray menu and choose **Hotkey Settings...**. Select a suggested shortcu
 
 The editor uses platform names: `Win` on Windows is `Command` on macOS, and `Alt` on Windows is `Option` on macOS. Choose **Disabled** to leave an action without a hotkey. Printable keys require a modifier so normal typing cannot start dictation; function keys such as `F8` can be used alone.
 
-The advanced settings file still accepts the serialized form below:
+The advanced settings file still accepts serialized hotkeys. For example, on Windows:
 
 ```json
 "hotkeys": {
@@ -182,11 +207,12 @@ The advanced settings file still accepts the serialized form below:
 
 A combo is zero or more modifiers plus exactly one trigger key.
 Supported modifiers are `<ctrl>`, `<alt>`, `<shift>`, and `<cmd>` (`Win` on Windows, `Command` on macOS).
-The trigger can be a letter or digit, a function key such as `<f8>`, or a named key such as `<space>`, `<numpad_plus>`, `<numpad_minus>`, `<numpad0>` through `<numpad9>`, `<plus>`, or `<minus>`.
+On macOS, triggers can be ASCII letters or digits, `<space>`, `<enter>`, `<tab>`, `<esc>`, `<backspace>`, `<delete>`, `<home>`, `<end>`, `<page_up>`, `<page_down>`, arrow keys, or `<f1>` through `<f20>`. Windows also supports numpad keys, `<plus>`, `<minus>`, and function keys through `<f24>`.
+macOS intentionally rejects Option with a letter or number because its meaning changes with the keyboard layout. Prefer Space, a function key, or a shortcut without Option for custom Mac bindings.
 Remove an action from `hotkeys` to leave it without a hotkey.
 If a combo is already registered by another application, the editor keeps the previous working hotkeys and asks for a different shortcut.
 
-The English and Spanish defaults use `Ctrl+Shift` so they do not collide with `AltGr` on international Windows layouts or Option-modified letters on macOS. Existing installations keep their saved shortcuts until you change them in **Hotkey Settings...**.
+The English and Spanish defaults use `Ctrl+Shift` on Windows and `Control+Shift` on macOS, so they do not collide with `AltGr` on international Windows layouts or Option-modified letters on macOS. Existing installations keep their saved shortcuts until you change them in **Hotkey Settings...**.
 
 ## Settings file location and keys
 
@@ -199,10 +225,10 @@ The app creates the file on first run if it does not exist.
 | `device` | `cpu` | Inference device such as `cpu` or `cuda`. |
 | `compute_type` | `int8` | faster-whisper compute type. |
 | `language_mode` | `auto` | Use `auto`, `en`, or `es`. |
-| `cleanup_mode` | `basic` | Use `none`, `basic`, or `llm`. |
-| `paste_mode` | `auto` | Paste shortcut mode. `auto` uses `Ctrl+Shift+V` for common terminal windows and `Ctrl+V` elsewhere. Older `clipboard_ctrl_v` settings keep the same terminal detection. Use `clipboard_ctrl_shift_v` to force `Ctrl+Shift+V`. |
+| `cleanup_mode` | `basic` | Use `none`, `basic`, or `llm`; see [Text cleanup](#text-cleanup). |
+| `paste_mode` | `auto` | On Windows, `auto` uses `Ctrl+Shift+V` for common terminal windows and `Ctrl+V` elsewhere. On macOS, Speech always sends `Cmd+V`. Older `clipboard_ctrl_v` settings keep the same Windows terminal detection. Use `clipboard_ctrl_shift_v` to force `Ctrl+Shift+V` on Windows. |
 | `delete_audio_after_transcription` | `true` | Delete temporary WAV files after transcription. |
-| `check_for_updates` | `true` | Check GitHub Releases for updates at most once per day. |
+| `check_for_updates` | `true` | On Windows, check GitHub Releases for updates at most once per day. macOS updates are manual. |
 | `last_update_check_at` | `null` | Internal timestamp for update throttling. |
 | `hotkeys` | See defaults above. | Global hotkey bindings. |
 | `custom_vocabulary` | `[]` | Names and terms you use often, transcribed with these exact spellings. |
@@ -226,29 +252,16 @@ Restart Speech after editing it.
 
 ## Floating recording button
 
-When recording starts, Speech shows a floating circular recording
-orb to the right of the text cursor when Windows exposes it, or near the mouse
-cursor as a fallback. The red center button stops recording, and the surrounding
-sonar rings pulse while the microphone is live. Drag the orb to move it. After
-you stop recording, the orb switches to a transcribing spinner until the text is
-ready. The app remembers the active window from the start of recording and tries
-to focus it again before pasting, so the text goes back where your cursor was
-when dictation began.
+When recording starts, Speech shows a floating circular recording orb near the text cursor when Windows exposes one, or near the mouse cursor as a fallback and on macOS. The red center button stops recording, and the surrounding sonar rings pulse while the microphone is live. Drag the orb to move it. After you stop recording, the orb switches to a transcribing spinner until the text is ready. The app remembers the active window from the start of recording and tries to focus it again before pasting, so the text goes back where your cursor was when dictation began.
 
-On Windows, the overlay uses a native layered window with per-pixel alpha for
-smooth circular edges and transparent corners. Tkinter is kept as a fallback for
-development and future non-Windows work.
+On Windows in `auto` paste mode, terminal windows such as Windows Terminal, WezTerm, Alacritty, mintty, and legacy console hosts receive `Ctrl+Shift+V`. Other Windows apps receive `Ctrl+V`; macOS uses `Cmd+V`.
 
-In `auto` paste mode, terminal windows such as Windows Terminal, WezTerm,
-Alacritty, mintty, and legacy console hosts receive `Ctrl+Shift+V`. Other
-windows receive `Ctrl+V`.
-
-## Model Recommendations
+## Model and performance
 
 Use `small` on `cpu` with `int8` for the default MVP experience.
 Use `medium` if you want better accuracy and can accept slower transcription.
 Use `large-v3` if you want the highest accuracy and have enough memory and patience.
-Use `cuda` with `float16` or `int8_float16` when you have a supported NVIDIA GPU.
+Use `cuda` with `float16` or `int8_float16` when you have a supported NVIDIA GPU. CUDA does not apply to normal macOS builds.
 
 ## Security and privacy
 
@@ -307,11 +320,30 @@ The diagnostics report includes Python, OS, microphone, model, dependency, API k
 
 ## Known limitations
 
-Dictation text remains on the clipboard after each paste attempt so you can press
-`Ctrl+V` manually if the focused app did not accept the automatic paste.
-Previous clipboard content is not preserved in the MVP.
+Dictation stops automatically after 10 minutes to avoid unbounded memory use. The recording-length limit is not configurable yet.
+
+Dictation text remains on the clipboard after each paste attempt so you can press `Ctrl+V` on Windows or `Cmd+V` on macOS manually if the focused app did not accept the automatic paste. Previous clipboard content is not preserved in the MVP.
 
 ## Troubleshooting
+
+### macOS hotkey does not respond
+
+1. Open System Settings > Privacy & Security > Accessibility and Input Monitoring.
+2. Ensure **Speech** is enabled in both lists.
+3. If you just replaced or updated `Speech.app`, switch both controls off and back on.
+4. Quit Speech from its menu-bar icon and open it again from Applications.
+
+Input Monitoring is required to receive the global hotkey; Accessibility is required to paste into another app. If Speech is not listed, launch it once, retry the permission request, then reopen the two privacy panes.
+
+### macOS quits after transcription
+
+Install the latest release. Versions before `v0.1.12.16` can crash while issuing the macOS paste shortcut after transcription; current releases use the native macOS event path instead.
+
+### LLM cleanup does not run
+
+Set `OPENAI_API_KEY` before launching Speech and select **Cleanup > LLM**. If the key is unavailable, OpenAI returns an error, or the request exceeds its timeout, Speech intentionally uses `Basic` cleanup instead so your dictation still pastes.
+
+### Windows model download fails
 
 Some antivirus products that intercept TLS, such as Norton, break the first-run model download in two ways.
 They set `SSLKEYLOGFILE` to a special device path, which crashes OpenSSL with a "no OPENSSL_Applink" error.
@@ -323,7 +355,7 @@ If you download models from your own scripts instead, apply the same two workaro
 
 Install development dependencies.
 
-```powershell
+```bash
 pip install -r requirements-dev.txt
 ```
 
@@ -331,6 +363,12 @@ Install Inno Setup 6, then build the Windows app and installer.
 
 ```powershell
 .\scripts\build_windows.ps1
+```
+
+Build the macOS app and DMG on a Mac:
+
+```bash
+bash scripts/build_macos.sh python
 ```
 
 The build outputs:
@@ -359,15 +397,24 @@ Each release contains these stable download URLs and matching versioned assets:
 - `Speech.dmg` for Apple Silicon Macs
 - `Speech-intel.dmg` for Intel Macs
 
-The README demo GIF is generated, not screen-recorded.
-Regenerate `docs/demo.gif` after visual changes to the overlay.
+The README GIFs are generated, not screen-recorded. Regenerate them after visual changes to the overlay or the default shortcuts.
 
-```powershell
-python scripts\make_demo_gif.py
+```bash
+python scripts/make_demo_gif.py
+python scripts/make_hotkeys_gif.py
 ```
 
 ## Roadmap
 
-- Windows installer and GitHub Releases auto-update: current target.
-- macOS app bundle and signed/notarized installer.
-- Linux AppImage or distro packages.
+### Next
+
+- Sign and notarize macOS releases, then add a native macOS update flow. A stable signed identity will also make permission changes less disruptive after upgrades.
+- Add an audio-device selector, microphone test, and visible input-level diagnostics so users can resolve microphone problems without reading logs.
+- Make the recording-duration limit configurable and stream long recordings safely instead of keeping all audio in memory.
+- Add explicit post-dictation controls: copy again, retry transcription, and opt-in local-only history with a clear-delete action.
+
+### Later
+
+- Add push-to-talk and voice-activity options for hands-free workflows.
+- Improve model management: download progress, storage usage, and a simple accuracy/speed recommendation by machine.
+- Package Linux for both mainstream desktop distributions and Wayland, without reducing the current X11 support.
