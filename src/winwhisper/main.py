@@ -109,6 +109,12 @@ class AppController:
                 "Enable Speech under Privacy & Security > Accessibility, "
                 "then relaunch, to use the dictation hotkey.",
             )
+        if getattr(self.hotkeys, "input_monitoring_missing", False):
+            self.notify(
+                APP_NAME,
+                "Enable Speech under Privacy & Security > Input Monitoring, "
+                "then relaunch, to use the dictation hotkey.",
+            )
 
         self._start_model_warmup()
 

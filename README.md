@@ -43,7 +43,7 @@ Linux support is in development: the engine works on X11 from source, and the te
 
 macOS notes:
 
-- Global hotkeys need the Accessibility permission; macOS prompts on first use (System Settings > Privacy & Security > Accessibility > enable Speech).
+- Global hotkeys need both the Accessibility and Input Monitoring permissions. macOS prompts on first use; enable Speech under System Settings > Privacy & Security > Accessibility and Input Monitoring.
 - The hotkey combo uses the Option key where the docs say Alt (same key), and pasting uses `Cmd+V` automatically.
 - Automatic in-app updates are Windows-only for now; download new DMGs from Releases.
 
@@ -75,7 +75,7 @@ https://github.com/andresleecom/speech/releases/latest/download/Speech.dmg
 
 Open the DMG and drag `Speech.app` into `Applications`.
 The app is not yet code-signed, so the first launch needs one extra step: right-click `Speech.app`, choose `Open`, and confirm.
-Grant the Microphone permission when prompted, and enable Speech under System Settings > Privacy & Security > Accessibility so the global hotkey works.
+Grant the Microphone permission when prompted, and enable Speech under System Settings > Privacy & Security > Accessibility and Input Monitoring so the global hotkey works.
 Speech lives in the menu bar (no Dock icon); the icon color shows the recording state.
 
 ## Development setup

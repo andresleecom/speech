@@ -93,6 +93,11 @@ def test_macos_rejects_option_letter_shortcuts_that_change_with_layout():
     )
 
 
+def test_macos_rejects_function_keys_beyond_pynput_support():
+    with pytest.raises(HotkeyConfigurationError, match="Unsupported macOS"):
+        normalize_hotkey_input("F21", platform="darwin")
+
+
 def test_macos_migrates_legacy_default_language_shortcuts_on_save():
     profile = normalize_hotkey_profile(
         {

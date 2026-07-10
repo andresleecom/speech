@@ -334,6 +334,18 @@ def test_startup_surfaces_saved_hotkey_registration_conflict(monkeypatch, tmp_pa
     )
 
 
+def test_startup_surfaces_missing_input_monitoring(monkeypatch, tmp_path):
+    controller = make_controller(monkeypatch, tmp_path, [], [])
+    controller.hotkeys.input_monitoring_missing = True
+
+    controller.run()
+
+    assert any(
+        "input monitoring" in message.lower()
+        for _title, message in controller.tray.notifications
+    )
+
+
 def test_start_recording_shows_floating_overlay(monkeypatch, tmp_path):
     controller = make_controller(monkeypatch, tmp_path, [], [])
 

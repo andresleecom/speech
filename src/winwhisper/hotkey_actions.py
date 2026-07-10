@@ -27,6 +27,35 @@ _TOGGLE_SUGGESTIONS = (
     "<f11>",
 )
 
+_MACOS_NAMED_TRIGGERS = frozenset(
+    {
+        "space",
+        "enter",
+        "tab",
+        "esc",
+        "backspace",
+        "delete",
+        "home",
+        "end",
+        "page_up",
+        "page_down",
+        "up",
+        "down",
+        "left",
+        "right",
+    }
+)
+
+
+def is_macos_supported_trigger(trigger: str) -> bool:
+    if len(trigger) == 1 and trigger.isascii() and trigger.isalnum():
+        return True
+    if trigger in _MACOS_NAMED_TRIGGERS:
+        return True
+    if trigger.startswith("f") and trigger[1:].isdigit():
+        return 1 <= int(trigger[1:]) <= 20
+    return False
+
 HOTKEY_ACTIONS = (
     HotkeyAction(
         setting_key="toggle_recording",

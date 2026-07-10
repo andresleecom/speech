@@ -4,7 +4,12 @@ import re
 import sys
 from collections.abc import Mapping
 
-from .hotkey_actions import HOTKEY_ACTION_BY_KEY, HOTKEY_ACTIONS, HotkeyAction
+from .hotkey_actions import (
+    HOTKEY_ACTION_BY_KEY,
+    HOTKEY_ACTIONS,
+    HotkeyAction,
+    is_macos_supported_trigger,
+)
 from .hotkeys import combo_to_hotkey, parse_combo
 
 _MODIFIER_ORDER = ("ctrl", "alt", "shift", "cmd")
@@ -78,24 +83,6 @@ _LEGACY_MACOS_DEFAULTS = {
     "force_english": ("<ctrl>+<alt>+e", "<ctrl>+<shift>+e"),
     "force_spanish": ("<ctrl>+<alt>+s", "<ctrl>+<shift>+s"),
 }
-_MAC_NAMED_TRIGGERS = {
-    "space",
-    "enter",
-    "tab",
-    "esc",
-    "backspace",
-    "delete",
-    "home",
-    "end",
-    "page_up",
-    "page_down",
-    "up",
-    "down",
-    "left",
-    "right",
-}
-
-
 class HotkeyConfigurationError(ValueError):
     pass
 
@@ -246,17 +233,10 @@ def _validate_platform_trigger(combo: str, trigger: str, platform: str) -> None:
         return
     if platform != "darwin":
         return
-    if len(trigger) == 1 and trigger.isascii() and trigger.isalnum():
-        return
-    if trigger in _MAC_NAMED_TRIGGERS:
-        return
-    if trigger.startswith("f") and trigger[1:].isdigit():
-        number = int(trigger[1:])
-        if 1 <= number <= 20:
-            return
-    raise HotkeyConfigurationError(
-        f"Unsupported macOS hotkey trigger key: {trigger!r}"
-    )
+    if not is_macos_supported_trigger(trigger):
+        raise HotkeyConfigurationError(
+            f"Unsupported macOS hotkey trigger key: {trigger!r}"
+        )
 
 
 def _display_trigger(trigger: str) -> str:

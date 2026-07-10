@@ -8,7 +8,7 @@ from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from typing import Any
 
-from .hotkey_actions import HOTKEY_ACTIONS
+from .hotkey_actions import HOTKEY_ACTIONS, is_macos_supported_trigger
 from .logger import get_logger
 
 _MODIFIER_ALIASES = {
@@ -237,6 +237,13 @@ class HotkeyManager:
                 )
                 self._rejected_combos.append(combo)
                 continue
+            if sys.platform == "darwin" and not is_macos_supported_trigger(trigger):
+                self._logger.warning(
+                    "Ignoring unsupported macOS hotkey combo for %s.",
+                    action.setting_key,
+                )
+                self._rejected_combos.append(combo)
+                continue
             self._name_bindings.append(
                 (modifiers, trigger, action.dispatch_action, combo)
             )
@@ -267,11 +274,14 @@ class HotkeyManager:
         self._stop_requested = False
         self._backend: _PynputHotkeyBackend | None = None
         self.accessibility_missing = False
+        self.input_monitoring_missing = False
 
     def start(self) -> HotkeyActivationResult:
         if os.name == "nt":
             if self._thread is not None:
                 return self._activation_result
+            self.accessibility_missing = False
+            self.input_monitoring_missing = False
             self._started.clear()
             self._stop_requested = False
             self._thread = threading.Thread(
@@ -292,6 +302,8 @@ class HotkeyManager:
         # compositor-specific portals and is not supported yet).
         if self._backend is not None:
             return self._activation_result
+        self.accessibility_missing = False
+        self.input_monitoring_missing = False
         if not _macos_accessibility_trusted(prompt=True):
             # The listener starts fine without the permission but receives no
             # events, which looks like "hotkeys silently do nothing". Surface
@@ -301,6 +313,13 @@ class HotkeyManager:
                 "Accessibility permission is not granted; global hotkeys will "
                 "not work until Speech is enabled under System Settings > "
                 "Privacy & Security > Accessibility and the app is relaunched."
+            )
+        if not _macos_input_monitoring_trusted(prompt=True):
+            self.input_monitoring_missing = True
+            self._logger.warning(
+                "Input Monitoring permission is not granted; global hotkeys "
+                "will not work until Speech is enabled under System Settings > "
+                "Privacy & Security > Input Monitoring and the app is relaunched."
             )
         try:
             backend = _PynputHotkeyBackend(
@@ -526,6 +545,25 @@ def _macos_accessibility_trusted(prompt: bool) -> bool:
             return True
         if prompt:
             AXIsProcessTrustedWithOptions({kAXTrustedCheckOptionPrompt: True})
+        return False
+    except Exception:
+        return True
+
+
+def _macos_input_monitoring_trusted(prompt: bool) -> bool:
+    """True unless macOS has denied permission to observe global key events."""
+    if sys.platform != "darwin":
+        return True
+    try:
+        from Quartz import (
+            CGPreflightListenEventAccess,
+            CGRequestListenEventAccess,
+        )
+
+        if CGPreflightListenEventAccess():
+            return True
+        if prompt:
+            return bool(CGRequestListenEventAccess())
         return False
     except Exception:
         return True
