@@ -3,6 +3,7 @@ import sys
 
 import pytest
 
+import winwhisper
 import winwhisper.main as main_module
 from winwhisper import __version__
 from winwhisper.main import _finish_cli, _is_writable_regular_file, main
@@ -12,6 +13,12 @@ def test_version_flag_prints_package_version(capsys):
     assert main(["--version"]) == 0
 
     assert capsys.readouterr().out.strip() == __version__
+
+
+def test_packaged_build_version_overrides_installed_metadata(monkeypatch):
+    monkeypatch.setattr(winwhisper, "BUILD_VERSION", "0.1.12.42")
+
+    assert winwhisper._version_from_metadata() == "0.1.12.42"
 
 
 def test_finish_cli_returns_in_python_process(monkeypatch):

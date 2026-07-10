@@ -78,7 +78,7 @@ Pick the DMG that matches your Mac's chip (check under ` > About This Mac`):
 | Your Mac | Download |
 | --- | --- |
 | Apple Silicon (M1 and later) | `https://github.com/andresleecom/speech/releases/latest/download/Speech.dmg` |
-| Intel | `Speech-<version>-intel.dmg` from the [latest release](https://github.com/andresleecom/speech/releases/latest) |
+| Intel | `https://github.com/andresleecom/speech/releases/latest/download/Speech-intel.dmg` |
 
 Downloading the wrong architecture makes macOS refuse to open the app with an "incorrect executable format" or "Launch failed" error.
 
@@ -283,8 +283,11 @@ certutil -hashfile Speech-Setup-<version>.exe SHA256
 ```
 
 ```bash
-# macOS
+# Apple Silicon macOS
 shasum -a 256 Speech-<version>.dmg
+
+# Intel macOS
+shasum -a 256 Speech-<version>-intel.dmg
 ```
 
 Compare the output to the matching `.sha256` asset on the release page.
@@ -338,10 +341,23 @@ The build outputs:
 - `dist\installer\Speech-Setup.exe`
 - `dist\installer\Speech-Setup.exe.sha256`
 
-To publish a release, update the version in `pyproject.toml`, then push a tag
-such as `v0.1.0`. The GitHub Actions release workflow builds the installer and
-publishes both the stable installer URL and the versioned `.exe` plus `.sha256`
-files to GitHub Releases.
+Every push to `main` starts the GitHub Actions release workflow automatically.
+It tests the project on Linux, Windows, Apple Silicon macOS, and Intel macOS;
+builds the Windows installer and both Mac DMGs; verifies the packaged apps; and
+publishes the release only after every job succeeds. No release tag needs to be
+created manually.
+
+The version in `pyproject.toml` is the release train. Each automated build adds
+the immutable GitHub Actions run number as a fourth component, for example
+`0.1.12.6`. This keeps every release and installer filename unique while normal
+changes do not require version-file edits. Update the base version only when
+starting a new major, minor, or patch release train.
+
+Each release contains these stable download URLs and matching versioned assets:
+
+- `Speech-Setup.exe` for Windows
+- `Speech.dmg` for Apple Silicon Macs
+- `Speech-intel.dmg` for Intel Macs
 
 The README demo GIF is generated, not screen-recorded.
 Regenerate `docs/demo.gif` after visual changes to the overlay.

@@ -4,10 +4,14 @@ from importlib.metadata import PackageNotFoundError, version
 from pathlib import Path
 import tomllib
 
+from ._build_version import BUILD_VERSION
 from .branding import PACKAGE_DISTRIBUTION
 
 
 def _version_from_metadata() -> str:
+    if BUILD_VERSION:
+        return BUILD_VERSION
+
     try:
         return version(PACKAGE_DISTRIBUTION)
     except PackageNotFoundError:

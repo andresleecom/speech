@@ -20,6 +20,7 @@ def test_is_newer_version_accepts_v_prefix_and_semver_parts():
     assert is_newer_version("v0.1.1", "0.1.0") is True
     assert is_newer_version("0.1.0", "0.1.0") is False
     assert is_newer_version("0.1.0", "0.1.1") is False
+    assert is_newer_version("v0.1.12.42", "0.1.12") is True
 
 
 def test_should_check_for_updates_respects_daily_interval():
