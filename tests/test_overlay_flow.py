@@ -27,6 +27,7 @@ from winwhisper.transcriber import TranscriptionResult
 class FakeRecorder:
     def __init__(self, *args, **kwargs) -> None:
         self.recording = False
+        self.audio_input_device = kwargs.get("audio_input_device")
 
     def start_recording(self) -> None:
         self.recording = True
@@ -42,6 +43,32 @@ class FakeRecorder:
 
     def current_level(self) -> float:
         return 0.0
+
+    def set_audio_input_device(self, value) -> None:
+        if self.recording:
+            raise RuntimeError("Stop dictation before changing the microphone.")
+        self.audio_input_device = value
+
+
+class FakeMicrophoneTest:
+    instances: list["FakeMicrophoneTest"] = []
+
+    def __init__(self, audio_input_device) -> None:
+        self.audio_input_device = audio_input_device
+        self.started = False
+        self.stopped = False
+        self.peak_level = 0.0
+        self.instances.append(self)
+
+    def start(self) -> None:
+        self.started = True
+
+    def stop(self) -> float:
+        self.stopped = True
+        return self.peak_level
+
+    def current_level(self) -> float:
+        return self.peak_level
 
 
 class FakeTranscriber:
@@ -194,6 +221,7 @@ def make_controller(
 ) -> AppController:
     FakeOverlay.instances.clear()
     FakeHotkeys.instances.clear()
+    FakeMicrophoneTest.instances.clear()
     FakeHotkeys.fail_next_start = False
     FakeHotkeys.fail_stopped_manager_start = False
     FakeTranscriber.text = transcription_text
@@ -202,6 +230,7 @@ def make_controller(
     monkeypatch.setattr(sys, "platform", "win32")
     monkeypatch.setenv("WINWHISPER_APPDATA_DIR", str(tmp_path))
     monkeypatch.setattr(main_module, "Recorder", FakeRecorder)
+    monkeypatch.setattr(main_module, "MicrophoneTest", FakeMicrophoneTest)
     monkeypatch.setattr(main_module, "Transcriber", FakeTranscriber)
     monkeypatch.setattr(main_module, "TrayApp", FakeTray)
     monkeypatch.setattr(main_module, "HotkeyManager", FakeHotkeys)
@@ -367,6 +396,46 @@ def test_controller_persists_favorites_and_routes_quick_language_actions(
     assert load_settings().language_favorites == ["fr", "ja", None]
     assert toggles == ["fr", "ja"]
     assert controller.tray.notifications[-1][1].startswith("Set Favorite 3")
+
+
+def test_controller_persists_input_device_and_runs_microphone_test(monkeypatch, tmp_path):
+    controller = make_controller(monkeypatch, tmp_path, [], [])
+
+    controller.set_audio_input_device(3)
+    controller.start_microphone_test()
+    microphone_test = FakeMicrophoneTest.instances[-1]
+    microphone_test.peak_level = 0.4
+    controller.stop_from_overlay()
+
+    assert controller.settings.audio_input_device == 3
+    assert controller.recorder.audio_input_device == 3
+    assert load_settings().audio_input_device == 3
+    assert microphone_test.started is True
+    assert microphone_test.stopped is True
+    assert FakeOverlay.instances[0].events[-2:] == [
+        "show:ScreenPoint(x=240, y=320)",
+        "hide",
+    ]
+    assert controller.tray.notifications[-1][1] == "Microphone test complete. Signal detected."
+
+
+def test_controller_cannot_change_microphone_during_microphone_test(monkeypatch, tmp_path):
+    controller = make_controller(monkeypatch, tmp_path, [], [])
+    controller.start_microphone_test()
+
+    with pytest.raises(RuntimeError, match="Stop microphone capture"):
+        controller.set_audio_input_device(2)
+
+    controller.stop_from_overlay()
+
+
+def test_controller_reports_missing_microphone_signal(monkeypatch, tmp_path):
+    controller = make_controller(monkeypatch, tmp_path, [], [])
+    controller.start_microphone_test()
+
+    controller._stop_microphone_test(completed=True)
+
+    assert controller.tray.notifications[-1][1].startswith("No sound detected")
 
 
 def test_opening_advanced_settings_does_not_overwrite_external_edit(

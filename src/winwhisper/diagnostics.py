@@ -7,6 +7,12 @@ import sys
 import tempfile
 from pathlib import Path
 
+from .audio_inputs import (
+    AudioInputDeviceError,
+    audio_input_device_label,
+    default_audio_input_device,
+    list_audio_input_devices,
+)
 from .branding import APP_NAME
 from .config import app_data_dir, load_settings
 
@@ -17,7 +23,7 @@ def run_diagnostics() -> None:
     print(f"Python version: {sys.version.replace(os.linesep, ' ')}")
     print(f"OS version: {platform.platform()}")
     print("Microphone input devices:")
-    _print_microphone_devices()
+    _print_microphone_devices(settings.audio_input_device)
     print(f"Configured model_size: {settings.model_size}")
     print(f"Configured device: {settings.device}")
     print(f"faster-whisper import: {_import_status('faster_whisper')}")
@@ -33,25 +39,37 @@ def run_diagnostics() -> None:
         print(f"  - {line}")
 
 
-def _print_microphone_devices() -> None:
+def _print_microphone_devices(configured_device: int | None) -> None:
     try:
-        sounddevice = importlib.import_module("sounddevice")
-        devices = sounddevice.query_devices()
-    except Exception as exc:
-        print(f"  error: {exc.__class__.__name__}: {exc}")
+        devices = list_audio_input_devices()
+    except AudioInputDeviceError as exc:
+        print(
+            f"  configured: {audio_input_device_label(configured_device)}"
+        )
+        print(f"  error: {exc}")
         return
 
-    found = False
-    for index, device in enumerate(devices):
-        if int(device.get("max_input_channels", 0)) <= 0:
-            continue
-        found = True
-        name = device.get("name", "Unknown")
-        channels = device.get("max_input_channels", "?")
-        print(f"  [{index}] {name} ({channels} input channels)")
+    print(f"  configured: {audio_input_device_label(configured_device, devices)}")
 
-    if not found:
+    try:
+        default_device = default_audio_input_device()
+    except AudioInputDeviceError:
+        default_device = None
+
+    if not devices:
         print("  none found")
+        return
+
+    for device in devices:
+        flags: list[str] = []
+        if device.index == default_device:
+            flags.append("system default")
+        if configured_device is not None and device.index == configured_device:
+            flags.append("selected")
+        suffix = f"; {', '.join(flags)}" if flags else ""
+        print(
+            f"  {device.choice_label} ({device.input_channels} input channels{suffix})"
+        )
 
 
 def _import_status(module_name: str) -> str:

@@ -4,12 +4,19 @@ import threading
 from collections.abc import Callable
 from typing import Any
 
+from .audio_inputs import (
+    AudioInputDeviceError,
+    SYSTEM_DEFAULT_INPUT_LABEL,
+    audio_input_device_label,
+    list_audio_input_devices,
+)
 from .branding import APP_NAME
 from .languages import language_name, tray_language_modes
 
 _STATUS_COLORS = {
     "Idle": (128, 128, 128, 255),
     "Recording": (220, 38, 38, 255),
+    "Testing microphone": (14, 116, 144, 255),
     "Transcribing": (245, 158, 11, 255),
     "Pasting": (37, 99, 235, 255),
     "Error": (127, 29, 29, 255),
@@ -88,6 +95,10 @@ class TrayApp:
                 self._make_language_menu(menu_cls, item_cls),
             ),
             item_cls(
+                "Microphone",
+                self._make_microphone_menu(menu_cls, item_cls),
+            ),
+            item_cls(
                 "Cleanup",
                 menu_cls(
                     self._radio_item(
@@ -146,13 +157,58 @@ class TrayApp:
         items.append(item_cls("Language Settings...", self._on_language_settings))
         return menu_cls(*items)
 
+    def _make_microphone_menu(self, menu_cls: Any, item_cls: Any) -> Any:
+        selected_device = self._current_audio_input_device()
+        items = [
+            self._radio_item(
+                item_cls,
+                SYSTEM_DEFAULT_INPUT_LABEL,
+                None,
+                self._current_audio_input_device,
+                self._select_audio_input_device,
+            )
+        ]
+        try:
+            devices = list_audio_input_devices()
+        except AudioInputDeviceError:
+            devices = ()
+
+        if devices:
+            for device in devices:
+                items.append(
+                    self._radio_item(
+                        item_cls,
+                        device.choice_label,
+                        device.index,
+                        self._current_audio_input_device,
+                        self._select_audio_input_device,
+                    )
+                )
+        else:
+            items.append(
+                item_cls("No microphone available", lambda icon, item: None, enabled=False)
+            )
+
+        if selected_device is not None and not any(
+            device.index == selected_device for device in devices
+        ):
+            items.append(
+                item_cls(
+                    audio_input_device_label(selected_device, devices),
+                    lambda icon, item: None,
+                    enabled=False,
+                )
+            )
+        items.append(item_cls("Test Microphone", self._on_test_microphone))
+        return menu_cls(*items)
+
     def _radio_item(
         self,
         item_cls: Any,
         label: str,
-        value: str,
-        current: Callable[[], str],
-        select: Callable[[str], None],
+        value: Any,
+        current: Callable[[], Any],
+        select: Callable[[Any], None],
     ) -> Any:
         return item_cls(
             label,
@@ -163,8 +219,8 @@ class TrayApp:
 
     def _selection_action(
         self,
-        value: str,
-        select: Callable[[str], None],
+        value: Any,
+        select: Callable[[Any], None],
     ) -> Callable[[Any, Any], None]:
         def action(icon: Any, item: Any) -> None:
             select(value)
@@ -185,6 +241,15 @@ class TrayApp:
     def _on_language_settings(self, icon: Any, item: Any) -> None:
         self._controller.open_language_settings()
 
+    def _on_test_microphone(self, icon: Any, item: Any) -> None:
+        try:
+            self._controller.start_microphone_test()
+        except Exception as exc:
+            self._controller.notify(
+                APP_NAME,
+                str(exc) or "Microphone test could not start.",
+            )
+
     def _on_diagnostics(self, icon: Any, item: Any) -> None:
         self._controller.run_diagnostics()
 
@@ -200,11 +265,23 @@ class TrayApp:
     def _select_cleanup(self, mode: str) -> None:
         self._controller.set_cleanup_mode(mode)
 
+    def _select_audio_input_device(self, device: int | None) -> None:
+        try:
+            self._controller.set_audio_input_device(device)
+        except Exception as exc:
+            self._controller.notify(
+                APP_NAME,
+                str(exc) or "Microphone setting could not be saved.",
+            )
+
     def _current_language(self) -> str:
         return str(self._controller.settings.language_mode)
 
     def _current_cleanup(self) -> str:
         return str(self._controller.settings.cleanup_mode)
+
+    def _current_audio_input_device(self) -> int | None:
+        return getattr(self._controller.settings, "audio_input_device", None)
 
     def _tooltip(self) -> str:
         return f"{APP_NAME} - {self._status}"
