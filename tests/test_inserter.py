@@ -77,6 +77,7 @@ def test_insert_text_can_use_ctrl_shift_v(monkeypatch):
     monkeypatch.setitem(sys.modules, "pyperclip", clipboard)
     monkeypatch.setitem(sys.modules, "pynput", pynput_module)
     monkeypatch.setitem(sys.modules, "pynput.keyboard", keyboard_module)
+    monkeypatch.setattr(sys, "platform", "win32")
     monkeypatch.setattr("winwhisper.inserter.time.sleep", lambda _: None)
 
     assert insert_text("dictated text", shortcut="ctrl_shift_v") is True
@@ -107,23 +108,33 @@ def test_macos_always_uses_cmd_v(monkeypatch):
     assert resolve_paste_shortcut("clipboard_ctrl_shift_v", None) == "cmd_v"
 
 
-def test_insert_text_cmd_v_uses_cmd_modifier(monkeypatch):
+def test_insert_text_cmd_v_uses_quartz_on_macos(monkeypatch):
     clipboard = FakeClipboard()
-    events: list[tuple[str, str]] = []
-    keyboard_module = types.ModuleType("pynput.keyboard")
-    keyboard_module.Controller = lambda: FakeKeyboard(events)
-    keyboard_module.Key = types.SimpleNamespace(ctrl="ctrl", shift="shift", cmd="cmd")
-    pynput_module = types.ModuleType("pynput")
-    pynput_module.keyboard = keyboard_module
+    events: list[tuple[object, ...]] = []
+    quartz = types.SimpleNamespace(
+        CGEventCreateKeyboardEvent=lambda _source, keycode, pressed: events.append(
+            ("create", keycode, pressed)
+        )
+        or {"pressed": pressed},
+        CGEventSetFlags=lambda event, flags: events.append(
+            ("flags", event["pressed"], flags)
+        ),
+        CGEventPost=lambda tap, event: events.append(("post", tap, event["pressed"])),
+        kCGEventFlagMaskCommand="command",
+        kCGHIDEventTap="hid",
+    )
 
     monkeypatch.setitem(sys.modules, "pyperclip", clipboard)
-    monkeypatch.setitem(sys.modules, "pynput", pynput_module)
-    monkeypatch.setitem(sys.modules, "pynput.keyboard", keyboard_module)
+    monkeypatch.setitem(sys.modules, "Quartz", quartz)
+    monkeypatch.setattr(sys, "platform", "darwin")
     monkeypatch.setattr("winwhisper.inserter.time.sleep", lambda _: None)
 
     assert insert_text("dictated text", shortcut="cmd_v") is True
     assert events == [
-        ("pressed", "cmd"),
-        ("press", "v"),
-        ("release", "v"),
+        ("create", 0x09, True),
+        ("flags", True, "command"),
+        ("post", "hid", True),
+        ("create", 0x09, False),
+        ("flags", False, "command"),
+        ("post", "hid", False),
     ]
