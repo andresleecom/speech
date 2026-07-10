@@ -1,5 +1,6 @@
 # -*- mode: python ; coding: utf-8 -*-
 
+import os
 import sys
 import tomllib
 from pathlib import Path
@@ -14,9 +15,9 @@ from PyInstaller.utils.hooks import (
 ROOT = Path.cwd()
 SRC = ROOT / "src"
 
-APP_VERSION = tomllib.loads((ROOT / "pyproject.toml").read_text(encoding="utf-8"))[
-    "project"
-]["version"]
+APP_VERSION = os.environ.get("SPEECH_VERSION") or tomllib.loads(
+    (ROOT / "pyproject.toml").read_text(encoding="utf-8")
+)["project"]["version"]
 
 if sys.platform == "darwin":
     platform_hiddenimports = [

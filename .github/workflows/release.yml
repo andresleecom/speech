@@ -2,28 +2,71 @@ name: Release
 
 on:
   push:
-    tags:
-      - "v*"
+    branches: ["main"]
+  workflow_dispatch:
 
-# Only this workflow needs write access, and only for publishing releases.
+# This workflow is the only one allowed to publish release assets.
 permissions:
   contents: write
 
+# A newer main commit supersedes an incomplete build, so an older commit cannot
+# become the latest release after a newer one has already been published.
 concurrency:
-  group: release-${{ github.ref }}
-  cancel-in-progress: false
+  group: release-main
+  cancel-in-progress: true
 
 jobs:
-  windows:
-    runs-on: windows-latest
-    # Tags from forks should never publish under this repo.
+  prepare:
     if: github.repository == 'andresleecom/speech'
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.version.outputs.version }}
+      tag: ${{ steps.version.outputs.tag }}
     steps:
       - uses: actions/checkout@v7
       - uses: actions/setup-python@v6
         with:
           python-version: "3.12"
-      - name: Install Python dependencies
+      - id: version
+        shell: bash
+        run: |
+          base_version="$(python -c 'import tomllib; print(tomllib.load(open("pyproject.toml", "rb"))["project"]["version"])')"
+          if [[ ! "$base_version" =~ ^[0-9]+(\.[0-9]+){1,2}$ ]]; then
+            echo "pyproject.toml must contain a two- or three-component base version." >&2
+            exit 1
+          fi
+          build_version="${base_version}.${GITHUB_RUN_NUMBER}"
+          echo "version=$build_version" >> "$GITHUB_OUTPUT"
+          echo "tag=v$build_version" >> "$GITHUB_OUTPUT"
+
+  linux:
+    needs: prepare
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+      - name: Install PortAudio
+        run: sudo apt-get update && sudo apt-get install -y libportaudio2
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -r requirements-dev.txt
+      - name: Run tests
+        run: python -m pytest -q
+
+  windows:
+    needs: prepare
+    runs-on: windows-latest
+    env:
+      SPEECH_VERSION: ${{ needs.prepare.outputs.version }}
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+      - name: Install dependencies
         run: |
           python -m pip install --upgrade pip
           python -m pip install -r requirements-dev.txt
@@ -43,31 +86,34 @@ jobs:
           if ($versionProcess.ExitCode -ne 0) { throw "Version smoke test failed with exit code $($versionProcess.ExitCode)." }
           $diagnosticsProcess = Start-Process -FilePath $exe -ArgumentList "--diagnostics" -Wait -PassThru
           if ($diagnosticsProcess.ExitCode -ne 0) { throw "Diagnostics smoke test failed with exit code $($diagnosticsProcess.ExitCode)." }
-      - name: Publish GitHub release
-        shell: pwsh
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          TAG_NAME: ${{ github.ref_name }}
-        run: |
-          $assets = @(
-            Get-ChildItem -Path dist\installer -Filter "Speech-Setup*.exe"
-            Get-ChildItem -Path dist\installer -Filter "Speech-Setup*.exe.sha256"
-          ) | Sort-Object Name
-          if ($assets.Count -lt 4) { throw "Expected stable and versioned installer assets." }
-          $assetPaths = @($assets | ForEach-Object { $_.FullName })
-          gh release create $env:TAG_NAME @assetPaths --title $env:TAG_NAME --generate-notes
+      - name: Upload Windows release assets
+        uses: actions/upload-artifact@v4
+        with:
+          name: windows-release
+          path: dist/installer/Speech-Setup*.exe*
+          if-no-files-found: error
+          retention-days: 1
 
   macos:
-    runs-on: macos-latest
-    # The windows job creates the release; this one appends the DMG to it.
-    needs: windows
-    if: github.repository == 'andresleecom/speech'
+    needs: prepare
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - architecture: arm64
+            runner: macos-15
+          - architecture: intel
+            runner: macos-15-intel
+    runs-on: ${{ matrix.runner }}
+    env:
+      SPEECH_VERSION: ${{ needs.prepare.outputs.version }}
+      SPEECH_MACOS_ARCH: ${{ matrix.architecture }}
     steps:
       - uses: actions/checkout@v7
       - uses: actions/setup-python@v6
         with:
           python-version: "3.12"
-      - name: Install Python dependencies
+      - name: Install dependencies
         run: |
           python -m pip install --upgrade pip
           python -m pip install -r requirements-dev.txt
@@ -79,9 +125,62 @@ jobs:
         run: |
           BIN="dist/Speech.app/Contents/MacOS/Speech"
           test -x "$BIN" || { echo "Packaged app not found."; exit 1; }
-          "$BIN" --version
-      - name: Upload DMG to release
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          TAG_NAME: ${{ github.ref_name }}
-        run: gh release upload "$TAG_NAME" dist/installer/Speech*.dmg dist/installer/Speech*.dmg.sha256 --clobber
+          test "$("$BIN" --version)" = "$SPEECH_VERSION"
+          "$BIN" --diagnostics
+      - name: Upload macOS release assets
+        uses: actions/upload-artifact@v4
+        with:
+          name: macos-${{ matrix.architecture }}-release
+          path: |
+            dist/installer/*.dmg
+            dist/installer/*.dmg.sha256
+          if-no-files-found: error
+          retention-days: 1
+
+  publish:
+    needs: [prepare, linux, windows, macos]
+    runs-on: ubuntu-latest
+    env:
+      GH_TOKEN: ${{ github.token }}
+      BUILD_VERSION: ${{ needs.prepare.outputs.version }}
+      TAG_NAME: ${{ needs.prepare.outputs.tag }}
+    steps:
+      - name: Download release assets
+        uses: actions/download-artifact@v4
+        with:
+          path: release-assets
+          merge-multiple: true
+      - name: Verify release asset set
+        shell: bash
+        run: |
+          expected=(
+            "Speech-Setup-$BUILD_VERSION.exe"
+            "Speech-Setup-$BUILD_VERSION.exe.sha256"
+            "Speech-Setup.exe"
+            "Speech-Setup.exe.sha256"
+            "Speech-$BUILD_VERSION.dmg"
+            "Speech-$BUILD_VERSION.dmg.sha256"
+            "Speech.dmg"
+            "Speech.dmg.sha256"
+            "Speech-$BUILD_VERSION-intel.dmg"
+            "Speech-$BUILD_VERSION-intel.dmg.sha256"
+            "Speech-intel.dmg"
+            "Speech-intel.dmg.sha256"
+          )
+          for asset in "${expected[@]}"; do
+            test -s "release-assets/$asset" || {
+              echo "Missing release asset: $asset" >&2
+              exit 1
+            }
+          done
+      - name: Publish GitHub release
+        shell: bash
+        run: |
+          if gh release view "$TAG_NAME" >/dev/null 2>&1; then
+            gh release upload "$TAG_NAME" release-assets/* --clobber
+          else
+            gh release create "$TAG_NAME" release-assets/* \
+              --target "$GITHUB_SHA" \
+              --title "Speech $BUILD_VERSION" \
+              --generate-notes
+          fi

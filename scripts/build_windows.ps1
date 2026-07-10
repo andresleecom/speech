@@ -8,7 +8,10 @@ if (-not (Test-Path -LiteralPath $Python)) {
     $Python = "python"
 }
 
-$version = & $Python -c "import tomllib; print(tomllib.load(open('pyproject.toml','rb'))['project']['version'])"
+$version = $env:SPEECH_VERSION
+if ([string]::IsNullOrWhiteSpace($version)) {
+    $version = & $Python -c "import tomllib; print(tomllib.load(open('pyproject.toml','rb'))['project']['version'])"
+}
 if (-not $version) {
     throw "Could not determine project version."
 }
@@ -25,7 +28,34 @@ if ($null -eq $isccCommand) {
     $iscc = $isccCommand.Source
 }
 
-& $Python -m PyInstaller --noconfirm --clean packaging\Speech.spec
+function Invoke-PyInstaller {
+    & $Python -m PyInstaller --noconfirm --clean packaging\Speech.spec
+    if ($LASTEXITCODE -ne 0) {
+        throw "PyInstaller failed."
+    }
+}
+
+if (-not [string]::IsNullOrWhiteSpace($env:SPEECH_VERSION)) {
+    $buildVersionPath = [System.IO.Path]::GetFullPath(
+        (Join-Path $PSScriptRoot "..\src\winwhisper\_build_version.py")
+    )
+    $originalBuildVersion = [System.IO.File]::ReadAllText($buildVersionPath)
+    try {
+        & $Python (Join-Path $PSScriptRoot "write_build_version.py") $version
+        if ($LASTEXITCODE -ne 0) {
+            throw "Could not write the packaged build version."
+        }
+        Invoke-PyInstaller
+    } finally {
+        [System.IO.File]::WriteAllText(
+            $buildVersionPath,
+            $originalBuildVersion,
+            [System.Text.UTF8Encoding]::new($false)
+        )
+    }
+} else {
+    Invoke-PyInstaller
+}
 
 $env:APP_VERSION = $version
 & $iscc installer\Speech.iss
