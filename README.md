@@ -8,7 +8,7 @@
 
 Speech is a Windows 10/11 and macOS menu-bar/tray app for local speech dictation.
 It records your microphone with a global hotkey, transcribes with faster-whisper, optionally formats the text, and pastes into the focused app.
-It transcribes in 99 languages with automatic language detection, and has quick-force hotkeys for English and Spanish.
+It transcribes in 100 languages with automatic language detection, and has quick-force hotkeys for English and Spanish.
 
 ![Default Speech hotkeys: Ctrl + Alt + Space on Windows and Control + Option + Space on macOS](docs/hotkeys.gif)
 
@@ -36,9 +36,10 @@ On Windows, Speech pastes with `Ctrl+V` and automatically switches to `Ctrl+Shif
 
 ## Languages
 
-In the default `auto` mode, Speech detects the language you speak and transcribes it in that language, covering the 99 languages of Whisper's multilingual models.
+In the default `auto` mode, Speech detects the language you speak and transcribes it in that language, covering the 100 language codes supported by its Whisper integration.
+Choose **Language > Language Settings...** from the tray/menu-bar icon to type a language name or select any supported language. The Language menu also exposes the most commonly used languages directly.
 Dedicated hotkeys force English (`Ctrl+Shift+E`) or Spanish (`Ctrl+Shift+S`) for a single dictation when you want to skip detection.
-You can also pin the language from the tray menu or with `language_mode` in the settings file.
+You can also set `language_mode` in the settings file to `auto` or a supported code such as `fr`, `ja`, `ar`, `zh`, or `yue`.
 Accuracy varies by language and model size: `small` is strong for widely spoken languages, and `medium` or `large-v3` improve the less common ones.
 Text cleanup preserves the original language and never translates.
 
@@ -224,7 +225,7 @@ The app creates the file on first run if it does not exist.
 | `model_size` | `small` | faster-whisper model size. |
 | `device` | `cpu` | Inference device such as `cpu` or `cuda`. |
 | `compute_type` | `int8` | faster-whisper compute type. |
-| `language_mode` | `auto` | Use `auto`, `en`, or `es`. |
+| `language_mode` | `auto` | Use `auto` or any supported Whisper language code, such as `en`, `es`, `fr`, `ja`, `ar`, `zh`, or `yue`. |
 | `cleanup_mode` | `basic` | Use `none`, `basic`, or `llm`; see [Text cleanup](#text-cleanup). |
 | `paste_mode` | `auto` | On Windows, `auto` uses `Ctrl+Shift+V` for common terminal windows and `Ctrl+V` elsewhere. On macOS, Speech always sends `Cmd+V`. Older `clipboard_ctrl_v` settings keep the same Windows terminal detection. Use `clipboard_ctrl_shift_v` to force `Ctrl+Shift+V` on Windows. |
 | `delete_audio_after_transcription` | `true` | Delete temporary WAV files after transcription. |
@@ -233,7 +234,7 @@ The app creates the file on first run if it does not exist.
 | `hotkeys` | See defaults above. | Global hotkey bindings. |
 | `custom_vocabulary` | `[]` | Names and terms you use often, transcribed with these exact spellings. |
 
-Language, cleanup mode, and hotkeys can be changed from the tray menu without a restart.
+Language, cleanup mode, and hotkeys can be changed from the tray menu without a restart. Use **Language Settings...** to search the full language list.
 After editing `model_size`, `device`, `compute_type`, or `custom_vocabulary` in
 the advanced settings file, restart Speech for those values to take effect.
 

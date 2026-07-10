@@ -32,6 +32,8 @@ from .hotkey_settings import (
 from .hotkey_settings_window import HotkeySettingsWindow
 from .hotkeys import HotkeyManager
 from .inserter import PasteShortcut, insert_text, resolve_paste_shortcut
+from .language_settings_window import LanguageSettingsWindow
+from .languages import LanguageMode, normalize_language_mode
 from .logger import get_logger
 from .overlay import RecordingOverlay
 from .recorder import Recorder
@@ -40,7 +42,6 @@ from .tray import TrayApp
 from .update_controller import UpdateCoordinator
 
 Status = Literal["Idle", "Recording", "Transcribing", "Pasting", "Error"]
-LanguageMode = Literal["auto", "en", "es"]
 
 STATUS_IDLE: Status = "Idle"
 STATUS_RECORDING: Status = "Recording"
@@ -69,6 +70,7 @@ class AppController:
             self.recorder.current_level,
         )
         self.hotkey_settings_window = HotkeySettingsWindow()
+        self.language_settings_window = LanguageSettingsWindow()
         self.hotkeys = HotkeyManager(settings.hotkeys, self.on_hotkey)
         self._lock = threading.RLock()
         self._status: Status = STATUS_IDLE
@@ -236,13 +238,15 @@ class AppController:
             self._beep(*beep)
 
     def set_language_mode(self, mode: str) -> None:
-        if mode not in {"auto", "en", "es"}:
+        normalized = normalize_language_mode(mode)
+        if normalized is None:
             self.logger.warning("Ignoring unsupported language mode %s.", mode)
             return
 
-        self.settings.language_mode = mode  # type: ignore[assignment]
+        self.settings.language_mode = normalized
         save_settings(self.settings)
-        self.logger.info("Language mode set to %s.", mode)
+        self.tray.refresh_menu()
+        self.logger.info("Language mode set to %s.", normalized)
 
     def set_cleanup_mode(self, mode: str) -> None:
         if mode not in {"none", "basic", "llm"}:
@@ -303,6 +307,12 @@ class AppController:
 
     def open_hotkey_settings(self) -> None:
         self.hotkey_settings_window.show(self.settings.hotkeys, self.set_hotkeys)
+
+    def open_language_settings(self) -> None:
+        self.language_settings_window.show(
+            self.settings.language_mode,
+            self.set_language_mode,
+        )
 
     def open_settings_file(self) -> None:
         try:

@@ -87,6 +87,9 @@ class FakeTray:
     def notify(self, title: str, message: str) -> None:
         self.notifications.append((title, message))
 
+    def refresh_menu(self) -> None:
+        return None
+
 
 class FakeHotkeys:
     instances: list["FakeHotkeys"] = []
@@ -160,6 +163,17 @@ class FakeHotkeySettingsWindow:
 
     def show(self, hotkeys, on_save) -> None:
         self.shown_with = (dict(hotkeys), on_save)
+
+
+class FakeLanguageSettingsWindow:
+    instances: list["FakeLanguageSettingsWindow"] = []
+
+    def __init__(self) -> None:
+        self.shown_with = None
+        self.instances.append(self)
+
+    def show(self, language_mode, on_save) -> None:
+        self.shown_with = (language_mode, on_save)
 
 
 class ImmediateThread:
@@ -304,6 +318,34 @@ def test_controller_opens_hotkey_window_with_live_save_callback(monkeypatch, tmp
     hotkeys, on_save = window.shown_with
     assert hotkeys == controller.settings.hotkeys
     assert on_save == controller.set_hotkeys
+
+
+def test_controller_opens_language_window_with_live_save_callback(monkeypatch, tmp_path):
+    FakeLanguageSettingsWindow.instances.clear()
+    monkeypatch.setattr(
+        main_module,
+        "LanguageSettingsWindow",
+        FakeLanguageSettingsWindow,
+        raising=False,
+    )
+    controller = make_controller(monkeypatch, tmp_path, [], [])
+
+    controller.open_language_settings()
+
+    window = FakeLanguageSettingsWindow.instances[-1]
+    language_mode, on_save = window.shown_with
+    assert language_mode == "es"
+    assert on_save == controller.set_language_mode
+
+
+def test_controller_persists_selected_catalog_language(monkeypatch, tmp_path):
+    controller = make_controller(monkeypatch, tmp_path, [], [])
+
+    controller.set_language_mode("French (fr)")
+    controller.set_language_mode("not-a-language")
+
+    assert controller.settings.language_mode == "fr"
+    assert load_settings().language_mode == "fr"
 
 
 def test_opening_advanced_settings_does_not_overwrite_external_edit(

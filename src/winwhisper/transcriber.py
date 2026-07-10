@@ -6,6 +6,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
+from .languages import AUTO_LANGUAGE_MODE, normalize_language_mode
 from .logger import get_logger
 
 
@@ -35,10 +36,11 @@ def build_hotwords(vocabulary: list[str] | None) -> str | None:
 
 
 def resolve_language(language_mode: str) -> str | None:
-    if language_mode == "auto":
+    normalized = normalize_language_mode(language_mode)
+    if normalized == AUTO_LANGUAGE_MODE:
         return None
-    if language_mode in {"en", "es"}:
-        return language_mode
+    if normalized is not None:
+        return normalized
 
     get_logger(__name__).warning(
         "Unknown language mode %r; falling back to automatic detection.",
