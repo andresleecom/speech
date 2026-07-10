@@ -1,4 +1,6 @@
 import os
+import sys
+import types
 
 import pytest
 
@@ -123,6 +125,25 @@ def test_hotkey_manager_start_is_noop_off_windows(monkeypatch):
     assert manager._thread is None
 
 
+@pytest.mark.skipif(os.name != "nt", reason="Windows-only")
+def test_start_reports_native_registration_conflict():
+    combo = "<ctrl>+<alt>+<shift>+<f24>"
+    first = HotkeyManager({"toggle_recording": combo}, lambda action: None)
+    second = HotkeyManager({"toggle_recording": combo}, lambda action: None)
+
+    try:
+        first_result = first.start()
+        second_result = second.start()
+
+        assert first_result.active == (combo,)
+        assert first_result.failed == ()
+        assert second_result.active == ()
+        assert second_result.failed == (combo,)
+    finally:
+        second.stop()
+        first.stop()
+
+
 def test_accessibility_trusted_is_true_off_macos(monkeypatch):
     import sys
 
@@ -134,11 +155,38 @@ def test_accessibility_trusted_is_true_off_macos(monkeypatch):
     assert _macos_accessibility_trusted(prompt=False) is True
 
 
+def test_input_monitoring_trusted_is_true_off_macos(monkeypatch):
+    from winwhisper.hotkeys import _macos_input_monitoring_trusted
+
+    monkeypatch.setattr(sys, "platform", "win32")
+    assert _macos_input_monitoring_trusted(prompt=False) is True
+    monkeypatch.setattr(sys, "platform", "linux")
+    assert _macos_input_monitoring_trusted(prompt=False) is True
+
+
+def test_input_monitoring_requests_access_on_macos(monkeypatch):
+    import winwhisper.hotkeys as hotkeys_mod
+
+    requested = []
+    quartz = types.SimpleNamespace(
+        CGPreflightListenEventAccess=lambda: False,
+        CGRequestListenEventAccess=lambda: requested.append(True) or False,
+    )
+    monkeypatch.setattr(sys, "platform", "darwin")
+    monkeypatch.setitem(sys.modules, "Quartz", quartz)
+
+    assert hotkeys_mod._macos_input_monitoring_trusted(prompt=True) is False
+    assert requested == [True]
+
+
 def test_start_flags_missing_accessibility(monkeypatch):
     import winwhisper.hotkeys as hotkeys_mod
 
     monkeypatch.setattr(hotkeys_mod.os, "name", "posix")
     monkeypatch.setattr(hotkeys_mod, "_macos_accessibility_trusted", lambda prompt: False)
+    monkeypatch.setattr(
+        hotkeys_mod, "_macos_input_monitoring_trusted", lambda prompt: True
+    )
 
     started = []
 
@@ -155,6 +203,55 @@ def test_start_flags_missing_accessibility(monkeypatch):
 
     assert manager.accessibility_missing is True
     assert started == [True]  # the listener still starts; events just won't arrive
+
+
+def test_start_flags_missing_input_monitoring(monkeypatch):
+    import winwhisper.hotkeys as hotkeys_mod
+
+    monkeypatch.setattr(hotkeys_mod.os, "name", "posix")
+    monkeypatch.setattr(hotkeys_mod, "_macos_accessibility_trusted", lambda prompt: True)
+    monkeypatch.setattr(
+        hotkeys_mod, "_macos_input_monitoring_trusted", lambda prompt: False
+    )
+
+    class FakeBackend:
+        def __init__(self, *args, **kwargs):
+            pass
+
+        def start(self):
+            return None
+
+    monkeypatch.setattr(hotkeys_mod, "_PynputHotkeyBackend", FakeBackend)
+    manager = HotkeyManager({"toggle_recording": "<f8>"}, lambda action: None)
+
+    assert manager.start().successful is True
+    assert manager.input_monitoring_missing is True
+
+
+def test_start_rejects_unsupported_stored_macos_hotkey(monkeypatch):
+    import winwhisper.hotkeys as hotkeys_mod
+
+    monkeypatch.setattr(hotkeys_mod.os, "name", "posix")
+    monkeypatch.setattr(hotkeys_mod.sys, "platform", "darwin")
+    monkeypatch.setattr(hotkeys_mod, "_macos_accessibility_trusted", lambda prompt: True)
+    monkeypatch.setattr(
+        hotkeys_mod, "_macos_input_monitoring_trusted", lambda prompt: True
+    )
+
+    class FakeBackend:
+        def __init__(self, *args, **kwargs):
+            pass
+
+        def start(self):
+            return None
+
+    monkeypatch.setattr(hotkeys_mod, "_PynputHotkeyBackend", FakeBackend)
+    manager = HotkeyManager({"toggle_recording": "<f21>"}, lambda action: None)
+
+    result = manager.start()
+
+    assert result.active == ()
+    assert result.failed == ("<f21>",)
 
 
 def _make_backend(actions):

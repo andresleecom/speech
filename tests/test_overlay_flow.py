@@ -7,7 +7,10 @@ import winwhisper.overlay as overlay_module
 import winwhisper.main as main_module
 import pytest
 from winwhisper.config import Settings
+from winwhisper.config import load_settings, save_settings
 from winwhisper.focus import ScreenPoint
+from winwhisper.hotkey_settings import HotkeyConfigurationError
+from winwhisper.hotkeys import HotkeyActivationResult
 from winwhisper.main import AppController
 from winwhisper.overlay import (
     dragged_overlay_position,
@@ -86,15 +89,38 @@ class FakeTray:
 
 
 class FakeHotkeys:
-    def __init__(self, hotkeys: dict[str, str], on_hotkey) -> None:
-        self.hotkeys = hotkeys
-        self.on_hotkey = on_hotkey
+    instances: list["FakeHotkeys"] = []
+    fail_next_start = False
+    fail_stopped_manager_start = False
 
-    def start(self) -> None:
-        return None
+    def __init__(self, hotkeys: dict[str, str], on_hotkey) -> None:
+        self.hotkeys = dict(hotkeys)
+        self.on_hotkey = on_hotkey
+        self.started = False
+        self.stopped = False
+        self.instances.append(self)
+
+    def start(self) -> HotkeyActivationResult:
+        self.started = True
+        if self.stopped and type(self).fail_stopped_manager_start:
+            type(self).fail_stopped_manager_start = False
+            return HotkeyActivationResult(
+                active=(),
+                failed=tuple(self.hotkeys.values()),
+            )
+        if type(self).fail_next_start:
+            type(self).fail_next_start = False
+            return HotkeyActivationResult(
+                active=(),
+                failed=tuple(self.hotkeys.values()),
+            )
+        return HotkeyActivationResult(
+            active=tuple(self.hotkeys.values()),
+            failed=(),
+        )
 
     def stop(self) -> None:
-        return None
+        self.stopped = True
 
     def reset_state(self) -> None:
         return None
@@ -125,6 +151,17 @@ class FakeOverlay:
         self.events.append("stop")
 
 
+class FakeHotkeySettingsWindow:
+    instances: list["FakeHotkeySettingsWindow"] = []
+
+    def __init__(self) -> None:
+        self.shown_with = None
+        self.instances.append(self)
+
+    def show(self, hotkeys, on_save) -> None:
+        self.shown_with = (dict(hotkeys), on_save)
+
+
 class ImmediateThread:
     def __init__(self, target, args=(), **kwargs) -> None:
         self.target = target
@@ -142,6 +179,9 @@ def make_controller(
     transcription_text="hola mundo",
 ) -> AppController:
     FakeOverlay.instances.clear()
+    FakeHotkeys.instances.clear()
+    FakeHotkeys.fail_next_start = False
+    FakeHotkeys.fail_stopped_manager_start = False
     FakeTranscriber.text = transcription_text
     # Flow tests assert Windows paste semantics; pin the platform so they stay
     # deterministic on the macOS/Linux CI runners.
@@ -168,6 +208,142 @@ def make_controller(
     monkeypatch.setattr(main_module.threading, "Thread", ImmediateThread)
     monkeypatch.setattr(AppController, "_beep", lambda self, frequency, duration_ms: None)
     return AppController(Settings(language_mode="es", delete_audio_after_transcription=False))
+
+
+def test_saving_hotkeys_rebinds_running_manager_and_persists(monkeypatch, tmp_path):
+    controller = make_controller(monkeypatch, tmp_path, [], [])
+    original_manager = controller.hotkeys
+    selected_hotkeys = {"toggle_recording": "Windows + Shift + F8"}
+    expected_hotkeys = {"toggle_recording": "<shift>+<cmd>+<f8>"}
+
+    controller.set_hotkeys(selected_hotkeys)
+
+    assert original_manager.stopped is True
+    assert controller.hotkeys is FakeHotkeys.instances[-1]
+    assert controller.hotkeys is not original_manager
+    assert controller.hotkeys.started is True
+    assert controller.settings.hotkeys == expected_hotkeys
+    assert load_settings().hotkeys == expected_hotkeys
+
+
+def test_duplicate_hotkeys_do_not_replace_running_manager(monkeypatch, tmp_path):
+    controller = make_controller(monkeypatch, tmp_path, [], [])
+    original_manager = controller.hotkeys
+
+    with pytest.raises(HotkeyConfigurationError, match="same shortcut"):
+        controller.set_hotkeys(
+            {
+                "toggle_recording": "Ctrl + Alt + Space",
+                "force_english": "Alt + Ctrl + Space",
+            }
+        )
+
+    assert controller.hotkeys is original_manager
+    assert original_manager.stopped is False
+    assert FakeHotkeys.instances == [original_manager]
+
+
+def test_registration_conflict_rolls_back_to_previous_hotkeys(monkeypatch, tmp_path):
+    controller = make_controller(monkeypatch, tmp_path, [], [])
+    original_manager = controller.hotkeys
+    original_settings = dict(controller.settings.hotkeys)
+    FakeHotkeys.fail_next_start = True
+
+    with pytest.raises(HotkeyConfigurationError, match="another application"):
+        controller.set_hotkeys({"toggle_recording": "Ctrl + Shift + F8"})
+
+    failed_manager = FakeHotkeys.instances[1]
+    assert failed_manager.stopped is True
+    assert controller.hotkeys is original_manager
+    assert original_manager.started is True
+    assert controller.settings.hotkeys == original_settings
+
+
+def test_save_failure_rolls_back_to_previous_hotkeys(monkeypatch, tmp_path):
+    controller = make_controller(monkeypatch, tmp_path, [], [])
+    original_manager = controller.hotkeys
+    original_settings = dict(controller.settings.hotkeys)
+
+    def fail_save(settings):
+        raise OSError("disk full")
+
+    monkeypatch.setattr(main_module, "save_settings", fail_save)
+
+    with pytest.raises(HotkeyConfigurationError, match="could not be saved"):
+        controller.set_hotkeys({"toggle_recording": "Ctrl + Shift + F8"})
+
+    failed_manager = FakeHotkeys.instances[1]
+    assert failed_manager.stopped is True
+    assert controller.hotkeys is original_manager
+    assert original_manager.started is True
+    assert controller.settings.hotkeys == original_settings
+
+
+def test_failed_rollback_is_reported_to_settings_window(monkeypatch, tmp_path):
+    controller = make_controller(monkeypatch, tmp_path, [], [])
+    FakeHotkeys.fail_next_start = True
+    FakeHotkeys.fail_stopped_manager_start = True
+
+    with pytest.raises(HotkeyConfigurationError, match="could not be restored"):
+        controller.set_hotkeys({"toggle_recording": "Ctrl + Shift + F8"})
+
+
+def test_controller_opens_hotkey_window_with_live_save_callback(monkeypatch, tmp_path):
+    FakeHotkeySettingsWindow.instances.clear()
+    monkeypatch.setattr(
+        main_module,
+        "HotkeySettingsWindow",
+        FakeHotkeySettingsWindow,
+        raising=False,
+    )
+    controller = make_controller(monkeypatch, tmp_path, [], [])
+
+    controller.open_hotkey_settings()
+
+    window = FakeHotkeySettingsWindow.instances[-1]
+    hotkeys, on_save = window.shown_with
+    assert hotkeys == controller.settings.hotkeys
+    assert on_save == controller.set_hotkeys
+
+
+def test_opening_advanced_settings_does_not_overwrite_external_edit(
+    monkeypatch, tmp_path
+):
+    controller = make_controller(monkeypatch, tmp_path, [], [])
+    edited_hotkeys = {"toggle_recording": "<ctrl>+<shift>+<f9>"}
+    save_settings(Settings(hotkeys=edited_hotkeys))
+    opened = []
+    monkeypatch.setattr(main_module, "_open_path", opened.append)
+
+    controller.open_settings_file()
+
+    assert opened == [tmp_path / "settings.json"]
+    assert load_settings().hotkeys == edited_hotkeys
+
+
+def test_startup_surfaces_saved_hotkey_registration_conflict(monkeypatch, tmp_path):
+    controller = make_controller(monkeypatch, tmp_path, [], [])
+    monkeypatch.setattr(sys, "platform", "darwin")
+    FakeHotkeys.fail_next_start = True
+
+    controller.run()
+
+    assert any(
+        "could not be registered" in message.lower()
+        for _title, message in controller.tray.notifications
+    )
+
+
+def test_startup_surfaces_missing_input_monitoring(monkeypatch, tmp_path):
+    controller = make_controller(monkeypatch, tmp_path, [], [])
+    controller.hotkeys.input_monitoring_missing = True
+
+    controller.run()
+
+    assert any(
+        "input monitoring" in message.lower()
+        for _title, message in controller.tray.notifications
+    )
 
 
 def test_start_recording_shows_floating_overlay(monkeypatch, tmp_path):

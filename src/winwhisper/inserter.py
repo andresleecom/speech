@@ -66,7 +66,11 @@ def insert_text(text: str, shortcut: PasteShortcut = "ctrl_v") -> bool:
             with keyboard.pressed(Key.ctrl):
                 keyboard.press("v")
                 keyboard.release("v")
-        time.sleep(0.5)
+        # Windows uses RegisterHotKey, which does not observe these synthetic
+        # events. Listener-based platforms need a drain window before matching
+        # is re-enabled, but the Windows path can return immediately.
+        if sys.platform != "win32":
+            time.sleep(0.5)
     except Exception as exc:
         logger.warning("Paste failed with %s; leaving text on clipboard.", exc.__class__.__name__)
         try:

@@ -1,6 +1,26 @@
 from winwhisper.tray import TrayApp
 
 
+class FakeMenu:
+    def __init__(self, *items) -> None:
+        self.items = items
+
+
+class FakeMenuItem:
+    def __init__(self, label, action, **kwargs) -> None:
+        self.label = label
+        self.action = action
+        self.options = kwargs
+
+
+class FakeController:
+    def __init__(self) -> None:
+        self.hotkey_settings_opened = False
+
+    def open_hotkey_settings(self) -> None:
+        self.hotkey_settings_opened = True
+
+
 class FakeIcon:
     def __init__(self) -> None:
         self.stopped = False
@@ -47,3 +67,16 @@ def test_stop_detaches_icon_before_later_worker_updates():
     assert icon.title_updates == []
     assert icon.icon_updates == 0
     assert icon.notifications == []
+
+
+def test_tray_opens_in_app_hotkey_settings():
+    controller = FakeController()
+    tray = TrayApp(controller)
+
+    menu = tray._make_menu(FakeMenu, FakeMenuItem)
+    settings_item = next(
+        item for item in menu.items if item.label == "Hotkey Settings..."
+    )
+    settings_item.action(None, None)
+
+    assert controller.hotkey_settings_opened is True
