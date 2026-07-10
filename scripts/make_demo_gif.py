@@ -41,11 +41,25 @@ CAPTION_COLOR = (232, 232, 236)
 
 
 def font(size: int, bold: bool = False) -> ImageFont.FreeTypeFont:
-    name = "segoeuib.ttf" if bold else "segoeui.ttf"
-    try:
-        return ImageFont.truetype(name, size)
-    except Exception:
-        return ImageFont.load_default()
+    candidates = (
+        (
+            "/System/Library/Fonts/Supplemental/Arial Bold.ttf",
+            "segoeuib.ttf",
+            "DejaVuSans-Bold.ttf",
+        )
+        if bold
+        else (
+            "/System/Library/Fonts/Supplemental/Arial.ttf",
+            "segoeui.ttf",
+            "DejaVuSans.ttf",
+        )
+    )
+    for candidate in candidates:
+        try:
+            return ImageFont.truetype(candidate, size)
+        except OSError:
+            continue
+    return ImageFont.load_default()
 
 
 def make_background() -> Image.Image:
@@ -180,9 +194,9 @@ def main() -> None:
             360,
         )
 
-    # 2. Press the hotkey.
+    # 2. Press the Windows hotkey.
     for _ in range(3):
-        add(compose(background, "2. Press Ctrl+Alt+Space", True, "", True, None), 240)
+        add(compose(background, "2. Windows: press Ctrl+Alt+Space", True, "", True, None), 240)
 
     # 3. Recording: live orb with sonar rings.
     for i in range(28):
@@ -193,7 +207,7 @@ def main() -> None:
     # 4. Press again to stop.
     for i in range(3):
         orb = render_orb_frame("recording", 0.4, 28 + i)
-        add(compose(background, "4. Press Ctrl+Alt+Space again to stop", True, "", True, orb), 240)
+        add(compose(background, "4. Windows: press it again to stop", True, "", True, orb), 240)
 
     # 5. Transcribing spinner.
     for i in range(14):
@@ -210,8 +224,8 @@ def main() -> None:
         )
 
     # 7. Hold the final frame.
-    add(compose(background, "Speech — local dictation for Windows", True, DICTATED_TEXT, False, None), 1500)
-    add(compose(background, "Speech — local dictation for Windows", False, DICTATED_TEXT, False, None), 500)
+    add(compose(background, "Speech - local dictation", True, DICTATED_TEXT, False, None), 1500)
+    add(compose(background, "Speech - local dictation", False, DICTATED_TEXT, False, None), 500)
 
     # Shared palette keeps colors stable across frames.
     master = frames[10].quantize(colors=255)
