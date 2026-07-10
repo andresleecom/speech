@@ -160,6 +160,7 @@ def normalize_hotkey_profile(
     values: Mapping[str, str],
     *,
     platform: str | None = None,
+    language_favorites: object = None,
 ) -> dict[str, str]:
     platform = platform or sys.platform
     unknown = set(values) - set(HOTKEY_ACTION_BY_KEY)
@@ -190,8 +191,8 @@ def normalize_hotkey_profile(
         previous_action = owners_by_combo.get(combo)
         if previous_action is not None:
             raise HotkeyConfigurationError(
-                f"{action.label} uses the same shortcut as "
-                f"{previous_action.label}."
+                f"{action.label_for_favorites(language_favorites)} uses the same "
+                f"shortcut as {previous_action.label_for_favorites(language_favorites)}."
             )
         owners_by_combo[combo] = action
         normalized[action.setting_key] = combo

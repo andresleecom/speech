@@ -115,6 +115,30 @@ def test_macos_migrates_legacy_default_language_shortcuts_on_save():
     }
 
 
+def test_hotkey_labels_follow_configured_favorite_languages():
+    from winwhisper.hotkey_actions import HOTKEY_ACTION_BY_KEY
+
+    action = HOTKEY_ACTION_BY_KEY["force_english"]
+    third_action = HOTKEY_ACTION_BY_KEY["force_language_3"]
+
+    assert action.label_for_favorites(["fr", "ja", None]) == "Dictate in French"
+    assert third_action.label_for_favorites(["fr", "ja", None]) == (
+        "Quick language 3 (not set)"
+    )
+
+
+def test_duplicate_hotkeys_name_the_configured_favorite_language():
+    with pytest.raises(HotkeyConfigurationError, match="Dictate in French"):
+        normalize_hotkey_profile(
+            {
+                "toggle_recording": "Ctrl + Alt + Space",
+                "force_english": "Ctrl + Alt + Space",
+            },
+            platform="win32",
+            language_favorites=["fr", "es", None],
+        )
+
+
 @pytest.mark.parametrize(
     ("stored", "expected"),
     [

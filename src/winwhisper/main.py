@@ -33,7 +33,11 @@ from .hotkey_settings_window import HotkeySettingsWindow
 from .hotkeys import HotkeyManager
 from .inserter import PasteShortcut, insert_text, resolve_paste_shortcut
 from .language_settings_window import LanguageSettingsWindow
-from .languages import LanguageMode, normalize_language_mode
+from .languages import (
+    LanguageMode,
+    normalize_language_favorites,
+    normalize_language_mode,
+)
 from .logger import get_logger
 from .overlay import RecordingOverlay
 from .recorder import Recorder
@@ -187,10 +191,13 @@ class AppController:
             self.toggle()
             return
         if action == "force_en":
-            self.toggle("en")
+            self._toggle_favorite_language(0)
             return
         if action == "force_es":
-            self.toggle("es")
+            self._toggle_favorite_language(1)
+            return
+        if action == "force_language_3":
+            self._toggle_favorite_language(2)
             return
 
         self.logger.warning("Unknown hotkey action %s.", action)
@@ -242,11 +249,35 @@ class AppController:
         if normalized is None:
             self.logger.warning("Ignoring unsupported language mode %s.", mode)
             return
+        self.set_language_preferences(normalized, self.settings.language_favorites)
 
+    def set_language_preferences(
+        self,
+        mode: str,
+        language_favorites: object,
+    ) -> None:
+        normalized = normalize_language_mode(mode)
+        if normalized is None:
+            raise ValueError(f"Unsupported language mode: {mode!r}")
+        normalized_favorites = list(normalize_language_favorites(language_favorites))
+
+        previous_mode = self.settings.language_mode
+        previous_favorites = list(self.settings.language_favorites)
         self.settings.language_mode = normalized
-        save_settings(self.settings)
+        self.settings.language_favorites = normalized_favorites
+        try:
+            save_settings(self.settings)
+        except Exception:
+            self.settings.language_mode = previous_mode
+            self.settings.language_favorites = previous_favorites
+            raise
+
         self.tray.refresh_menu()
-        self.logger.info("Language mode set to %s.", normalized)
+        self.logger.info(
+            "Language preferences set: language_mode=%s; favorites=%s.",
+            normalized,
+            normalized_favorites,
+        )
 
     def set_cleanup_mode(self, mode: str) -> None:
         if mode not in {"none", "basic", "llm"}:
@@ -258,7 +289,10 @@ class AppController:
         self.logger.info("Cleanup mode set to %s.", mode)
 
     def set_hotkeys(self, hotkeys: dict[str, str]) -> None:
-        normalized = normalize_hotkey_profile(hotkeys)
+        normalized = normalize_hotkey_profile(
+            hotkeys,
+            language_favorites=self.settings.language_favorites,
+        )
         replacement = HotkeyManager(normalized, self.on_hotkey)
         previous = self.hotkeys
         previous_settings = dict(self.settings.hotkeys)
@@ -306,12 +340,17 @@ class AppController:
         self.logger.info("Hotkey settings updated and applied without restart.")
 
     def open_hotkey_settings(self) -> None:
-        self.hotkey_settings_window.show(self.settings.hotkeys, self.set_hotkeys)
+        self.hotkey_settings_window.show(
+            self.settings.hotkeys,
+            self.set_hotkeys,
+            self.settings.language_favorites,
+        )
 
     def open_language_settings(self) -> None:
         self.language_settings_window.show(
             self.settings.language_mode,
-            self.set_language_mode,
+            self.settings.language_favorites,
+            self.set_language_preferences,
         )
 
     def open_settings_file(self) -> None:
@@ -322,8 +361,8 @@ class AppController:
             _open_path(settings_path)
             self.notify(
                 APP_NAME,
-                "Use Hotkey Settings for shortcuts. Restart after editing "
-                "model or advanced settings.",
+                "Use Language Settings and Hotkey Settings for live changes. "
+                "Restart after editing model or advanced settings.",
             )
         except Exception:
             self._handle_error("Settings file could not be opened.")
@@ -357,6 +396,20 @@ class AppController:
             name="winwhisper-max-duration-stop",
             daemon=True,
         ).start()
+
+    def _toggle_favorite_language(self, index: int) -> None:
+        favorites = self.settings.language_favorites
+        language = favorites[index] if index < len(favorites) else None
+        if language is None:
+            self.logger.warning(
+                "Quick language %s was triggered without a favorite.", index + 1
+            )
+            self.notify(
+                APP_NAME,
+                f"Set Favorite {index + 1} in Language Settings before using this hotkey.",
+            )
+            return
+        self.toggle(language)
 
     def _handle_max_recording_duration(self) -> None:
         if self._request_stop():

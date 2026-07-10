@@ -130,7 +130,10 @@ class TrayApp:
                 self._select_language,
             )
         ]
-        for mode in tray_language_modes(self._current_language()):
+        for mode in tray_language_modes(
+            self._current_language(),
+            getattr(self._controller.settings, "language_favorites", ()),
+        ):
             items.append(
                 self._radio_item(
                     item_cls,

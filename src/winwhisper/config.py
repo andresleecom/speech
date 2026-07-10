@@ -11,7 +11,12 @@ from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_valida
 
 from .branding import APP_NAME, LEGACY_APP_NAME
 from .hotkey_actions import DEFAULT_HOTKEYS
-from .languages import AUTO_LANGUAGE_MODE, normalize_language_mode
+from .languages import (
+    AUTO_LANGUAGE_MODE,
+    DEFAULT_LANGUAGE_FAVORITES,
+    normalize_language_favorites,
+    normalize_language_mode,
+)
 
 PasteMode = Literal["auto", "clipboard_ctrl_v", "clipboard_ctrl_shift_v"]
 
@@ -23,6 +28,9 @@ class Settings(BaseModel):
     device: str = "cpu"
     compute_type: str = "int8"
     language_mode: str = AUTO_LANGUAGE_MODE
+    language_favorites: list[str | None] = Field(
+        default_factory=lambda: list(DEFAULT_LANGUAGE_FAVORITES)
+    )
     cleanup_mode: Literal["none", "basic", "llm"] = "basic"
     paste_mode: PasteMode = "auto"
     delete_audio_after_transcription: bool = True
@@ -42,6 +50,11 @@ class Settings(BaseModel):
         if normalized is None:
             raise ValueError(f"Unsupported language mode: {value!r}")
         return normalized
+
+    @field_validator("language_favorites", mode="before")
+    @classmethod
+    def validate_language_favorites(cls, value: object) -> list[str | None]:
+        return list(normalize_language_favorites(value))
 
 
 def app_data_dir() -> Path:
@@ -87,6 +100,7 @@ def load_settings() -> Settings:
         if not isinstance(data, dict):
             raise ValueError("settings file must contain a JSON object")
         _migrate_language_mode(data)
+        _migrate_language_favorites(data)
         return Settings(**data)
     except (OSError, ValueError, json.JSONDecodeError, ValidationError) as exc:
         _log_warning(
@@ -164,6 +178,18 @@ def _migrate_language_mode(data: dict[str, object]) -> None:
         data["language_mode"] = AUTO_LANGUAGE_MODE
         return
     data["language_mode"] = normalized
+
+
+def _migrate_language_favorites(data: dict[str, object]) -> None:
+    if "language_favorites" not in data:
+        return
+    try:
+        data["language_favorites"] = list(
+            normalize_language_favorites(data["language_favorites"])
+        )
+    except ValueError:
+        _log_warning("Invalid language favorites; restoring default favorites.")
+        data["language_favorites"] = list(DEFAULT_LANGUAGE_FAVORITES)
 
 
 def _load_dotenv() -> None:

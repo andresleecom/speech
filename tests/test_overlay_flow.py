@@ -161,8 +161,8 @@ class FakeHotkeySettingsWindow:
         self.shown_with = None
         self.instances.append(self)
 
-    def show(self, hotkeys, on_save) -> None:
-        self.shown_with = (dict(hotkeys), on_save)
+    def show(self, hotkeys, on_save, language_favorites) -> None:
+        self.shown_with = (dict(hotkeys), on_save, list(language_favorites))
 
 
 class FakeLanguageSettingsWindow:
@@ -172,8 +172,8 @@ class FakeLanguageSettingsWindow:
         self.shown_with = None
         self.instances.append(self)
 
-    def show(self, language_mode, on_save) -> None:
-        self.shown_with = (language_mode, on_save)
+    def show(self, language_mode, language_favorites, on_save) -> None:
+        self.shown_with = (language_mode, list(language_favorites), on_save)
 
 
 class ImmediateThread:
@@ -315,9 +315,10 @@ def test_controller_opens_hotkey_window_with_live_save_callback(monkeypatch, tmp
     controller.open_hotkey_settings()
 
     window = FakeHotkeySettingsWindow.instances[-1]
-    hotkeys, on_save = window.shown_with
+    hotkeys, on_save, language_favorites = window.shown_with
     assert hotkeys == controller.settings.hotkeys
     assert on_save == controller.set_hotkeys
+    assert language_favorites == ["en", "es", None]
 
 
 def test_controller_opens_language_window_with_live_save_callback(monkeypatch, tmp_path):
@@ -333,9 +334,10 @@ def test_controller_opens_language_window_with_live_save_callback(monkeypatch, t
     controller.open_language_settings()
 
     window = FakeLanguageSettingsWindow.instances[-1]
-    language_mode, on_save = window.shown_with
+    language_mode, language_favorites, on_save = window.shown_with
     assert language_mode == "es"
-    assert on_save == controller.set_language_mode
+    assert language_favorites == ["en", "es", None]
+    assert on_save == controller.set_language_preferences
 
 
 def test_controller_persists_selected_catalog_language(monkeypatch, tmp_path):
@@ -346,6 +348,25 @@ def test_controller_persists_selected_catalog_language(monkeypatch, tmp_path):
 
     assert controller.settings.language_mode == "fr"
     assert load_settings().language_mode == "fr"
+
+
+def test_controller_persists_favorites_and_routes_quick_language_actions(
+    monkeypatch, tmp_path
+):
+    controller = make_controller(monkeypatch, tmp_path, [], [])
+    toggles = []
+    monkeypatch.setattr(controller, "toggle", toggles.append)
+
+    controller.set_language_preferences("Japanese", ["French", "Japanese", None])
+    controller.on_hotkey("force_en")
+    controller.on_hotkey("force_es")
+    controller.on_hotkey("force_language_3")
+
+    assert controller.settings.language_mode == "ja"
+    assert controller.settings.language_favorites == ["fr", "ja", None]
+    assert load_settings().language_favorites == ["fr", "ja", None]
+    assert toggles == ["fr", "ja"]
+    assert controller.tray.notifications[-1][1].startswith("Set Favorite 3")
 
 
 def test_opening_advanced_settings_does_not_overwrite_external_edit(

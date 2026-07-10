@@ -8,7 +8,7 @@
 
 Speech is a Windows 10/11 and macOS menu-bar/tray app for local speech dictation.
 It records your microphone with a global hotkey, transcribes with faster-whisper, optionally formats the text, and pastes into the focused app.
-It transcribes in 100 languages with automatic language detection, and has quick-force hotkeys for English and Spanish.
+It transcribes in 100 languages with automatic language detection and three configurable quick-language actions, defaulting to English and Spanish.
 
 ![Default Speech hotkeys: Ctrl + Alt + Space on Windows and Control + Option + Space on macOS](docs/hotkeys.gif)
 
@@ -37,9 +37,9 @@ On Windows, Speech pastes with `Ctrl+V` and automatically switches to `Ctrl+Shif
 ## Languages
 
 In the default `auto` mode, Speech detects the language you speak and transcribes it in that language, covering the 100 language codes supported by its Whisper integration.
-Choose **Language > Language Settings...** from the tray/menu-bar icon to type a language name or select any supported language. The Language menu also exposes the most commonly used languages directly.
-Dedicated hotkeys force English (`Ctrl+Shift+E`) or Spanish (`Ctrl+Shift+S`) for a single dictation when you want to skip detection.
-You can also set `language_mode` in the settings file to `auto` or a supported code such as `fr`, `ja`, `ar`, `zh`, or `yue`.
+Choose **Language > Language Settings...** from the tray/menu-bar icon to type a language name, select any supported language, and pin up to three distinct favorites. The Language menu puts those favorites before the commonly used languages.
+Favorite 1 defaults to English and Favorite 2 to Spanish, so `Ctrl+Shift+E` and `Ctrl+Shift+S` keep their existing behavior. Change a favorite to make its quick action force any other supported language for one dictation. Favorite 3 is unpinned, with its hotkey disabled, until you configure both in **Language Settings...** and **Hotkey Settings...**.
+You can also set `language_mode` to `auto` or a supported code such as `fr`, `ja`, `ar`, `zh`, or `yue` in the settings file.
 Accuracy varies by language and model size: `small` is strong for widely spoken languages, and `medium` or `large-v3` improve the less common ones.
 Text cleanup preserves the original language and never translates.
 
@@ -168,7 +168,7 @@ Say, "Hello this is a test."
 Press `Ctrl+Alt+Space` again, or click the floating red recording button.
 The transcribed text pastes into Notepad at your cursor.
 
-To force Spanish for one dictation, use `Ctrl+Shift+S` to start and stop instead (`Ctrl+Shift+E` forces English).
+By default, `Ctrl+Shift+S` starts and stops a Spanish dictation and `Ctrl+Shift+E` does the same for English. Assign different languages to Favorites 1 and 2 in **Language Settings...** to change those quick actions without changing their shortcuts.
 
 ## Using Speech on macOS
 
@@ -187,8 +187,9 @@ If the hotkey does not respond, enable Speech under System Settings > Privacy & 
 | Action | Windows | macOS |
 | --- | --- | --- |
 | Start or stop recording | `Ctrl+Alt+Space` | `Control+Option+Space` |
-| Start or stop with English for this dictation | `Ctrl+Shift+E` | `Control+Shift+E` |
-| Start or stop with Spanish for this dictation | `Ctrl+Shift+S` | `Control+Shift+S` |
+| Start or stop with Favorite 1 (English by default) | `Ctrl+Shift+E` | `Control+Shift+E` |
+| Start or stop with Favorite 2 (Spanish by default) | `Ctrl+Shift+S` | `Control+Shift+S` |
+| Start or stop with Favorite 3 | Disabled by default | Disabled by default |
 
 ![Windows dictation example: press the Windows hotkey, speak, and the text is pasted at the cursor](docs/demo.gif)
 
@@ -197,6 +198,8 @@ If the hotkey does not respond, enable Speech under System Settings > Privacy & 
 Open the tray menu and choose **Hotkey Settings...**. Select a suggested shortcut or type one, then choose **Save hotkeys**. Speech validates the shortcuts, rejects duplicates, saves them, and applies them immediately without a restart. On Windows, an operating-system registration conflict also leaves the previous working hotkeys in place.
 
 The editor uses platform names: `Win` on Windows is `Command` on macOS, and `Alt` on Windows is `Option` on macOS. Choose **Disabled** to leave an action without a hotkey. Printable keys require a modifier so normal typing cannot start dictation; function keys such as `F8` can be used alone.
+
+Set the languages for the three quick actions in **Language Settings...** first. Favorites cannot use Auto-detect or repeat the same language. The first two actions preserve the saved English and Spanish hotkey entries from previous versions: changing a favorite changes the language it forces, not its existing shortcut. Enable a shortcut for Favorite 3 only after pinning a third language.
 
 The advanced settings file still accepts serialized hotkeys. For example, on Windows:
 
@@ -213,7 +216,7 @@ macOS intentionally rejects Option with a letter or number because its meaning c
 Remove an action from `hotkeys` to leave it without a hotkey.
 If a combo is already registered by another application, the editor keeps the previous working hotkeys and asks for a different shortcut.
 
-The English and Spanish defaults use `Ctrl+Shift` on Windows and `Control+Shift` on macOS, so they do not collide with `AltGr` on international Windows layouts or Option-modified letters on macOS. Existing installations keep their saved shortcuts until you change them in **Hotkey Settings...**.
+The first two defaults use `Ctrl+Shift` on Windows and `Control+Shift` on macOS, so they do not collide with `AltGr` on international Windows layouts or Option-modified letters on macOS. Existing installations keep their saved shortcuts until you change them in **Hotkey Settings...**. The persisted keys `force_english` and `force_spanish` remain for compatibility; `force_language_3` is the optional third action.
 
 ## Settings file location and keys
 
@@ -226,15 +229,16 @@ The app creates the file on first run if it does not exist.
 | `device` | `cpu` | Inference device such as `cpu` or `cuda`. |
 | `compute_type` | `int8` | faster-whisper compute type. |
 | `language_mode` | `auto` | Use `auto` or any supported Whisper language code, such as `en`, `es`, `fr`, `ja`, `ar`, `zh`, or `yue`. |
+| `language_favorites` | `["en", "es", null]` | Three distinct non-auto language codes for quick actions. Use `null` to leave a slot unpinned. |
 | `cleanup_mode` | `basic` | Use `none`, `basic`, or `llm`; see [Text cleanup](#text-cleanup). |
 | `paste_mode` | `auto` | On Windows, `auto` uses `Ctrl+Shift+V` for common terminal windows and `Ctrl+V` elsewhere. On macOS, Speech always sends `Cmd+V`. Older `clipboard_ctrl_v` settings keep the same Windows terminal detection. Use `clipboard_ctrl_shift_v` to force `Ctrl+Shift+V` on Windows. |
 | `delete_audio_after_transcription` | `true` | Delete temporary WAV files after transcription. |
 | `check_for_updates` | `true` | On Windows, check GitHub Releases for updates at most once per day. macOS updates are manual. |
 | `last_update_check_at` | `null` | Internal timestamp for update throttling. |
-| `hotkeys` | See defaults above. | Global hotkey bindings. |
+| `hotkeys` | See defaults above. | Global hotkey bindings, including optional `force_language_3`. |
 | `custom_vocabulary` | `[]` | Names and terms you use often, transcribed with these exact spellings. |
 
-Language, cleanup mode, and hotkeys can be changed from the tray menu without a restart. Use **Language Settings...** to search the full language list.
+Language selection, favorites, cleanup mode, and hotkeys can be changed from the tray menu without a restart. Use **Language Settings...** to search the full language list and configure quick-language actions.
 After editing `model_size`, `device`, `compute_type`, or `custom_vocabulary` in
 the advanced settings file, restart Speech for those values to take effect.
 

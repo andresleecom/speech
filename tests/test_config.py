@@ -21,6 +21,7 @@ def test_defaults_when_no_file_exists(monkeypatch, tmp_path):
     assert settings.paste_mode == "auto"
     assert settings.check_for_updates is True
     assert settings.last_update_check_at is None
+    assert settings.language_favorites == ["en", "es", None]
     assert settings.custom_vocabulary == []
     assert (tmp_path / "settings.json").exists()
 
@@ -38,6 +39,15 @@ def test_settings_accept_every_catalog_language_and_normalize_picker_labels():
         Settings(language_mode="not-a-language")
 
 
+def test_settings_normalize_three_quick_language_favorites():
+    settings = Settings(language_favorites=["French (fr)", "Japanese", "Not pinned"])
+
+    assert settings.language_favorites == ["fr", "ja", None]
+
+    with pytest.raises(ValueError, match="only once"):
+        Settings(language_favorites=["fr", "French"])
+
+
 def test_invalid_saved_language_falls_back_to_auto_without_losing_other_settings(
     monkeypatch, tmp_path
 ):
@@ -51,6 +61,24 @@ def test_invalid_saved_language_falls_back_to_auto_without_losing_other_settings
 
     assert settings.language_mode == "auto"
     assert settings.model_size == "medium"
+
+
+def test_old_hotkey_settings_keep_english_and_spanish_as_favorites(monkeypatch, tmp_path):
+    monkeypatch.setenv("WINWHISPER_APPDATA_DIR", str(tmp_path))
+    hotkeys = {
+        "toggle_recording": "<ctrl>+<alt>+<space>",
+        "force_english": "<ctrl>+<shift>+e",
+        "force_spanish": "<ctrl>+<shift>+s",
+    }
+    (tmp_path / "settings.json").write_text(
+        json.dumps({"hotkeys": hotkeys}),
+        encoding="utf-8",
+    )
+
+    settings = load_settings()
+
+    assert settings.language_favorites == ["en", "es", None]
+    assert settings.hotkeys == hotkeys
 
 
 def test_custom_vocabulary_round_trips_through_settings_file(monkeypatch, tmp_path):

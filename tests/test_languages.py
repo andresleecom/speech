@@ -1,11 +1,15 @@
+import pytest
+
 from winwhisper.languages import (
     AUTO_LANGUAGE_MODE,
+    DEFAULT_LANGUAGE_FAVORITES,
     DEFAULT_TRAY_LANGUAGE_MODES,
     SUPPORTED_LANGUAGES,
     filter_language_choice_labels,
     language_choice_label,
     language_choice_labels,
     language_name,
+    normalize_language_favorites,
     normalize_language_mode,
     tray_language_modes,
 )
@@ -51,3 +55,22 @@ def test_tray_languages_include_featured_languages_and_current_selection():
     assert tray_language_modes("auto") == DEFAULT_TRAY_LANGUAGE_MODES
     assert tray_language_modes("fr") == DEFAULT_TRAY_LANGUAGE_MODES
     assert tray_language_modes("yue")[-1] == "yue"
+
+
+def test_language_favorites_normalize_and_prioritize_the_tray_menu():
+    assert DEFAULT_LANGUAGE_FAVORITES == ("en", "es", None)
+    assert normalize_language_favorites(["French (fr)", "Japanese", "Not pinned"]) == (
+        "fr",
+        "ja",
+        None,
+    )
+    assert tray_language_modes("auto", ["fr", "ja", None])[:2] == ("fr", "ja")
+
+
+def test_language_favorites_reject_auto_duplicates_and_too_many_values():
+    with pytest.raises(ValueError, match="supported language"):
+        normalize_language_favorites(["auto"])
+    with pytest.raises(ValueError, match="only once"):
+        normalize_language_favorites(["fr", "French"])
+    with pytest.raises(ValueError, match="at most"):
+        normalize_language_favorites(["en", "es", "fr", "ja"])
