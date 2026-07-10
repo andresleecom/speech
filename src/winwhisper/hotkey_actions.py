@@ -2,6 +2,12 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
+from .languages import (
+    DEFAULT_LANGUAGE_FAVORITES,
+    language_name,
+    normalize_language_favorites,
+)
+
 
 @dataclass(frozen=True)
 class HotkeyAction:
@@ -11,11 +17,24 @@ class HotkeyAction:
     default_combo: str
     windows_suggestions: tuple[str, ...]
     macos_suggestions: tuple[str, ...]
+    language_favorite_index: int | None = None
 
     def suggestions(self, platform: str) -> tuple[str, ...]:
         if platform == "darwin":
             return self.macos_suggestions
         return self.windows_suggestions
+
+    def label_for_favorites(self, favorites: object) -> str:
+        if self.language_favorite_index is None:
+            return self.label
+        try:
+            normalized_favorites = normalize_language_favorites(favorites)
+        except ValueError:
+            normalized_favorites = DEFAULT_LANGUAGE_FAVORITES
+        language = normalized_favorites[self.language_favorite_index]
+        if language is None:
+            return f"Quick language {self.language_favorite_index + 1} (not set)"
+        return f"Dictate in {language_name(language)}"
 
 
 _TOGGLE_SUGGESTIONS = (
@@ -68,18 +87,29 @@ HOTKEY_ACTIONS = (
     HotkeyAction(
         setting_key="force_english",
         dispatch_action="force_en",
-        label="Dictate in English",
+        label="Quick language 1",
         default_combo="<ctrl>+<shift>+e",
         windows_suggestions=("<ctrl>+<shift>+e",),
         macos_suggestions=("<ctrl>+<shift>+e", "<shift>+<cmd>+e"),
+        language_favorite_index=0,
     ),
     HotkeyAction(
         setting_key="force_spanish",
         dispatch_action="force_es",
-        label="Dictate in Spanish",
+        label="Quick language 2",
         default_combo="<ctrl>+<shift>+s",
         windows_suggestions=("<ctrl>+<shift>+s",),
         macos_suggestions=("<ctrl>+<shift>+s", "<shift>+<cmd>+s"),
+        language_favorite_index=1,
+    ),
+    HotkeyAction(
+        setting_key="force_language_3",
+        dispatch_action="force_language_3",
+        label="Quick language 3",
+        default_combo="",
+        windows_suggestions=("<ctrl>+<shift>+<f9>",),
+        macos_suggestions=("<ctrl>+<shift>+<f9>", "<shift>+<cmd>+<f9>"),
+        language_favorite_index=2,
     ),
 )
 

@@ -27,6 +27,7 @@ class HotkeySettingsWindow:
         self,
         hotkeys: Mapping[str, str],
         on_save: SaveHotkeys,
+        language_favorites: object = None,
     ) -> None:
         with self._lock:
             if self._is_open:
@@ -34,13 +35,14 @@ class HotkeySettingsWindow:
             self._is_open = True
 
         snapshot = dict(hotkeys)
+        favorites_snapshot = language_favorites
         if sys.platform == "darwin":
-            self._show_macos(snapshot, on_save)
+            self._show_macos(snapshot, on_save, favorites_snapshot)
             return
 
         threading.Thread(
             target=self._run_tk,
-            args=(snapshot, on_save),
+            args=(snapshot, on_save, favorites_snapshot),
             name="winwhisper-hotkey-settings",
             daemon=True,
         ).start()
@@ -49,21 +51,36 @@ class HotkeySettingsWindow:
         with self._lock:
             self._is_open = False
 
-    def _run_tk(self, hotkeys: dict[str, str], on_save: SaveHotkeys) -> None:
+    def _run_tk(
+        self,
+        hotkeys: dict[str, str],
+        on_save: SaveHotkeys,
+        language_favorites: object,
+    ) -> None:
         try:
-            _run_tk_dialog(hotkeys, on_save, platform=sys.platform)
+            _run_tk_dialog(
+                hotkeys,
+                on_save,
+                platform=sys.platform,
+                language_favorites=language_favorites,
+            )
         except Exception:
             self._logger.exception("Hotkey settings window failed.")
         finally:
             self._mark_closed()
 
-    def _show_macos(self, hotkeys: dict[str, str], on_save: SaveHotkeys) -> None:
+    def _show_macos(
+        self,
+        hotkeys: dict[str, str],
+        on_save: SaveHotkeys,
+        language_favorites: object,
+    ) -> None:
         try:
             from Foundation import NSOperationQueue
 
             def present() -> None:
                 try:
-                    _run_macos_dialog(hotkeys, on_save)
+                    _run_macos_dialog(hotkeys, on_save, language_favorites)
                 except Exception:
                     self._logger.exception("macOS hotkey settings window failed.")
                 finally:
@@ -96,6 +113,7 @@ def _run_tk_dialog(
     on_save: SaveHotkeys,
     *,
     platform: str,
+    language_favorites: object = None,
 ) -> None:
     import tkinter as tk
     from tkinter import ttk
@@ -129,7 +147,7 @@ def _run_tk_dialog(
     for row, action in enumerate(HOTKEY_ACTIONS, start=2):
         tk.Label(
             frame,
-            text=action.label,
+            text=action.label_for_favorites(language_favorites),
             bg="#F7F7F8",
             fg="#2B2B30",
             font=("Segoe UI", 9),
@@ -160,7 +178,7 @@ def _run_tk_dialog(
         wraplength=450,
         anchor="w",
     ).grid(
-        row=5,
+        row=len(HOTKEY_ACTIONS) + 2,
         column=0,
         columnspan=2,
         sticky="ew",
@@ -168,7 +186,13 @@ def _run_tk_dialog(
     )
 
     actions = tk.Frame(frame, bg="#F7F7F8")
-    actions.grid(row=6, column=0, columnspan=2, sticky="e", pady=(12, 0))
+    actions.grid(
+        row=len(HOTKEY_ACTIONS) + 3,
+        column=0,
+        columnspan=2,
+        sticky="e",
+        pady=(12, 0),
+    )
 
     def save() -> None:
         try:
@@ -214,7 +238,11 @@ def _run_tk_dialog(
     root.mainloop()
 
 
-def _run_macos_dialog(hotkeys: dict[str, str], on_save: SaveHotkeys) -> None:
+def _run_macos_dialog(
+    hotkeys: dict[str, str],
+    on_save: SaveHotkeys,
+    language_favorites: object = None,
+) -> None:
     import AppKit
 
     AppKit.NSApplication.sharedApplication().activateIgnoringOtherApps_(True)
@@ -235,7 +263,9 @@ def _run_macos_dialog(hotkeys: dict[str, str], on_save: SaveHotkeys) -> None:
     fields: dict[str, Any] = {}
     for index, action in enumerate(HOTKEY_ACTIONS):
         y = row_height * (len(HOTKEY_ACTIONS) - index - 1)
-        label_view = AppKit.NSTextField.labelWithString_(action.label)
+        label_view = AppKit.NSTextField.labelWithString_(
+            action.label_for_favorites(language_favorites)
+        )
         label_view.setFrame_(AppKit.NSMakeRect(0, y + 5, 185, 22))
         view.addSubview_(label_view)
 

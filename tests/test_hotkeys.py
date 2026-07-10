@@ -116,6 +116,17 @@ def test_hotkey_manager_builds_bindings_and_skips_invalid():
     assert len(ids) == len(set(ids))
 
 
+def test_hotkey_manager_registers_optional_third_quick_language_action():
+    manager = HotkeyManager(
+        {"force_language_3": "<ctrl>+<shift>+<f9>"},
+        lambda action: None,
+    )
+
+    assert [action for _id, _fs, _vk, action, _combo in manager._bindings] == [
+        "force_language_3"
+    ]
+
+
 def test_hotkey_manager_start_is_noop_off_windows(monkeypatch):
     import winwhisper.hotkeys as hotkeys_mod
 

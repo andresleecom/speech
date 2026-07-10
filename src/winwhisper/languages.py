@@ -2,12 +2,15 @@
 from __future__ import annotations
 
 import re
+from collections.abc import Sequence
 from dataclasses import dataclass
 from typing import Final
 
 
 AUTO_LANGUAGE_MODE: Final = "auto"
+QUICK_LANGUAGE_SLOT_COUNT: Final = 3
 LanguageMode = str
+LanguageFavorite = LanguageMode | None
 
 
 def _normalize_name(value: str) -> str:
@@ -146,11 +149,21 @@ DEFAULT_TRAY_LANGUAGE_MODES: Final[tuple[LanguageMode, ...]] = (
     "id",
 )
 
+# The first two slots deliberately preserve the previous English and Spanish
+# quick-hotkey behavior. The third slot is available when the user pins another
+# language.
+DEFAULT_LANGUAGE_FAVORITES: Final[tuple[LanguageFavorite, ...]] = (
+    "en",
+    "es",
+    None,
+)
+
 _LANGUAGE_BY_CODE = {language.code: language for language in SUPPORTED_LANGUAGES}
 _LANGUAGE_BY_NAME = {
     _normalize_name(language.name): language.code for language in SUPPORTED_LANGUAGES
 }
 _AUTO_ALIASES = frozenset({"auto", "autodetect", "automatic", "detectlanguage"})
+_UNPINNED_ALIASES = frozenset({"", "disabled", "none", "notpinned", "off"})
 
 
 def normalize_language_mode(value: object) -> LanguageMode | None:
@@ -177,6 +190,36 @@ def normalize_language_mode(value: object) -> LanguageMode | None:
 
 def is_supported_language_mode(value: object) -> bool:
     return normalize_language_mode(value) is not None
+
+
+def normalize_language_favorites(value: object) -> tuple[LanguageFavorite, ...]:
+    """Validate up to three distinct non-auto languages for quick actions."""
+    if not isinstance(value, Sequence) or isinstance(value, (str, bytes)):
+        raise ValueError("Language favorites must be a list of up to three languages.")
+    if len(value) > QUICK_LANGUAGE_SLOT_COUNT:
+        raise ValueError(
+            f"Choose at most {QUICK_LANGUAGE_SLOT_COUNT} language favorites."
+        )
+
+    favorites: list[LanguageFavorite] = []
+    seen: set[LanguageMode] = set()
+    for entry in value:
+        if entry is None:
+            favorites.append(None)
+            continue
+        if isinstance(entry, str) and _normalize_name(entry) in _UNPINNED_ALIASES:
+            favorites.append(None)
+            continue
+        normalized = normalize_language_mode(entry)
+        if normalized is None or normalized == AUTO_LANGUAGE_MODE:
+            raise ValueError("Each language favorite must be a supported language.")
+        if normalized in seen:
+            raise ValueError("Choose each language favorite only once.")
+        seen.add(normalized)
+        favorites.append(normalized)
+
+    favorites.extend([None] * (QUICK_LANGUAGE_SLOT_COUNT - len(favorites)))
+    return tuple(favorites)
 
 
 def language_name(mode: object) -> str:
@@ -217,9 +260,22 @@ def filter_language_choice_labels(query: str) -> tuple[str, ...]:
     )
 
 
-def tray_language_modes(current_mode: object) -> tuple[LanguageMode, ...]:
+def tray_language_modes(
+    current_mode: object,
+    favorites: object = DEFAULT_LANGUAGE_FAVORITES,
+) -> tuple[LanguageMode, ...]:
     current = normalize_language_mode(current_mode)
-    modes = list(DEFAULT_TRAY_LANGUAGE_MODES)
+    modes: list[LanguageMode] = []
+    try:
+        normalized_favorites = normalize_language_favorites(favorites)
+    except ValueError:
+        normalized_favorites = DEFAULT_LANGUAGE_FAVORITES
+    for favorite in normalized_favorites:
+        if favorite is not None and favorite not in modes:
+            modes.append(favorite)
+    for featured_mode in DEFAULT_TRAY_LANGUAGE_MODES:
+        if featured_mode not in modes:
+            modes.append(featured_mode)
     if current and current != AUTO_LANGUAGE_MODE and current not in modes:
         modes.append(current)
     return tuple(modes)

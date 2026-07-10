@@ -23,14 +23,14 @@ def test_windows_editor_uses_tk_adapter_without_blocking_caller(monkeypatch):
     monkeypatch.setattr(
         window_module,
         "_run_tk_dialog",
-        lambda values, callback, platform: calls.append(
-            (values, callback, platform)
+        lambda values, callback, platform, language_favorites=None: calls.append(
+            (values, callback, platform, language_favorites)
         ),
     )
 
     HotkeySettingsWindow().show(hotkeys, on_save)
 
-    assert calls == [(hotkeys, on_save, "win32")]
+    assert calls == [(hotkeys, on_save, "win32", None)]
 
 
 def test_macos_editor_is_scheduled_on_appkit_main_queue(monkeypatch):
@@ -53,9 +53,11 @@ def test_macos_editor_is_scheduled_on_appkit_main_queue(monkeypatch):
     monkeypatch.setattr(
         window_module,
         "_run_macos_dialog",
-        lambda values, callback: calls.append((values, callback)),
+        lambda values, callback, language_favorites=None: calls.append(
+            (values, callback, language_favorites)
+        ),
     )
 
     HotkeySettingsWindow().show(hotkeys, on_save)
 
-    assert calls == [(hotkeys, on_save)]
+    assert calls == [(hotkeys, on_save, None)]
