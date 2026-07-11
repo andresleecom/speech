@@ -1,5 +1,4 @@
 from __future__ import annotations
-
 import queue
 import threading
 import os
@@ -10,7 +9,7 @@ from typing import Any, Literal
 
 from .focus import ScreenPoint
 from .logger import get_logger
-
+from .linux_shape import apply_circle_shape
 CommandName = Literal["show", "hide", "stop", "transcribing"]
 OverlayState = Literal["hidden", "recording", "transcribing"]
 
@@ -358,6 +357,7 @@ class RecordingOverlay:
             bd=0,
         )
         canvas.pack()
+        apply_circle_shape(root, _CENTER.x, _CENTER.y, _SURFACE_DIAMETER // 2 + 2)
         photo = ImageTk.PhotoImage(
             render_orb_frame("recording", self._current_level(), phase)
         )
@@ -430,6 +430,7 @@ class RecordingOverlay:
                     root.deiconify()
                     root.lift()
                     root.attributes("-topmost", True)
+                    self._reassert_circle_shape(root)
                 elif command.name == "hide":
                     state = "hidden"
                     root.withdraw()
@@ -439,6 +440,7 @@ class RecordingOverlay:
                     root.deiconify()
                     root.lift()
                     root.attributes("-topmost", True)
+                    self._reassert_circle_shape(root)
                 elif command.name == "stop":
                     root.destroy()
                     return
@@ -466,6 +468,31 @@ class RecordingOverlay:
             origin_y=origin_y,
         )
         root.geometry(f"{_WIDTH}x{_HEIGHT}+{x}+{y}")
+
+    def _reassert_circle_shape(self, root: Any, attempts: int = 6) -> None:
+        """Clip the Tk overlay to a circle on X11, re-asserting a few times.
+
+        The window background is an opaque key colour that Windows hides via
+        ``-transparentcolor``. X11 ignores that attribute, so the X11 SHAPE
+        circle is the only thing keeping the dark 152x152 box from showing.
+        A shape set before an override-redirect window is fully mapped by the
+        compositor can be dropped, which leaves the box visible on some shows;
+        re-asserting over the first few frames makes the clip reliable.
+        """
+        try:
+            root.update_idletasks()
+        except Exception:
+            pass
+        shaped = apply_circle_shape(
+            root, _CENTER.x, _CENTER.y, _SURFACE_DIAMETER // 2 + 2
+        )
+        if attempts <= 1:
+            self._logger.info("Overlay circle shape applied=%s", shaped)
+            return
+        try:
+            root.after(80, lambda: self._reassert_circle_shape(root, attempts - 1))
+        except Exception:
+            pass
 
     def _current_level(self) -> float:
         try:

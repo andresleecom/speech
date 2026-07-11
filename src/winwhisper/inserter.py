@@ -19,6 +19,35 @@ _SHIFT_PASTE_PROCESSES = {
     "wt.exe",
 }
 
+# Linux terminal emulators paste with Ctrl+Shift+V (Ctrl+V does nothing there).
+# Matched against the focused window's executable name (see focus.py).
+_LINUX_SHIFT_PASTE_PROCESSES = {
+    "alacritty",
+    "contour",
+    "cool-retro-term",
+    "deepin-terminal",
+    "foot",
+    "footclient",
+    "ghostty",
+    "gnome-terminal-server",
+    "kgx",  # GNOME Console
+    "kitty",
+    "konsole",
+    "lxterminal",
+    "mate-terminal",
+    "ptyxis",
+    "qterminal",
+    "rxvt",
+    "st",
+    "terminator",
+    "terminology",
+    "tilix",
+    "urxvt",
+    "wezterm-gui",
+    "xfce4-terminal",
+    "xterm",
+}
+
 _MACOS_V_KEYCODE = 0x09
 
 
@@ -51,8 +80,12 @@ def resolve_paste_shortcut(paste_mode: str, process_name: str | None) -> PasteSh
         return "cmd_v"
     if paste_mode == "clipboard_ctrl_shift_v":
         return "ctrl_shift_v"
-    if process_name and process_name.lower() in _SHIFT_PASTE_PROCESSES:
-        return "ctrl_shift_v"
+    if process_name:
+        name = process_name.lower()
+        if name in _SHIFT_PASTE_PROCESSES:
+            return "ctrl_shift_v"
+        if sys.platform.startswith("linux") and name in _LINUX_SHIFT_PASTE_PROCESSES:
+            return "ctrl_shift_v"
     return "ctrl_v"
 
 

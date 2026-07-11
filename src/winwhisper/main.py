@@ -711,15 +711,21 @@ class AppController:
             model_loaded = self.transcriber.is_model_loaded()
         if not still_processing:
             return
+        if sys.platform == "win32":
+            cause = "Antivirus real-time scanning can slow model load or CPU inference."
+            notify_hint = "first run or antivirus scanning can take longer."
+        else:
+            cause = "CPU inference is compute-bound; a smaller model_size is faster."
+            notify_hint = "first run and CPU inference can take longer."
         self.logger.warning(
-            "Transcription still running after %.0fs (model_loaded=%s). "
-            "Antivirus real-time scanning can slow model load or CPU inference.",
+            "Transcription still running after %.0fs (model_loaded=%s). %s",
             SLOW_TRANSCRIPTION_NOTIFY_SECONDS,
             model_loaded,
+            cause,
         )
         self.notify(
             APP_NAME,
-            "Still transcribing… first run or antivirus scanning can take longer.",
+            f"Still transcribing… {notify_hint}",
         )
 
     def _restore_paste_target(self) -> None:
