@@ -89,7 +89,7 @@ def resolve_paste_shortcut(paste_mode: str, process_name: str | None) -> PasteSh
     return "ctrl_v"
 
 
-def insert_text(text: str, shortcut: PasteShortcut = "ctrl_v") -> bool:
+def copy_text_to_clipboard(text: str) -> bool:
     logger = get_logger(__name__)
 
     try:
@@ -102,6 +102,15 @@ def insert_text(text: str, shortcut: PasteShortcut = "ctrl_v") -> bool:
         pyperclip.copy(text)
     except Exception as exc:
         logger.warning("Could not copy text to clipboard: %s.", exc.__class__.__name__)
+        return False
+
+    return True
+
+
+def insert_text(text: str, shortcut: PasteShortcut = "ctrl_v") -> bool:
+    logger = get_logger(__name__)
+
+    if not copy_text_to_clipboard(text):
         return False
 
     # Synthetic key events from Controller are seen by listener-based hotkey
@@ -130,10 +139,7 @@ def insert_text(text: str, shortcut: PasteShortcut = "ctrl_v") -> bool:
             time.sleep(0.5)
     except Exception as exc:
         logger.warning("Paste failed with %s; leaving text on clipboard.", exc.__class__.__name__)
-        try:
-            pyperclip.copy(text)
-        except Exception:
-            pass
+        copy_text_to_clipboard(text)
         return False
     finally:
         set_listener_suppressed(False)

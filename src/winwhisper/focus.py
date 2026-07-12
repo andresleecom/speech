@@ -315,19 +315,29 @@ def _x11_activate_window(hwnd: WindowHandle | None) -> bool:
         root = disp.screen().root
         win = disp.create_resource_object("window", hwnd)
         net_active = disp.intern_atom("_NET_ACTIVE_WINDOW")
+        active_prop = root.get_full_property(net_active, X.AnyPropertyType)
+        active_value = getattr(active_prop, "value", None)
+        current_active = int(active_value[0]) if active_value else 0
         event = protocol.event.ClientMessage(
             window=win,
             client_type=net_active,
             # source indication 1 = "from an application", per EWMH.
-            data=(32, [1, X.CurrentTime, 0, 0, 0]),
+            data=(32, [1, X.CurrentTime, current_active, 0, 0]),
         )
         mask = X.SubstructureRedirectMask | X.SubstructureNotifyMask
         root.send_event(event, event_mask=mask)
         disp.flush()
-        # Give the window manager a beat to complete the activation before the
-        # synthetic Ctrl+V is dispatched.
-        time.sleep(0.12)
-        return True
+        # Window managers may reject activation requests. Confirm the target
+        # became active before allowing the caller to synthesize a paste.
+        for attempt in range(6):
+            disp.sync()
+            active_prop = root.get_full_property(net_active, X.AnyPropertyType)
+            active_value = getattr(active_prop, "value", None)
+            if active_value and int(active_value[0]) == hwnd:
+                return True
+            if attempt < 5:
+                time.sleep(0.025)
+        return False
     except Exception:
         return False
     finally:

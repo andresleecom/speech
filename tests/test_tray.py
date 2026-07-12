@@ -1,3 +1,8 @@
+import sys
+import types
+
+import pytest
+
 import winwhisper.tray as tray_module
 from winwhisper.audio_inputs import AudioInputDevice
 from winwhisper.tray import TrayApp
@@ -109,6 +114,41 @@ def test_tray_opens_in_app_hotkey_settings():
     settings_item.action(None, None)
 
     assert controller.hotkey_settings_opened is True
+
+
+def test_tray_shows_update_check_only_on_windows(monkeypatch):
+    controller = FakeController()
+    tray = TrayApp(controller)
+
+    monkeypatch.setattr(tray_module.sys, "platform", "win32")
+    windows_menu = tray._make_menu(FakeMenu, FakeMenuItem)
+    windows_update = next(
+        item for item in windows_menu.items if item.label == "Check for Updates"
+    )
+
+    monkeypatch.setattr(tray_module.sys, "platform", "linux")
+    linux_menu = tray._make_menu(FakeMenu, FakeMenuItem)
+    linux_update = next(
+        item for item in linux_menu.items if item.label == "Check for Updates"
+    )
+
+    assert windows_update.options["visible"] is True
+    assert linux_update.options["visible"] is False
+
+
+def test_linux_tray_rejects_backend_without_menus(monkeypatch):
+    class MenuLessIcon:
+        HAS_MENU = False
+
+    pystray = types.ModuleType("pystray")
+    pystray.Icon = MenuLessIcon
+    pystray.Menu = FakeMenu
+    pystray.MenuItem = FakeMenuItem
+    monkeypatch.setitem(sys.modules, "pystray", pystray)
+    monkeypatch.setattr(tray_module.sys, "platform", "linux")
+
+    with pytest.raises(RuntimeError, match="does not support menus"):
+        TrayApp(FakeController()).run()
 
 
 def test_tray_exposes_featured_and_searchable_language_settings():

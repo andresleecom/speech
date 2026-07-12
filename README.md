@@ -4,9 +4,9 @@
 [![CodeQL](https://github.com/andresleecom/speech/actions/workflows/codeql.yml/badge.svg)](https://github.com/andresleecom/speech/actions/workflows/codeql.yml)
 [![Latest release](https://img.shields.io/github/v/release/andresleecom/speech)](https://github.com/andresleecom/speech/releases/latest)
 [![License: MIT](https://img.shields.io/github/license/andresleecom/speech)](LICENSE)
-![Platforms](https://img.shields.io/badge/platforms-Windows%20%7C%20macOS-blue)
+![Platforms](https://img.shields.io/badge/platforms-Windows%20%7C%20macOS%20%7C%20Linux-blue)
 
-Speech is a Windows 10/11 and macOS menu-bar/tray app for local speech dictation.
+Speech is a Windows 10/11, macOS, and Linux tray/menu-bar app for local speech dictation.
 It records your microphone with a global hotkey, transcribes with faster-whisper, optionally formats the text, and pastes into the focused app.
 It transcribes in 100 languages with automatic language detection and three configurable quick-language actions, defaulting to English and Spanish.
 
@@ -15,7 +15,7 @@ It transcribes in 100 languages with automatic language detection and three conf
 ## How it works
 
 1. Click where you want your words to go, in any app.
-2. Press the start/stop hotkey: `Ctrl+Alt+Space` on Windows or `Control+Option+Space` on macOS. A floating orb appears near your cursor.
+2. Press the start/stop hotkey: `Ctrl+Alt+Space` on Windows/Linux or `Control+Option+Space` on macOS. A floating orb appears near your cursor.
 3. Speak, then press the same combo again or click the red button to stop.
 4. Speech transcribes locally and pastes the text right where your cursor was.
 
@@ -32,7 +32,7 @@ Speech types wherever your cursor is, so it works with virtually any application
 - Coding: VS Code, JetBrains IDEs, Cursor, terminals, and coding agents such as Claude Code.
 
 If you can type there, you can dictate there.
-On Windows, Speech pastes with `Ctrl+V` and automatically switches to `Ctrl+Shift+V` for supported terminal windows. On macOS, it always pastes with `Cmd+V`.
+On Windows and Linux, Speech pastes with `Ctrl+V` and automatically switches to `Ctrl+Shift+V` for supported terminal windows. On macOS, it always pastes with `Cmd+V`.
 
 ## Languages
 
@@ -45,7 +45,7 @@ Text cleanup preserves the original language and never translates.
 
 ## Microphone
 
-Choose **Microphone** from the tray/menu-bar icon to use **System Default** or select a specific input device. System Default is the safe default and follows the microphone selected in Windows or macOS.
+Choose **Microphone** from the tray/menu-bar icon to use **System Default** or select a specific input device. System Default is the safe default and follows the microphone selected by the operating system.
 
 Choose **Test Microphone** to open the floating recording orb for five seconds. Its rings react to the live input level, and Speech reports whether it detected sound. The test never writes audio to disk or transcribes it. Click the red stop control or press a dictation hotkey to stop the test early.
 
@@ -67,8 +67,8 @@ For most users, leave `Basic` selected. Choose `None` for verbatim technical not
 
 ## Platform support
 
-Windows 10/11 and macOS ship as downloadable apps.
-Linux support is in development: the engine works on X11 from source, and the test suite runs on all three systems in CI (Wayland is not supported yet).
+Windows 10/11, macOS, and x86_64 Linux ship as downloadable apps. Linux packages target Ubuntu 22.04 or newer and Debian 12 or newer.
+Linux uses X11; Wayland is not supported yet. The test suite runs on all three systems in CI.
 
 macOS notes:
 
@@ -76,6 +76,13 @@ macOS notes:
 - The default hotkey is `Control+Option+Space`; Option is sometimes labeled Alt on Mac-compatible keyboards. Speech pastes with `Cmd+V` automatically.
 - Replacing or deleting an unsigned build can make macOS require permission approval again. If the hotkey stops responding after an update, switch Speech off and back on in both permission lists, then quit and reopen it.
 - Automatic in-app updates are Windows-only for now; download new DMGs from Releases.
+
+Linux notes:
+
+- The default hotkey is `Ctrl+Alt+Space`, and Speech pastes with `Ctrl+V` or `Ctrl+Shift+V` in supported terminals.
+- X11 is required for global hotkeys, focus restoration, and the floating orb. Wayland is not supported yet.
+- The desktop must provide an AppIndicator-compatible system tray. Ubuntu includes one; Debian GNOME users can install `gnome-shell-extension-appindicator` if the icon is missing.
+- Automatic in-app updates are Windows-only; download new AppImage or Debian packages from Releases.
 
 ## Installation for users
 
@@ -117,9 +124,40 @@ When replacing an older `Speech.app`, repeat step 3 even if Speech already appea
 
 Speech lives in the menu bar (no Dock icon); the icon color shows the recording state.
 
+### Linux (x86_64, X11; Ubuntu 22.04+ or Debian 12+)
+
+Choose either package from the latest release:
+
+| Format | Download |
+| --- | --- |
+| AppImage | `https://github.com/andresleecom/speech/releases/latest/download/Speech.AppImage` |
+| Debian/Ubuntu | `https://github.com/andresleecom/speech/releases/latest/download/Speech.deb` |
+
+Install FUSE support, then run the AppImage directly:
+
+```bash
+sudo apt install fuse3 libfuse2
+chmod +x Speech.AppImage
+./Speech.AppImage
+```
+
+If FUSE mounting is unavailable, use the supported extraction fallback:
+
+```bash
+APPIMAGE_EXTRACT_AND_RUN=1 ./Speech.AppImage
+```
+
+Or install the Debian package:
+
+```bash
+sudo apt install ./Speech.deb
+```
+
+Speech runs in the system tray. These packages require an X11 session; Wayland is not supported yet.
+
 ## Development setup
 
-Clone the repository on either platform.
+Clone the repository on any supported platform.
 
 ```bash
 git clone https://github.com/andresleecom/speech.git
@@ -134,7 +172,7 @@ py -3.12 -m venv .venv
 ```
 
 ```bash
-# macOS
+# macOS or Linux
 python3.12 -m venv .venv
 ```
 
@@ -146,11 +184,31 @@ Use the equivalent Python 3.11 command if needed. Activate the virtual environme
 ```
 
 ```bash
-# macOS
+# macOS or Linux
 source .venv/bin/activate
 ```
 
-Upgrade pip and install the runtime requirements.
+On Debian/Ubuntu, install the native build and runtime dependencies before the
+Python requirements:
+
+```bash
+sudo apt install \
+  build-essential \
+  curl \
+  file \
+  gir1.2-ayatanaappindicator3-0.1 \
+  gir1.2-gtk-3.0 \
+  libcairo2-dev \
+  libgirepository1.0-dev \
+  libportaudio2 \
+  pkg-config \
+  python3-dev \
+  xclip
+```
+
+If the virtual environment uses a non-system Python, install its matching
+development-header package as well. Then upgrade pip and install the runtime
+requirements.
 
 ```bash
 python -m pip install --upgrade pip
@@ -190,14 +248,18 @@ The transcribed text pastes into Notes at your cursor via `Cmd+V`, sent automati
 
 If the hotkey does not respond, enable Speech under System Settings > Privacy & Security > Accessibility and Input Monitoring, then relaunch the app. Input Monitoring lets Speech listen for global hotkeys; Accessibility lets it send the paste keystroke.
 
+## Using Speech on Linux
+
+Start Speech from the application menu, with the `speech` command, or by running the AppImage. Click into an app, press `Ctrl+Alt+Space`, speak, and press the same shortcut again. Speech restores the original X11 window and pastes at the cursor.
+
 ## Default hotkeys
 
-| Action | Windows | macOS |
-| --- | --- | --- |
-| Start or stop recording | `Ctrl+Alt+Space` | `Control+Option+Space` |
-| Start or stop with Favorite 1 (English by default) | `Ctrl+Shift+E` | `Control+Shift+E` |
-| Start or stop with Favorite 2 (Spanish by default) | `Ctrl+Shift+S` | `Control+Shift+S` |
-| Start or stop with Favorite 3 | Disabled by default | Disabled by default |
+| Action | Windows | macOS | Linux |
+| --- | --- | --- | --- |
+| Start or stop recording | `Ctrl+Alt+Space` | `Control+Option+Space` | `Ctrl+Alt+Space` |
+| Start or stop with Favorite 1 (English by default) | `Ctrl+Shift+E` | `Control+Shift+E` | `Ctrl+Shift+E` |
+| Start or stop with Favorite 2 (Spanish by default) | `Ctrl+Shift+S` | `Control+Shift+S` | `Ctrl+Shift+S` |
+| Start or stop with Favorite 3 | Disabled by default | Disabled by default | Disabled by default |
 
 ![Windows dictation example: press the Windows hotkey, speak, and the text is pasted at the cursor](docs/demo.gif)
 
@@ -228,7 +290,7 @@ The first two defaults use `Ctrl+Shift` on Windows and `Control+Shift` on macOS,
 
 ## Settings file location and keys
 
-The settings file is `%APPDATA%\Speech\settings.json` on Windows and `~/Library/Application Support/Speech/settings.json` on macOS.
+The settings file is `%APPDATA%\Speech\settings.json` on Windows, `~/Library/Application Support/Speech/settings.json` on macOS, and `$XDG_CONFIG_HOME/speech/settings.json` on Linux (default `~/.config/speech/settings.json`).
 The app creates the file on first run if it does not exist.
 
 | Key | Default | Description |
@@ -240,9 +302,9 @@ The app creates the file on first run if it does not exist.
 | `language_mode` | `auto` | Use `auto` or any supported Whisper language code, such as `en`, `es`, `fr`, `ja`, `ar`, `zh`, or `yue`. |
 | `language_favorites` | `["en", "es", null]` | Three distinct non-auto language codes for quick actions. Use `null` to leave a slot unpinned. |
 | `cleanup_mode` | `basic` | Use `none`, `basic`, or `llm`; see [Text cleanup](#text-cleanup). |
-| `paste_mode` | `auto` | On Windows, `auto` uses `Ctrl+Shift+V` for common terminal windows and `Ctrl+V` elsewhere. On macOS, Speech always sends `Cmd+V`. Older `clipboard_ctrl_v` settings keep the same Windows terminal detection. Use `clipboard_ctrl_shift_v` to force `Ctrl+Shift+V` on Windows. |
+| `paste_mode` | `auto` | On Windows and Linux, `auto` uses `Ctrl+Shift+V` for common terminal windows and `Ctrl+V` elsewhere. On macOS, Speech always sends `Cmd+V`. Older `clipboard_ctrl_v` settings keep the same terminal detection. Use `clipboard_ctrl_shift_v` to force `Ctrl+Shift+V` on Windows/Linux. |
 | `delete_audio_after_transcription` | `true` | Delete temporary WAV files after transcription. |
-| `check_for_updates` | `true` | On Windows, check GitHub Releases for updates at most once per day. macOS updates are manual. |
+| `check_for_updates` | `true` | On Windows, check GitHub Releases for updates at most once per day. macOS and Linux updates are manual. |
 | `last_update_check_at` | `null` | Internal timestamp for update throttling. |
 | `hotkeys` | See defaults above. | Global hotkey bindings, including optional `force_language_3`. |
 | `custom_vocabulary` | `[]` | Names and terms you use often, transcribed with these exact spellings. |
@@ -266,9 +328,9 @@ Restart Speech after editing it.
 
 ## Floating recording button
 
-When recording starts, Speech shows a floating circular recording orb near the text cursor when Windows exposes one, or near the mouse cursor as a fallback and on macOS. The red center button stops recording, and the surrounding sonar rings pulse while the microphone is live. Drag the orb to move it. After you stop recording, the orb switches to a transcribing spinner until the text is ready. The app remembers the active window from the start of recording and tries to focus it again before pasting, so the text goes back where your cursor was when dictation began.
+When recording starts, Speech shows a floating circular recording orb near the text cursor when Windows exposes one, or near the mouse cursor as a fallback and on macOS/Linux. The red center button stops recording, and the surrounding sonar rings pulse while the microphone is live. Drag the orb to move it. After you stop recording, the orb switches to a transcribing spinner until the text is ready. The app remembers the active window from the start of recording and tries to focus it again before pasting, so the text goes back where your cursor was when dictation began.
 
-On Windows in `auto` paste mode, terminal windows such as Windows Terminal, WezTerm, Alacritty, mintty, and legacy console hosts receive `Ctrl+Shift+V`. Other Windows apps receive `Ctrl+V`; macOS uses `Cmd+V`.
+On Windows and Linux in `auto` paste mode, supported terminal windows receive `Ctrl+Shift+V`; other apps receive `Ctrl+V`. macOS uses `Cmd+V`.
 
 ## Model and performance
 
@@ -315,6 +377,12 @@ shasum -a 256 Speech-<version>.dmg
 
 # Intel macOS
 shasum -a 256 Speech-<version>-intel.dmg
+
+# Linux AppImage
+sha256sum Speech-<version>.AppImage
+
+# Linux Debian package
+sha256sum Speech-<version>.deb
 ```
 
 Compare the output to the matching `.sha256` asset on the release page.
@@ -336,7 +404,7 @@ The diagnostics report includes Python, OS, the configured and available microph
 
 Dictation stops automatically after 10 minutes to avoid unbounded memory use. The recording-length limit is not configurable yet.
 
-Dictation text remains on the clipboard after each paste attempt so you can press `Ctrl+V` on Windows or `Cmd+V` on macOS manually if the focused app did not accept the automatic paste. Previous clipboard content is not preserved in the MVP.
+Dictation text remains on the clipboard after each paste attempt so you can press `Ctrl+V` on Windows/Linux or `Cmd+V` on macOS manually if the focused app did not accept the automatic paste. Previous clipboard content is not preserved in the MVP.
 
 ## Troubleshooting
 
@@ -385,6 +453,12 @@ Build the macOS app and DMG on a Mac:
 bash scripts/build_macos.sh python
 ```
 
+Build the Linux AppImage and Debian package on x86_64 Linux:
+
+```bash
+bash scripts/build_linux.sh python
+```
+
 The build outputs:
 
 - `dist\Speech\Speech.exe`
@@ -392,10 +466,12 @@ The build outputs:
 - `dist\installer\Speech-Setup-<version>.exe.sha256`
 - `dist\installer\Speech-Setup.exe`
 - `dist\installer\Speech-Setup.exe.sha256`
+- `dist/installer/Speech-<version>.AppImage` and `Speech.AppImage`, with checksums
+- `dist/installer/Speech-<version>.deb` and `Speech.deb`, with checksums
 
 Every push to `main` starts the GitHub Actions release workflow automatically.
 It tests the project on Linux, Windows, Apple Silicon macOS, and Intel macOS;
-builds the Windows installer and both Mac DMGs; verifies the packaged apps; and
+builds the Linux AppImage/Debian package, Windows installer, and both Mac DMGs; verifies the packaged apps; and
 publishes the release only after every job succeeds. No release tag needs to be
 created manually.
 
@@ -410,6 +486,8 @@ Each release contains these stable download URLs and matching versioned assets:
 - `Speech-Setup.exe` for Windows
 - `Speech.dmg` for Apple Silicon Macs
 - `Speech-intel.dmg` for Intel Macs
+- `Speech.AppImage` for x86_64 Linux
+- `Speech.deb` for Debian/Ubuntu x86_64
 
 The README GIFs are generated, not screen-recorded. Regenerate them after visual changes to the overlay or the default shortcuts.
 
@@ -430,4 +508,4 @@ python scripts/make_hotkeys_gif.py
 
 - Add push-to-talk and voice-activity options for hands-free workflows.
 - Improve model management: download progress, storage usage, and a simple accuracy/speed recommendation by machine.
-- Package Linux for both mainstream desktop distributions and Wayland, without reducing the current X11 support.
+- Add Wayland support without reducing the current X11 support.

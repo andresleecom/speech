@@ -41,20 +41,73 @@ jobs:
 
   linux:
     needs: prepare
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-22.04
+    env:
+      SPEECH_VERSION: ${{ needs.prepare.outputs.version }}
     steps:
       - uses: actions/checkout@v7
       - uses: actions/setup-python@v6
         with:
           python-version: "3.12"
-      - name: Install PortAudio
-        run: sudo apt-get update && sudo apt-get install -y libportaudio2
+      - name: Install Linux build and runtime dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            dbus-x11 \
+            gir1.2-ayatanaappindicator3-0.1 \
+            gir1.2-gtk-3.0 \
+            libcairo2-dev \
+            libgirepository1.0-dev \
+            libportaudio2 \
+            pkg-config \
+            xauth \
+            xclip \
+            xvfb
       - name: Install dependencies
         run: |
           python -m pip install --upgrade pip
           python -m pip install -r requirements-dev.txt
       - name: Run tests
         run: python -m pytest -q
+      - name: Build Linux packages
+        run: bash scripts/build_linux.sh python
+      - name: Smoke Linux packages
+        shell: bash
+        run: |
+          BIN="dist/Speech/Speech"
+          test -x "$BIN" || { echo "Packaged executable not found."; exit 1; }
+          test "$("$BIN" --version)" = "$SPEECH_VERSION"
+          "$BIN" --diagnostics
+          test "$(APPIMAGE_EXTRACT_AND_RUN=1 dist/installer/Speech.AppImage --version)" = "$SPEECH_VERSION"
+          test "$(dpkg-deb --field dist/installer/Speech.deb Version)" = "$SPEECH_VERSION"
+          test "$(dpkg-deb --field dist/installer/Speech.deb Architecture)" = "amd64"
+          dpkg-deb --field dist/installer/Speech.deb Depends | grep -qw xclip
+          dpkg-deb --field dist/installer/Speech.deb Depends | grep -qw libayatana-appindicator3-1
+          dpkg-deb --field dist/installer/Speech.deb Depends | grep -q 'libc6 (>= '
+          cd dist/installer
+          sha256sum --check Speech*.sha256
+          cd ../..
+          tray_state="$(mktemp -d)"
+          set +e
+          timeout 8s dbus-run-session -- xvfb-run -a env \
+            APPIMAGE_EXTRACT_AND_RUN=1 \
+            HF_HUB_OFFLINE=1 \
+            PYSTRAY_BACKEND=appindicator \
+            WINWHISPER_APPDATA_DIR="$tray_state" \
+            dist/installer/Speech.AppImage
+          tray_status=$?
+          set -e
+          test "$tray_status" -eq 124
+          grep -q "Hotkey listener started" "$tray_state/logs/app.log"
+      - name: Upload Linux release assets
+        uses: actions/upload-artifact@v4
+        with:
+          name: linux-release
+          path: |
+            dist/installer/Speech*.AppImage*
+            dist/installer/Speech*.deb*
+          if-no-files-found: error
+          retention-days: 1
 
   windows:
     needs: prepare
@@ -154,6 +207,14 @@ jobs:
         shell: bash
         run: |
           expected=(
+            "Speech-$BUILD_VERSION.AppImage"
+            "Speech-$BUILD_VERSION.AppImage.sha256"
+            "Speech.AppImage"
+            "Speech.AppImage.sha256"
+            "Speech-$BUILD_VERSION.deb"
+            "Speech-$BUILD_VERSION.deb.sha256"
+            "Speech.deb"
+            "Speech.deb.sha256"
             "Speech-Setup-$BUILD_VERSION.exe"
             "Speech-Setup-$BUILD_VERSION.exe.sha256"
             "Speech-Setup.exe"

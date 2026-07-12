@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import sys
 import threading
 from collections.abc import Callable
 from typing import Any
@@ -39,6 +40,9 @@ class TrayApp:
 
     def run(self) -> None:
         from pystray import Icon, Menu, MenuItem
+
+        if sys.platform.startswith("linux") and not Icon.HAS_MENU:
+            raise RuntimeError("The selected Linux tray backend does not support menus")
 
         with self._ui_lock:
             self._icon = Icon(
@@ -126,7 +130,11 @@ class TrayApp:
             ),
             item_cls("Hotkey Settings...", self._on_hotkey_settings),
             item_cls("Open Settings File", self._on_open_settings),
-            item_cls("Check for Updates", self._on_check_updates),
+            item_cls(
+                "Check for Updates",
+                self._on_check_updates,
+                visible=sys.platform == "win32",
+            ),
             item_cls("Diagnostics", self._on_diagnostics),
             item_cls("Exit", self._on_exit),
         )

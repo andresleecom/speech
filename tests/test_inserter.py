@@ -101,6 +101,16 @@ def test_non_terminal_process_uses_ctrl_v(monkeypatch):
     assert resolve_paste_shortcut("auto", "notepad.exe") == "ctrl_v"
 
 
+def test_linux_terminal_process_uses_ctrl_shift_v(monkeypatch):
+    monkeypatch.setattr(sys, "platform", "linux")
+    assert resolve_paste_shortcut("auto", "gnome-terminal-server") == "ctrl_shift_v"
+
+
+def test_linux_non_terminal_process_uses_ctrl_v(monkeypatch):
+    monkeypatch.setattr(sys, "platform", "linux")
+    assert resolve_paste_shortcut("auto", "firefox") == "ctrl_v"
+
+
 def test_macos_always_uses_cmd_v(monkeypatch):
     monkeypatch.setattr(sys, "platform", "darwin")
     assert resolve_paste_shortcut("auto", None) == "cmd_v"

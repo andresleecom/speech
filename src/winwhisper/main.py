@@ -32,7 +32,12 @@ from .hotkey_settings import (
 )
 from .hotkey_settings_window import HotkeySettingsWindow
 from .hotkeys import HotkeyManager
-from .inserter import PasteShortcut, insert_text, resolve_paste_shortcut
+from .inserter import (
+    PasteShortcut,
+    copy_text_to_clipboard,
+    insert_text,
+    resolve_paste_shortcut,
+)
 from .language_settings_window import LanguageSettingsWindow
 from .languages import (
     LanguageMode,
@@ -149,8 +154,8 @@ class AppController:
                     exc.__class__.__name__,
                 )
         else:
-            # Release assets are Windows installers; other platforms run from
-            # source until native packages exist.
+            # Installer-based in-app updates are Windows-only. Packaged macOS
+            # and Linux builds update manually from GitHub Releases.
             self.logger.info("Automatic updates are Windows-only for now.")
 
         try:
@@ -658,7 +663,21 @@ class AppController:
 
             self.set_status(STATUS_PASTING)
             self.logger.info("Restoring focus and pasting transcription...")
-            self._restore_paste_target()
+            restored_target = self._restore_paste_target()
+            if sys.platform.startswith("linux") and not restored_target:
+                shortcut = self._paste_shortcut()
+                if copy_text_to_clipboard(cleaned):
+                    self.notify(
+                        APP_NAME,
+                        f"Automatic paste failed. Try {_shortcut_label(shortcut)}.",
+                    )
+                else:
+                    self.notify(
+                        APP_NAME,
+                        "Automatic paste failed, and the transcription could not "
+                        "be copied.",
+                    )
+                return
             shortcut = self._paste_shortcut()
             if insert_text(cleaned, shortcut=shortcut):
                 self.logger.info(
@@ -711,12 +730,12 @@ class AppController:
             model_loaded = self.transcriber.is_model_loaded()
         if not still_processing:
             return
-        if sys.platform == "win32":
+        if sys.platform.startswith("linux"):
+            cause = "Local inference can be compute-bound; a smaller model_size is faster."
+            notify_hint = "first run and local inference can take longer."
+        else:
             cause = "Antivirus real-time scanning can slow model load or CPU inference."
             notify_hint = "first run or antivirus scanning can take longer."
-        else:
-            cause = "CPU inference is compute-bound; a smaller model_size is faster."
-            notify_hint = "first run and CPU inference can take longer."
         self.logger.warning(
             "Transcription still running after %.0fs (model_loaded=%s). %s",
             SLOW_TRANSCRIPTION_NOTIFY_SECONDS,
@@ -728,17 +747,19 @@ class AppController:
             f"Still transcribing… {notify_hint}",
         )
 
-    def _restore_paste_target(self) -> None:
+    def _restore_paste_target(self) -> bool:
         with self._lock:
             target_window = self._paste_target_window
 
         if target_window is None:
-            return
+            return True
 
         if restore_foreground_window(target_window):
             self.logger.info("Restored target window before paste.")
-        else:
-            self.logger.warning("Could not restore target window before paste.")
+            return True
+
+        self.logger.warning("Could not restore target window before paste.")
+        return False
 
     def _paste_shortcut(self) -> PasteShortcut:
         with self._lock:

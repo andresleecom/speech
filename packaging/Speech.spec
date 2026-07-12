@@ -27,6 +27,23 @@ if sys.platform == "darwin":
         "pynput.mouse._darwin",
         "pystray._darwin",
     ]
+elif sys.platform.startswith("linux"):
+    platform_hiddenimports = [
+        "gi.repository.AyatanaAppIndicator3",
+        "gi.repository.DBus",
+        "gi.repository.Gio",
+        "gi.repository.GLib",
+        "gi.repository.GObject",
+        "gi.repository.Gtk",
+        "pynput._util.xorg",
+        "pynput.keyboard._xorg",
+        "pynput.mouse._xorg",
+        "pystray._appindicator",
+        "pystray._gtk",
+        "pystray._util.gtk",
+        "pystray._util.notify_dbus",
+        "pystray._xorg",
+    ]
 else:
     platform_hiddenimports = [
         "winwhisper.native_overlay",

@@ -9,13 +9,6 @@ dist/
 *.spec
 !packaging/Speech.spec
 
-# Linux build artifacts (AppImage / .deb) and the build-only venv
-.venv-build/
-AppDir/
-*.AppImage
-*.deb
-/speech_0.1.12_amd64/
-
 # Secrets and local env (never commit)
 .env
 .env.*

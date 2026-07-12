@@ -31,6 +31,7 @@ dependencies = [
   "pydantic",
   "openai",
   "truststore",
+  "PyGObject==3.50.0; sys_platform == 'linux'",
   "python-xlib; sys_platform == 'linux'",
 ]
 
