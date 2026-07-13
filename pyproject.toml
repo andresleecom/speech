@@ -31,18 +31,16 @@ dependencies = [
   "pydantic",
   "openai",
   "truststore",
+  # PyGObject drives the Linux AppIndicator tray backend. The tray is the only
+  # Linux UI, so this is required, not optional: without it, `import pystray`
+  # fails at startup with "No module named 'gi'". Capped below 3.50 because
+  # 3.50+ builds against girepository-2.0 (glib 2.80 / Ubuntu 24.04+); the
+  # release CI runs on Ubuntu 22.04, whose libgirepository1.0-dev provides
+  # girepository-1.0. Building from source needs system libs:
+  # libgirepository1.0-dev, libcairo2-dev, and pkg-config (Debian/Ubuntu).
+  "PyGObject>=3.42,<3.50; sys_platform == 'linux'",
   "python-xlib; sys_platform == 'linux'",
 ]
-
-# PyGObject powers the Linux AppIndicator tray backend, but it cannot be
-# installed by pip alone (it needs system gobject-introspection / girepository
-# dev libraries). Keeping it out of the base dependencies lets `pip install .`
-# succeed everywhere; install this extra when building the packaged Linux tray:
-#   pip install ".[linux-tray]"
-# System prerequisites (Debian/Ubuntu):
-#   apt install python3-gi gir1.2-ayatanaappindicator3-0.1
-[project.optional-dependencies]
-linux-tray = ["PyGObject>=3.42; sys_platform == 'linux'"]
 
 [project.scripts]
 speech = "winwhisper.main:main"
