@@ -253,6 +253,8 @@ If the hotkey does not respond, enable Speech under System Settings > Privacy & 
 
 Start Speech from the application menu, with the `speech` command, or by running the AppImage. Click into an app, press `Ctrl+Alt+Space`, speak, and press the same shortcut again. Speech restores the original X11 window and pastes at the cursor.
 
+![Linux/X11 dictation example: press Ctrl+Alt+Space, speak, and Speech pastes the transcription at the cursor](docs/linux.gif)
+
 ## Default hotkeys
 
 | Action | Windows | macOS | Linux |
@@ -494,6 +496,7 @@ The README GIFs are generated, not screen-recorded. Regenerate them after visual
 
 ```bash
 python scripts/make_demo_gif.py
+python scripts/make_linux_gif.py
 python scripts/make_hotkeys_gif.py
 ```
 
