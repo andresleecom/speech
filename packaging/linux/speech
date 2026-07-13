@@ -1,0 +1,11 @@
+#!/bin/sh
+set -eu
+
+if [ -n "${APPDIR:-}" ] && [ -d "$APPDIR/usr/lib/speech" ]; then
+    PREFIX="$APPDIR/usr"
+else
+    PREFIX="$(CDPATH='' cd -- "$(dirname -- "$0")/.." && pwd)"
+fi
+
+export PATH="$PREFIX/bin:$PATH"
+exec "$PREFIX/lib/speech/Speech" "$@"

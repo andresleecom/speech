@@ -1,0 +1,10 @@
+[Desktop Entry]
+Type=Application
+Name=Speech
+GenericName=Speech Dictation
+Comment=Offline speech-to-text dictation using Faster Whisper
+Exec=speech
+Icon=speech
+Terminal=false
+Categories=Utility;AudioVideo;
+Keywords=dictation;speech;transcription;whisper;

@@ -25,9 +25,18 @@ jobs:
       - uses: actions/setup-python@v6
         with:
           python-version: "3.12"
-      - name: Install PortAudio (Linux)
+      - name: Install Linux dependencies
         if: runner.os == 'Linux'
-        run: sudo apt-get update && sudo apt-get install -y libportaudio2
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            gir1.2-ayatanaappindicator3-0.1 \
+            gir1.2-gtk-3.0 \
+            libcairo2-dev \
+            libgirepository1.0-dev \
+            libportaudio2 \
+            pkg-config \
+            xclip
       - name: Install dependencies
         run: |
           python -m pip install --upgrade pip

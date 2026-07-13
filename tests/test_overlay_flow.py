@@ -521,6 +521,65 @@ def test_hotkey_stop_restores_target_window_before_paste(monkeypatch, tmp_path):
     ]
 
 
+def test_failed_focus_restore_skips_paste(monkeypatch, tmp_path):
+    restored: list[int | None] = []
+    copied: list[str] = []
+    inserted: list[tuple[str, str]] = []
+    controller = make_controller(monkeypatch, tmp_path, restored, inserted)
+    monkeypatch.setattr(sys, "platform", "linux")
+    monkeypatch.setattr(
+        main_module,
+        "restore_foreground_window",
+        lambda hwnd: restored.append(hwnd) or False,
+    )
+    monkeypatch.setattr(
+        main_module,
+        "copy_text_to_clipboard",
+        lambda text: copied.append(text) or True,
+        raising=False,
+    )
+
+    controller.toggle()
+    controller.toggle()
+
+    assert restored == [777]
+    assert copied == ["Hola mundo"]
+    assert inserted == []
+    assert controller.tray.notifications == [
+        ("Speech", "Automatic paste failed. Try Ctrl+V.")
+    ]
+
+
+def test_failed_linux_focus_restore_reports_clipboard_failure(monkeypatch, tmp_path):
+    inserted: list[tuple[str, str]] = []
+    controller = make_controller(monkeypatch, tmp_path, [], inserted)
+    monkeypatch.setattr(sys, "platform", "linux")
+    monkeypatch.setattr(main_module, "restore_foreground_window", lambda _hwnd: False)
+    monkeypatch.setattr(main_module, "copy_text_to_clipboard", lambda _text: False)
+
+    controller.toggle()
+    controller.toggle()
+
+    assert inserted == []
+    assert controller.tray.notifications == [
+        (
+            "Speech",
+            "Automatic paste failed, and the transcription could not be copied.",
+        )
+    ]
+
+
+def test_failed_windows_focus_restore_still_attempts_paste(monkeypatch, tmp_path):
+    inserted: list[tuple[str, str]] = []
+    controller = make_controller(monkeypatch, tmp_path, [], inserted)
+    monkeypatch.setattr(main_module, "restore_foreground_window", lambda _hwnd: False)
+
+    controller.toggle()
+    controller.toggle()
+
+    assert inserted == [("Hola mundo", "ctrl_v")]
+
+
 def test_empty_transcription_notifies_without_pasting(monkeypatch, tmp_path):
     inserted: list[str] = []
     controller = make_controller(monkeypatch, tmp_path, [], inserted, transcription_text="")
@@ -530,6 +589,40 @@ def test_empty_transcription_notifies_without_pasting(monkeypatch, tmp_path):
 
     assert inserted == []
     assert controller.tray.notifications == [("Speech", "No speech detected")]
+
+
+@pytest.mark.parametrize(
+    ("platform", "expected_message"),
+    [
+        (
+            "linux",
+            "Still transcribing… first run and local inference can take longer.",
+        ),
+        (
+            "darwin",
+            "Still transcribing… first run or antivirus scanning can take longer.",
+        ),
+        (
+            "win32",
+            "Still transcribing… first run or antivirus scanning can take longer.",
+        ),
+    ],
+)
+def test_slow_transcription_message_changes_only_on_linux(
+    monkeypatch,
+    tmp_path,
+    platform,
+    expected_message,
+):
+    controller = make_controller(monkeypatch, tmp_path, [], [])
+    monkeypatch.setattr(sys, "platform", platform)
+    monkeypatch.setattr(main_module, "SLOW_TRANSCRIPTION_NOTIFY_SECONDS", 0)
+    monkeypatch.setattr(main_module, "_RealThread", ImmediateThread)
+
+    controller.toggle()
+    controller.toggle()
+
+    assert ("Speech", expected_message) in controller.tray.notifications
 
 
 def test_late_overlay_stop_does_not_start_new_recording(monkeypatch, tmp_path):

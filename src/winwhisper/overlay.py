@@ -1,15 +1,17 @@
 from __future__ import annotations
 
-import queue
-import threading
 import os
+import queue
 import sys
+import threading
 from collections.abc import Callable
 from dataclasses import dataclass
 from typing import Any, Literal
 
 from .focus import ScreenPoint
+from .linux_shape import apply_image_shape, close_image_shape
 from .logger import get_logger
+
 
 CommandName = Literal["show", "hide", "stop", "transcribing"]
 OverlayState = Literal["hidden", "recording", "transcribing"]
@@ -358,18 +360,17 @@ class RecordingOverlay:
             bd=0,
         )
         canvas.pack()
-        photo = ImageTk.PhotoImage(
-            render_orb_frame("recording", self._current_level(), phase)
-        )
+        frame = render_orb_frame("recording", self._current_level(), phase)
+        photo = ImageTk.PhotoImage(frame)
         image_item = canvas.create_image(0, 0, anchor="nw", image=photo)
         canvas.image = photo
 
         def update_frame(next_state: OverlayState) -> None:
-            next_photo = ImageTk.PhotoImage(
-                render_orb_frame(next_state, self._current_level(), phase)
-            )
+            next_frame = render_orb_frame(next_state, self._current_level(), phase)
+            next_photo = ImageTk.PhotoImage(next_frame)
             canvas.itemconfigure(image_item, image=next_photo)
             canvas.image = next_photo
+            apply_image_shape(root, next_frame)
 
         def request_stop(event: Any = None) -> str:
             nonlocal state
@@ -426,20 +427,21 @@ class RecordingOverlay:
                 if command.name == "show":
                     self._position(root, command.anchor)
                     state = "recording"
-                    update_frame(state)
                     root.deiconify()
                     root.lift()
                     root.attributes("-topmost", True)
+                    update_frame(state)
                 elif command.name == "hide":
                     state = "hidden"
                     root.withdraw()
                 elif command.name == "transcribing":
                     state = "transcribing"
-                    update_frame(state)
                     root.deiconify()
                     root.lift()
                     root.attributes("-topmost", True)
+                    update_frame(state)
                 elif command.name == "stop":
+                    close_image_shape(root)
                     root.destroy()
                     return
 
@@ -454,7 +456,10 @@ class RecordingOverlay:
 
         root.after(50, pump)
         root.after(75, animate)
-        root.mainloop()
+        try:
+            root.mainloop()
+        finally:
+            close_image_shape(root)
 
     def _position(self, root: Any, anchor: ScreenPoint | None) -> None:
         origin_x, origin_y, screen_width, screen_height = _tk_monitor_work_area(root, anchor)
