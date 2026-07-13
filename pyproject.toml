@@ -31,9 +31,18 @@ dependencies = [
   "pydantic",
   "openai",
   "truststore",
-  "PyGObject==3.50.0; sys_platform == 'linux'",
   "python-xlib; sys_platform == 'linux'",
 ]
+
+# PyGObject powers the Linux AppIndicator tray backend, but it cannot be
+# installed by pip alone (it needs system gobject-introspection / girepository
+# dev libraries). Keeping it out of the base dependencies lets `pip install .`
+# succeed everywhere; install this extra when building the packaged Linux tray:
+#   pip install ".[linux-tray]"
+# System prerequisites (Debian/Ubuntu):
+#   apt install python3-gi gir1.2-ayatanaappindicator3-0.1
+[project.optional-dependencies]
+linux-tray = ["PyGObject>=3.42; sys_platform == 'linux'"]
 
 [project.scripts]
 speech = "winwhisper.main:main"

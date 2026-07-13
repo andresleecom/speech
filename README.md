@@ -6,6 +6,7 @@
 [![License: MIT](https://img.shields.io/github/license/andresleecom/speech)](LICENSE)
 ![Platforms](https://img.shields.io/badge/platforms-Windows%20%7C%20macOS%20%7C%20Linux-blue)
 
+
 Speech is a Windows 10/11, macOS, and Linux tray/menu-bar app for local speech dictation.
 It records your microphone with a global hotkey, transcribes with faster-whisper, optionally formats the text, and pastes into the focused app.
 It transcribes in 100 languages with automatic language detection and three configurable quick-language actions, defaulting to English and Spanish.
