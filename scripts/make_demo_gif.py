@@ -24,6 +24,8 @@ OUT_PATH = Path(__file__).resolve().parents[1] / "docs" / "demo.gif"
 
 WINDOW_BOX = (60, 46, 660, 336)  # left, top, right, bottom
 TITLEBAR_H = 34
+WINDOW_TITLE = "Notes — any application"
+WINDOW_BUTTONS = ["—", "□", "×"]
 TEXT_X = 92
 LINE1_Y = 108
 LINE2_Y = 152
@@ -98,13 +100,13 @@ def make_background() -> Image.Image:
     )
     draw.text(
         (WINDOW_BOX[0] + 14, WINDOW_BOX[1] + 8),
-        "Notes — any application",
+        WINDOW_TITLE,
         font=font(14),
         fill=(90, 90, 100),
     )
     # Window buttons (ASCII-safe glyphs render reliably in Segoe UI).
     glyph_font = font(13)
-    for index, glyph in enumerate(["—", "□", "×"]):
+    for index, glyph in enumerate(WINDOW_BUTTONS):
         draw.text(
             (WINDOW_BOX[2] - 74 + index * 26, WINDOW_BOX[1] + 8),
             glyph,
