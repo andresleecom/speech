@@ -30,7 +30,7 @@
 ## Tasks
 | # | Task | Scope (files/areas) | Bar | Status |
 |---|------|---------------------|-----|--------|
-| 01 | Make microphone shutdown fail-safe | `recorder.py`, `main.py`, recorder/controller tests | build+tests+flow | pending |
+| 01 | Make microphone shutdown fail-safe | `recorder.py`, `main.py`, recorder/controller tests | build+tests+flow | done |
 | 02 | Enforce one instance on POSIX | `main.py`, `test_main.py` | build+tests+flow | pending |
 
 Bar legend: build = diff review + build/typecheck · +tests = also relevant tests ·
