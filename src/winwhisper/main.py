@@ -71,11 +71,17 @@ _SINGLE_INSTANCE_MUTEX_NAME = "Local\\SpeechSingleInstanceMutex"
 _mutex_handle: Any | None = None
 # Notify the user if transcription is still running after this many seconds.
 SLOW_TRANSCRIPTION_NOTIFY_SECONDS = 8.0
+MICROPHONE_STOP_TIMEOUT_SECONDS = 5.0
+MICROPHONE_STOP_TIMEOUT_EXIT_CODE = 70
 MICROPHONE_TEST_SECONDS = 5.0
 MICROPHONE_TEST_SIGNAL_THRESHOLD = 0.01
 # Capture the real Thread class so progress watchers keep working even when
 # tests replace threading.Thread with a synchronous helper.
 _RealThread = threading.Thread
+
+
+def _hard_exit(exit_code: int) -> None:
+    os._exit(exit_code)
 
 
 class AppController:
@@ -101,6 +107,7 @@ class AppController:
         self._status: Status = STATUS_IDLE
         self._processing = False
         self._shutdown = False
+        self._microphone_stop_complete: threading.Event | None = None
         self._recording_language_mode: LanguageMode | None = None
         self._paste_target_window: int | None = None
         self._paste_target_process_name: str | None = None
@@ -181,13 +188,26 @@ class AppController:
         self._stop_microphone_test(notify=False)
 
         if self.recorder.is_recording():
+            stop_complete = self._new_microphone_stop_completion()
+            self._start_microphone_stop_watchdog(stop_complete)
             try:
                 self.recording_overlay.hide()
-                audio_path = self.recorder.stop_recording()
+                try:
+                    audio_path = self.recorder.stop_recording()
+                finally:
+                    stop_complete.set()
                 if audio_path is not None:
                     self._delete_audio(audio_path)
             except Exception:
                 self.logger.exception("Active recording failed to stop during shutdown.")
+
+        with self._lock:
+            stop_complete = self._microphone_stop_complete
+        if stop_complete is not None and not stop_complete.wait(
+            MICROPHONE_STOP_TIMEOUT_SECONDS
+        ):
+            self._handle_microphone_stop_timeout()
+            return
 
         self.recording_overlay.stop()
         self.tray.stop()
@@ -519,8 +539,13 @@ class AppController:
             shutdown = self._shutdown
             if cancel is not None:
                 cancel.set()
+            stop_complete = self._new_microphone_stop_completion()
+            self._start_microphone_stop_watchdog(stop_complete)
             try:
-                peak_level = microphone_test.stop()
+                try:
+                    peak_level = microphone_test.stop()
+                finally:
+                    stop_complete.set()
             except Exception:
                 stop_failed = True
                 self.logger.exception("Microphone test failed to stop cleanly.")
@@ -577,6 +602,7 @@ class AppController:
     def _begin_stop_locked(self) -> tuple[int, int]:
         language_mode = self._recording_language_mode or self.settings.language_mode
         self._processing = True
+        stop_complete = self._new_microphone_stop_completion()
         self.logger.info(
             "Stop requested; switching to transcribing UI (language_mode=%s; model_loaded=%s).",
             language_mode,
@@ -587,12 +613,49 @@ class AppController:
         self.recording_overlay.show_transcribing()
         worker = threading.Thread(
             target=self._stop_and_process,
-            args=(language_mode,),
+            args=(language_mode, stop_complete),
             name="winwhisper-dictation-worker",
             daemon=True,
         )
         worker.start()
+        self._start_microphone_stop_watchdog(stop_complete)
         return (440, 120)
+
+    def _new_microphone_stop_completion(self) -> threading.Event:
+        stop_complete = threading.Event()
+        with self._lock:
+            self._microphone_stop_complete = stop_complete
+        return stop_complete
+
+    def _start_microphone_stop_watchdog(
+        self,
+        stop_complete: threading.Event,
+    ) -> None:
+        _RealThread(
+            target=self._watch_microphone_stop,
+            args=(stop_complete,),
+            name="winwhisper-microphone-stop-watch",
+            daemon=True,
+        ).start()
+
+    def _watch_microphone_stop(self, stop_complete: threading.Event) -> None:
+        if stop_complete.wait(MICROPHONE_STOP_TIMEOUT_SECONDS):
+            return
+        self._handle_microphone_stop_timeout()
+
+    def _handle_microphone_stop_timeout(self) -> None:
+        self.logger.critical(
+            "Microphone shutdown did not complete within %.0fs; forcing process exit.",
+            MICROPHONE_STOP_TIMEOUT_SECONDS,
+        )
+        try:
+            self.notify(
+                APP_NAME,
+                "Microphone shutdown is stuck. Speech must close to release it.",
+            )
+        except Exception:
+            self.logger.exception("Could not notify about stuck microphone shutdown.")
+        _hard_exit(MICROPHONE_STOP_TIMEOUT_EXIT_CODE)
 
     def _start_model_warmup(self) -> None:
         thread = threading.Thread(
@@ -616,7 +679,11 @@ class AppController:
                 "Speech model preload failed; first dictation will retry the load."
             )
 
-    def _stop_and_process(self, language_mode: LanguageMode) -> None:
+    def _stop_and_process(
+        self,
+        language_mode: LanguageMode,
+        stop_complete: threading.Event,
+    ) -> None:
         audio_path: Path | None = None
         failed = False
         progress_cancel = threading.Event()
@@ -624,7 +691,10 @@ class AppController:
         try:
             self.logger.info("Stopping microphone capture...")
             stop_started = time.perf_counter()
-            audio_path = self.recorder.stop_recording()
+            try:
+                audio_path = self.recorder.stop_recording()
+            finally:
+                stop_complete.set()
             stop_elapsed = time.perf_counter() - stop_started
             if audio_path is None:
                 self.logger.info("Recording already stopped; skipping dictation.")

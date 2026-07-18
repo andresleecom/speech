@@ -14,18 +14,27 @@ class FakeInputStream:
     def __init__(self, **kwargs) -> None:
         self.kwargs = kwargs
         self.started = False
-        self.stopped = False
+        self.aborted = False
+        self.abort_ignore_errors = None
         self.closed = False
+        self.close_ignore_errors = None
         self.instances.append(self)
 
     def start(self) -> None:
         self.started = True
 
-    def stop(self) -> None:
-        self.stopped = True
+    def abort(self, ignore_errors=False) -> None:
+        self.aborted = True
+        self.abort_ignore_errors = ignore_errors
 
-    def close(self) -> None:
+    def close(self, ignore_errors=False) -> None:
         self.closed = True
+        self.close_ignore_errors = ignore_errors
+
+
+@pytest.fixture(autouse=True)
+def isolate_app_data(monkeypatch, tmp_path):
+    monkeypatch.setenv("WINWHISPER_APPDATA_DIR", str(tmp_path))
 
 
 def install_fake_sounddevice(monkeypatch):
@@ -94,7 +103,41 @@ def test_recorder_uses_saved_audio_input_device(monkeypatch):
     recorder.start_recording()
 
     assert FakeInputStream.instances[-1].kwargs["device"] == 3
+    stream = FakeInputStream.instances[-1]
     recorder.stop_recording().unlink()
+
+    assert stream.aborted is True
+    assert stream.abort_ignore_errors is False
+    assert stream.closed is True
+    assert stream.close_ignore_errors is True
+
+
+def test_recorder_abort_error_still_closes_stream(monkeypatch):
+    import sys
+    import types
+
+    class AbortFailingInputStream(FakeInputStream):
+        def abort(self, ignore_errors=False) -> None:
+            super().abort(ignore_errors=ignore_errors)
+            raise OSError("CoreAudio abort failed")
+
+    FakeInputStream.instances.clear()
+    monkeypatch.setitem(
+        sys.modules,
+        "sounddevice",
+        types.SimpleNamespace(InputStream=AbortFailingInputStream),
+    )
+    recorder = Recorder()
+    recorder.start_recording()
+    stream = FakeInputStream.instances[-1]
+
+    with pytest.raises(RecorderError, match="Could not stop microphone recording"):
+        recorder.stop_recording()
+
+    assert stream.aborted is True
+    assert stream.abort_ignore_errors is False
+    assert stream.closed is True
+    assert stream.close_ignore_errors is True
 
 
 def test_recorder_omits_device_for_system_default(monkeypatch):
@@ -155,5 +198,35 @@ def test_microphone_test_reports_live_level_without_writing_audio(monkeypatch):
     assert stream.kwargs["device"] == 2
     assert microphone_test.current_level() == pytest.approx(0.5, abs=0.01)
     assert microphone_test.stop() == pytest.approx(0.5, abs=0.01)
-    assert stream.stopped is True
+    assert stream.aborted is True
+    assert stream.abort_ignore_errors is False
     assert stream.closed is True
+    assert stream.close_ignore_errors is True
+
+
+def test_microphone_test_abort_error_still_closes_stream(monkeypatch):
+    import sys
+    import types
+
+    class AbortFailingInputStream(FakeInputStream):
+        def abort(self, ignore_errors=False) -> None:
+            super().abort(ignore_errors=ignore_errors)
+            raise OSError("CoreAudio abort failed")
+
+    FakeInputStream.instances.clear()
+    monkeypatch.setitem(
+        sys.modules,
+        "sounddevice",
+        types.SimpleNamespace(InputStream=AbortFailingInputStream),
+    )
+    microphone_test = MicrophoneTest()
+    microphone_test.start()
+    stream = FakeInputStream.instances[-1]
+
+    with pytest.raises(RecorderError, match="Could not stop microphone test"):
+        microphone_test.stop()
+
+    assert stream.aborted is True
+    assert stream.abort_ignore_errors is False
+    assert stream.closed is True
+    assert stream.close_ignore_errors is True

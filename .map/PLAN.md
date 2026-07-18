@@ -13,6 +13,7 @@
 - D06 Track watchdog state explicitly so a completed microphone stop cannot be mistaken for a long transcription.
 - D07 macOS/Linux use a non-blocking `fcntl.flock` held for process lifetime; Windows keeps its existing named mutex.
 - D08 Expected lock contention rejects the second instance; unexpected lock setup errors retain the existing fail-open behavior.
+- D09 Task executors = Codex `gpt-5.6-sol`; Grok CLI 0.2.103 rejected the required `grok-4.5` model id before editing any file.
 
 ## Constraints
 - Preserve current Windows behavior and public settings.

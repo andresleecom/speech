@@ -106,13 +106,28 @@ class Recorder:
             # Idempotent: concurrent stop (worker + shutdown) is non-fatal.
             return None
 
+        abort_error: Exception | None = None
+        close_error: Exception | None = None
         try:
-            stream.stop()
-            stream.close()
+            stream.abort(ignore_errors=False)
         except Exception as exc:
+            abort_error = exc
+        finally:
+            try:
+                stream.close(ignore_errors=True)
+            except Exception as exc:
+                close_error = exc
+
+        if abort_error is not None:
             raise RecorderError(
-                f"Could not stop microphone recording: {exc.__class__.__name__}."
-            ) from exc
+                "Could not stop microphone recording: "
+                f"{abort_error.__class__.__name__}."
+            ) from abort_error
+        if close_error is not None:
+            raise RecorderError(
+                "Could not close microphone recording: "
+                f"{close_error.__class__.__name__}."
+            ) from close_error
 
         try:
             import numpy as np
@@ -261,13 +276,26 @@ class MicrophoneTest:
 
         if stream is None:
             return peak_level
+        abort_error: Exception | None = None
+        close_error: Exception | None = None
         try:
-            stream.stop()
-            stream.close()
+            stream.abort(ignore_errors=False)
         except Exception as exc:
+            abort_error = exc
+        finally:
+            try:
+                stream.close(ignore_errors=True)
+            except Exception as exc:
+                close_error = exc
+
+        if abort_error is not None:
             raise RecorderError(
-                f"Could not stop microphone test: {exc.__class__.__name__}."
-            ) from exc
+                f"Could not stop microphone test: {abort_error.__class__.__name__}."
+            ) from abort_error
+        if close_error is not None:
+            raise RecorderError(
+                f"Could not close microphone test: {close_error.__class__.__name__}."
+            ) from close_error
         return peak_level
 
     def is_running(self) -> bool:

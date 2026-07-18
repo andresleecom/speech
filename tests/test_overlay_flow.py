@@ -212,6 +212,18 @@ class ImmediateThread:
         self.target(*self.args)
 
 
+class DeferredThread:
+    instances: list["DeferredThread"] = []
+
+    def __init__(self, target, args=(), **kwargs) -> None:
+        self.target = target
+        self.args = args
+        self.instances.append(self)
+
+    def start(self) -> None:
+        return None
+
+
 def make_controller(
     monkeypatch,
     tmp_path,
@@ -623,6 +635,79 @@ def test_slow_transcription_message_changes_only_on_linux(
     controller.toggle()
 
     assert ("Speech", expected_message) in controller.tray.notifications
+
+
+def test_blocked_microphone_stop_triggers_hard_exit_boundary(monkeypatch, tmp_path):
+    controller = make_controller(monkeypatch, tmp_path, [], [])
+    DeferredThread.instances.clear()
+    exit_codes = []
+    monkeypatch.setattr(main_module.threading, "Thread", DeferredThread)
+    monkeypatch.setattr(main_module, "_RealThread", ImmediateThread)
+    monkeypatch.setattr(main_module, "MICROPHONE_STOP_TIMEOUT_SECONDS", 0)
+    monkeypatch.setattr(main_module, "_hard_exit", exit_codes.append)
+
+    controller.toggle()
+    controller.toggle()
+
+    worker = DeferredThread.instances[-1]
+    stop_complete = worker.args[1]
+    assert stop_complete is controller._microphone_stop_complete
+    assert stop_complete.is_set() is False
+    assert exit_codes == [70]
+    assert controller.tray.notifications[-1] == (
+        "Speech",
+        "Microphone shutdown is stuck. Speech must close to release it.",
+    )
+
+
+def test_completed_microphone_stop_never_times_out_during_transcription(
+    monkeypatch,
+    tmp_path,
+):
+    controller = make_controller(monkeypatch, tmp_path, [], [])
+    exit_codes = []
+    monkeypatch.setattr(main_module, "MICROPHONE_STOP_TIMEOUT_SECONDS", 0)
+    monkeypatch.setattr(main_module, "_RealThread", ImmediateThread)
+    monkeypatch.setattr(main_module, "_hard_exit", exit_codes.append)
+    monkeypatch.setattr(
+        controller,
+        "_start_slow_transcription_watcher",
+        lambda cancel: None,
+    )
+
+    original_transcribe = controller.transcriber.transcribe
+
+    def slow_transcribe(audio_path, language_mode):
+        stop_complete = controller._microphone_stop_complete
+        assert stop_complete is not None
+        assert stop_complete.is_set() is True
+        controller._watch_microphone_stop(stop_complete)
+        return original_transcribe(audio_path, language_mode)
+
+    monkeypatch.setattr(controller.transcriber, "transcribe", slow_transcribe)
+
+    controller.toggle()
+    controller.toggle()
+
+    assert exit_codes == []
+
+
+def test_shutdown_does_not_log_stopped_with_unresolved_microphone_stop(
+    monkeypatch,
+    tmp_path,
+    caplog,
+):
+    controller = make_controller(monkeypatch, tmp_path, [], [])
+    exit_codes = []
+    controller._microphone_stop_complete = main_module.threading.Event()
+    monkeypatch.setattr(main_module, "MICROPHONE_STOP_TIMEOUT_SECONDS", 0)
+    monkeypatch.setattr(main_module, "_hard_exit", exit_codes.append)
+
+    with caplog.at_level("INFO"):
+        controller.stop()
+
+    assert exit_codes == [70]
+    assert "Speech stopped." not in caplog.text
 
 
 def test_late_overlay_stop_does_not_start_new_recording(monkeypatch, tmp_path):
