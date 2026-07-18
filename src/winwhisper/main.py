@@ -68,7 +68,9 @@ STATUS_PASTING: Status = "Pasting"
 STATUS_ERROR: Status = "Error"
 
 _SINGLE_INSTANCE_MUTEX_NAME = "Local\\SpeechSingleInstanceMutex"
+_SINGLE_INSTANCE_LOCK_FILE_NAME = "single-instance.lock"
 _mutex_handle: Any | None = None
+_single_instance_lock_handle: Any | None = None
 # Notify the user if transcription is still running after this many seconds.
 SLOW_TRANSCRIPTION_NOTIFY_SECONDS = 8.0
 MICROPHONE_STOP_TIMEOUT_SECONDS = 5.0
@@ -959,10 +961,43 @@ def main(argv: list[str] | None = None) -> int:
 
 
 def _acquire_single_instance() -> bool:
-    """Return True if this process owns the single-instance mutex."""
-    global _mutex_handle
+    """Return True if this process owns the platform single-instance lock."""
+    global _mutex_handle, _single_instance_lock_handle
     if os.name != "nt":
-        return True
+        handle: Any | None = None
+        try:
+            import errno
+            import fcntl
+
+            lock_dir = app_data_dir()
+            lock_dir.mkdir(parents=True, exist_ok=True)
+            handle = (lock_dir / _SINGLE_INSTANCE_LOCK_FILE_NAME).open("a")
+            try:
+                fcntl.flock(handle.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+            except BlockingIOError:
+                try:
+                    handle.close()
+                except Exception:
+                    pass
+                return False
+            except OSError as exc:
+                if exc.errno in (errno.EACCES, errno.EAGAIN):
+                    try:
+                        handle.close()
+                    except Exception:
+                        pass
+                    return False
+                raise
+
+            _single_instance_lock_handle = handle
+            return True
+        except Exception:
+            if handle is not None:
+                try:
+                    handle.close()
+                except Exception:
+                    pass
+            return True
 
     try:
         # Private handle: never set argtypes on the shared ctypes.windll cache.
