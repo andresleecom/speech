@@ -2,4 +2,4 @@
 
 | # | Task | Strikes | Verdict | Commit |
 |---|------|---------|---------|--------|
-| 01 | Add local signing and notarization pipeline | 0 | pass | pending |
+| 01 | Add local signing and notarization pipeline | 0 | pass | 6dba501 |
