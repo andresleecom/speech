@@ -161,6 +161,10 @@ jobs:
     env:
       SPEECH_VERSION: ${{ needs.prepare.outputs.version }}
       SPEECH_MACOS_ARCH: ${{ matrix.architecture }}
+      SPEECH_CODESIGN_IDENTITY: "Developer ID Application: Launcher S de RL de CV (XB92PXFQ2L)"
+      SPEECH_NOTARIZE: "1"
+      SPEECH_NOTARY_KEY_ID: ${{ secrets.APPLE_NOTARY_KEY_ID }}
+      SPEECH_NOTARY_ISSUER: ${{ secrets.APPLE_NOTARY_ISSUER_ID }}
     steps:
       - uses: actions/checkout@v7
       - uses: actions/setup-python@v6
@@ -172,6 +176,61 @@ jobs:
           python -m pip install -r requirements-dev.txt
       - name: Run tests
         run: python -m pytest -q
+      - name: Import Developer ID credentials
+        env:
+          MACOS_DEVELOPER_ID_P12_BASE64: ${{ secrets.MACOS_DEVELOPER_ID_P12_BASE64 }}
+          MACOS_DEVELOPER_ID_P12_PASSWORD: ${{ secrets.MACOS_DEVELOPER_ID_P12_PASSWORD }}
+          APPLE_NOTARY_KEY_P8: ${{ secrets.APPLE_NOTARY_KEY_P8 }}
+          APPLE_NOTARY_KEY_ID: ${{ secrets.APPLE_NOTARY_KEY_ID }}
+          APPLE_NOTARY_ISSUER_ID: ${{ secrets.APPLE_NOTARY_ISSUER_ID }}
+        run: |
+          set -euo pipefail
+          for name in \
+            MACOS_DEVELOPER_ID_P12_BASE64 \
+            MACOS_DEVELOPER_ID_P12_PASSWORD \
+            APPLE_NOTARY_KEY_P8 \
+            APPLE_NOTARY_KEY_ID \
+            APPLE_NOTARY_ISSUER_ID
+          do
+            if [ -z "${!name}" ]; then
+              echo "Missing required secret: $name" >&2
+              exit 1
+            fi
+          done
+
+          CERT_PATH="$RUNNER_TEMP/speech-developer-id.p12"
+          NOTARY_KEY_PATH="$RUNNER_TEMP/speech-notary-key.p8"
+          KEYCHAIN_PATH="$RUNNER_TEMP/speech-signing-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT-${{ matrix.architecture }}.keychain-db"
+          KEYCHAIN_PASSWORD="$(openssl rand -base64 32)"
+
+          echo "$MACOS_DEVELOPER_ID_P12_BASE64" | base64 --decode > "$CERT_PATH"
+          printf '%s' "$APPLE_NOTARY_KEY_P8" > "$NOTARY_KEY_PATH"
+          chmod 600 "$NOTARY_KEY_PATH"
+
+          {
+            echo "SPEECH_NOTARY_KEY=$NOTARY_KEY_PATH"
+            echo "SPEECH_CODESIGN_KEYCHAIN_PATH=$KEYCHAIN_PATH"
+            echo "SPEECH_CODESIGN_P12_PATH=$CERT_PATH"
+          } >> "$GITHUB_ENV"
+
+          security create-keychain -p "$KEYCHAIN_PASSWORD" "$KEYCHAIN_PATH"
+          security set-keychain-settings -lut 21600 "$KEYCHAIN_PATH"
+          security unlock-keychain -p "$KEYCHAIN_PASSWORD" "$KEYCHAIN_PATH"
+          security import "$CERT_PATH" \
+            -P "$MACOS_DEVELOPER_ID_P12_PASSWORD" \
+            -A \
+            -t cert \
+            -f pkcs12 \
+            -k "$KEYCHAIN_PATH"
+          security set-key-partition-list \
+            -S apple-tool:,apple:,codesign: \
+            -s \
+            -k "$KEYCHAIN_PASSWORD" \
+            "$KEYCHAIN_PATH"
+          security list-keychains -d user -s "$KEYCHAIN_PATH"
+          security find-identity -v -p codesigning "$KEYCHAIN_PATH" \
+            | grep -F "Developer ID Application: Launcher S de RL de CV (XB92PXFQ2L)" \
+            >/dev/null
       - name: Build macOS app and DMG
         run: bash scripts/build_macos.sh python
       - name: Smoke packaged app
@@ -189,6 +248,27 @@ jobs:
             dist/installer/*.dmg.sha256
           if-no-files-found: error
           retention-days: 1
+      - name: Cleanup signing credentials
+        if: always()
+        run: |
+          set +e
+          KEYCHAIN_PATH="${SPEECH_CODESIGN_KEYCHAIN_PATH:-}"
+          P12_PATH="${SPEECH_CODESIGN_P12_PATH:-}"
+          P8_PATH="${SPEECH_NOTARY_KEY:-}"
+          if [ -n "$KEYCHAIN_PATH" ]; then
+            security delete-keychain "$KEYCHAIN_PATH" >/dev/null 2>&1 || true
+          fi
+          rm -f "$P12_PATH" "$P8_PATH"
+          # Prefer fixed RUNNER_TEMP names if env was never exported (fail-before-export).
+          rm -f \
+            "$RUNNER_TEMP/speech-developer-id.p12" \
+            "$RUNNER_TEMP/speech-notary-key.p8"
+          # Best-effort: remove any speech-signing keychains left under RUNNER_TEMP.
+          for kc in "$RUNNER_TEMP"/speech-signing-*.keychain-db; do
+            [ -e "$kc" ] || continue
+            security delete-keychain "$kc" >/dev/null 2>&1 || true
+            rm -f "$kc"
+          done
 
   publish:
     needs: [prepare, linux, windows, macos]

@@ -21,6 +21,7 @@ APP_VERSION = os.environ.get("SPEECH_VERSION") or tomllib.loads(
 
 if sys.platform == "darwin":
     platform_hiddenimports = [
+        "winwhisper.recorder_mac",
         "winwhisper.native_overlay_mac",
         "pynput._util.darwin",
         "pynput.keyboard._darwin",
@@ -83,6 +84,9 @@ a = Analysis(
 )
 pyz = PYZ(a.pure)
 
+# Real Developer ID when SPEECH_CODESIGN_IDENTITY is set; empty keeps ad-hoc local builds.
+CODESIGN_IDENTITY = os.environ.get("SPEECH_CODESIGN_IDENTITY") or None
+
 exe = EXE(
     pyz,
     a.scripts,
@@ -95,6 +99,7 @@ exe = EXE(
     upx=False,
     console=False,
     disable_windowed_traceback=False,
+    codesign_identity=CODESIGN_IDENTITY,
 )
 
 coll = COLLECT(

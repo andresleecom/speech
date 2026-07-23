@@ -26,6 +26,7 @@ dependencies = [
   "pyperclip",
   "pystray",
   "pyobjc-framework-Cocoa; sys_platform == 'darwin'",
+  "pyobjc-framework-AVFoundation; sys_platform == 'darwin'",
   "pillow",
   "python-dotenv",
   "pydantic",
