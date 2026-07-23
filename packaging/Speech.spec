@@ -21,6 +21,7 @@ APP_VERSION = os.environ.get("SPEECH_VERSION") or tomllib.loads(
 
 if sys.platform == "darwin":
     platform_hiddenimports = [
+        "winwhisper.recorder_mac",
         "winwhisper.native_overlay_mac",
         "pynput._util.darwin",
         "pynput.keyboard._darwin",

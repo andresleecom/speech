@@ -3,6 +3,7 @@ import types
 
 import pytest
 
+import winwhisper.audio_inputs as audio_inputs
 from winwhisper.audio_inputs import (
     AudioInputDevice,
     AudioInputDeviceError,
@@ -10,8 +11,14 @@ from winwhisper.audio_inputs import (
     audio_input_device_label,
     default_audio_input_device,
     list_audio_input_devices,
+    macos_audio_capture_device,
     normalize_audio_input_device,
 )
+
+
+@pytest.fixture(autouse=True)
+def use_portaudio_device_discovery(monkeypatch):
+    monkeypatch.setattr(audio_inputs, "_use_native_macos_audio", lambda: False)
 
 
 def test_audio_input_normalizer_accepts_default_and_nonnegative_indexes():
@@ -68,3 +75,66 @@ def test_device_listing_wraps_sounddevice_errors(monkeypatch):
 
     with pytest.raises(AudioInputDeviceError, match="Could not list microphone"):
         list_audio_input_devices()
+
+
+def test_macos_device_listing_and_default_use_avfoundation(monkeypatch):
+    class Device:
+        def __init__(self, name, unique_id):
+            self._name = name
+            self._unique_id = unique_id
+
+        def localizedName(self):
+            return self._name
+
+        def uniqueID(self):
+            return self._unique_id
+
+    built_in = Device("MacBook Microphone", "built-in")
+    usb = Device("USB Microphone", "usb")
+
+    class CaptureDevice:
+        @staticmethod
+        def devicesWithMediaType_(media_type):
+            assert media_type == "audio"
+            return (built_in, usb)
+
+        @staticmethod
+        def defaultDeviceWithMediaType_(media_type):
+            assert media_type == "audio"
+            return usb
+
+    avfoundation = types.SimpleNamespace(
+        AVCaptureDevice=CaptureDevice,
+        AVMediaTypeAudio="audio",
+    )
+    monkeypatch.setattr(audio_inputs, "_use_native_macos_audio", lambda: True)
+    monkeypatch.setattr(audio_inputs, "_avfoundation", lambda: avfoundation)
+
+    assert list_audio_input_devices() == (
+        AudioInputDevice(index=0, name="MacBook Microphone", input_channels=1),
+        AudioInputDevice(index=1, name="USB Microphone", input_channels=1),
+    )
+    assert default_audio_input_device() == 1
+    assert macos_audio_capture_device(None) is usb
+    assert macos_audio_capture_device(0) is built_in
+
+
+def test_macos_saved_device_reports_when_it_disappears(monkeypatch):
+    class CaptureDevice:
+        @staticmethod
+        def devicesWithMediaType_(media_type):
+            return ()
+
+        @staticmethod
+        def defaultDeviceWithMediaType_(media_type):
+            return None
+
+    avfoundation = types.SimpleNamespace(
+        AVCaptureDevice=CaptureDevice,
+        AVMediaTypeAudio="audio",
+    )
+    monkeypatch.setattr(audio_inputs, "_use_native_macos_audio", lambda: True)
+    monkeypatch.setattr(audio_inputs, "_avfoundation", lambda: avfoundation)
+
+    with pytest.raises(AudioInputDeviceError, match="no longer available"):
+        macos_audio_capture_device(4)

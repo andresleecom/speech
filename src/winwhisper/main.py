@@ -46,7 +46,10 @@ from .languages import (
 )
 from .logger import get_logger
 from .overlay import RecordingOverlay
-from .recorder import MicrophoneTest, Recorder
+if sys.platform == "darwin":
+    from .recorder_mac import MicrophoneTest, Recorder
+else:
+    from .recorder import MicrophoneTest, Recorder
 from .transcriber import Transcriber
 from .tray import TrayApp
 from .update_controller import UpdateCoordinator
