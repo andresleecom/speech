@@ -9,8 +9,8 @@ import sys
 import threading
 import time
 from contextlib import redirect_stdout
-from pathlib import Path
-from typing import Any, Literal
+from pathlib import Path, PurePosixPath
+from typing import Any, Callable, Literal
 
 from . import __version__
 from .audio_inputs import normalize_audio_input_device
@@ -45,7 +45,9 @@ from .languages import (
     normalize_language_mode,
 )
 from .logger import get_logger
+from .macos_permissions import PermissionState, get_permission_snapshot
 from .overlay import RecordingOverlay
+from .permission_setup_window import PermissionSetupWindow
 if sys.platform == "darwin":
     from .recorder_mac import MicrophoneTest, Recorder
 else:
@@ -108,6 +110,7 @@ class AppController:
         )
         self.hotkey_settings_window = HotkeySettingsWindow()
         self.language_settings_window = LanguageSettingsWindow()
+        self.permission_setup_window = PermissionSetupWindow()
         self.hotkeys = HotkeyManager(settings.hotkeys, self.on_hotkey)
         self._status: Status = STATUS_IDLE
         self._processing = False
@@ -126,22 +129,40 @@ class AppController:
 
     def run(self) -> None:
         self.set_status(STATUS_IDLE)
-        try:
-            activation = self.hotkeys.start()
-            if activation.successful:
-                self.logger.info("Hotkey listener started.")
-            else:
-                failed = ", ".join(
-                    display_hotkey(combo) for combo in activation.failed
+        start_hotkeys = True
+        if sys.platform == "darwin":
+            permissions = get_permission_snapshot()
+            if not permissions.ready:
+                self.open_permission_setup()
+            if not permissions.hotkeys_ready:
+                start_hotkeys = False
+                self.logger.warning(
+                    "Global hotkeys were not started because macOS shortcut "
+                    "permissions are not ready."
                 )
-                self.logger.warning("Hotkeys could not be registered: %s.", failed)
                 self.notify(
                     APP_NAME,
-                    f"{failed} could not be registered. Open Hotkey Settings "
-                    "and choose another shortcut.",
+                    "Finish Input Monitoring and Accessibility setup, then "
+                    "quit and reopen Speech to enable the dictation hotkey.",
                 )
-        except Exception:
-            self._handle_error("Hotkey listener failed to start.")
+
+        if start_hotkeys:
+            try:
+                activation = self.hotkeys.start()
+                if activation.successful:
+                    self.logger.info("Hotkey listener started.")
+                else:
+                    failed = ", ".join(
+                        display_hotkey(combo) for combo in activation.failed
+                    )
+                    self.logger.warning("Hotkeys could not be registered: %s.", failed)
+                    self.notify(
+                        APP_NAME,
+                        f"{failed} could not be registered. Open Hotkey Settings "
+                        "and choose another shortcut.",
+                    )
+            except Exception:
+                self._handle_error("Hotkey listener failed to start.")
         if getattr(self.hotkeys, "accessibility_missing", False):
             self.notify(
                 APP_NAME,
@@ -267,29 +288,33 @@ class AppController:
             if self.recorder.is_recording():
                 beep = self._begin_stop_locked()
             else:
-                language_mode = language_override or self.settings.language_mode
-                self._paste_target_window = get_foreground_window()
-                self._paste_target_process_name = get_window_process_name(
-                    self._paste_target_window
-                )
-                self._overlay_anchor = get_cursor_anchor(self._paste_target_window)
-                try:
-                    self.recorder.start_recording()
-                except Exception as exc:
-                    self._paste_target_window = None
-                    self._paste_target_process_name = None
-                    self._overlay_anchor = None
-                    start_error = str(exc) or "Recording failed to start."
+                microphone_error = self._microphone_readiness_error()
+                if microphone_error is not None:
+                    start_error = microphone_error
                 else:
-                    self._recording_language_mode = language_mode
-                    self.logger.info(
-                        "Recording started (language_mode=%s; overlay_anchor=%s).",
-                        language_mode,
-                        self._overlay_anchor,
+                    language_mode = language_override or self.settings.language_mode
+                    self._paste_target_window = get_foreground_window()
+                    self._paste_target_process_name = get_window_process_name(
+                        self._paste_target_window
                     )
-                    self.recording_overlay.show(self._overlay_anchor)
-                    self.set_status(STATUS_RECORDING)
-                    beep = (880, 120)
+                    self._overlay_anchor = get_cursor_anchor(self._paste_target_window)
+                    try:
+                        self.recorder.start_recording()
+                    except Exception as exc:
+                        self._paste_target_window = None
+                        self._paste_target_process_name = None
+                        self._overlay_anchor = None
+                        start_error = str(exc) or "Recording failed to start."
+                    else:
+                        self._recording_language_mode = language_mode
+                        self.logger.info(
+                            "Recording started (language_mode=%s; overlay_anchor=%s).",
+                            language_mode,
+                            self._overlay_anchor,
+                        )
+                        self.recording_overlay.show(self._overlay_anchor)
+                        self.set_status(STATUS_RECORDING)
+                        beep = (880, 120)
 
         if start_error is not None:
             self._handle_error(start_error)
@@ -361,6 +386,9 @@ class AppController:
         self.logger.info("Audio input device set to %s.", selected_device)
 
     def start_microphone_test(self) -> None:
+        microphone_error = self._microphone_readiness_error()
+        if microphone_error is not None:
+            raise RuntimeError(microphone_error)
         with self._lock:
             if self._shutdown:
                 raise RuntimeError("Speech is shutting down.")
@@ -400,6 +428,79 @@ class AppController:
             hotkeys,
             language_favorites=self.settings.language_favorites,
         )
+        if sys.platform == "darwin":
+            self._set_hotkeys_macos(normalized)
+            return
+        self._set_hotkeys_live_rebind(normalized)
+
+    def _set_hotkeys_macos(self, normalized: dict[str, str]) -> None:
+        """Persist hotkeys on macOS without restarting the pynput listener.
+
+        Replacing HotkeyManager from the AppKit settings modal races Text Services
+        Manager work on the pynput worker thread and can crash Speech. Validate and
+        save here; packaged builds relaunch after the modal unwinds.
+        """
+        previous_settings = dict(self.settings.hotkeys)
+        self.settings.hotkeys = normalized
+        try:
+            save_settings(self.settings)
+        except Exception as exc:
+            self.settings.hotkeys = previous_settings
+            raise HotkeyConfigurationError(
+                "The hotkey settings could not be saved."
+            ) from exc
+
+        if self._try_schedule_macos_hotkey_relaunch():
+            self.logger.info(
+                "Hotkey settings saved; restarting %s to apply them.",
+                APP_NAME,
+            )
+            self.notify(
+                APP_NAME,
+                "Hotkeys saved. Speech is restarting to apply them.",
+            )
+            return
+
+        self.logger.info(
+            "Hotkey settings saved; quit and reopen %s to apply them.",
+            APP_NAME,
+        )
+        self.notify(
+            APP_NAME,
+            "Hotkeys saved. Quit and reopen Speech to apply them.",
+        )
+
+    def _try_schedule_macos_hotkey_relaunch(self) -> bool:
+        """Launch a detached relaunch helper and queue exit after the modal returns.
+
+        Returns True only when both the helper started and shutdown was queued.
+        """
+        if not getattr(sys, "frozen", False):
+            return False
+        app_path = _macos_app_bundle_path(sys.executable)
+        if app_path is None:
+            self.logger.warning(
+                "Hotkey settings saved, but the Speech.app bundle path could not "
+                "be resolved from %s.",
+                sys.executable,
+            )
+            return False
+        try:
+            _launch_macos_relaunch_helper(pid=os.getpid(), app_path=app_path)
+        except Exception:
+            self.logger.exception("Could not launch the Speech relaunch helper.")
+            return False
+        try:
+            _queue_macos_main_operation(self.exit_app)
+        except Exception:
+            self.logger.exception(
+                "Could not schedule Speech shutdown after hotkey save."
+            )
+            return False
+        return True
+
+    def _set_hotkeys_live_rebind(self, normalized: dict[str, str]) -> None:
+        """Replace the running hotkey manager (Windows/Linux)."""
         replacement = HotkeyManager(normalized, self.on_hotkey)
         previous = self.hotkeys
         previous_settings = dict(self.settings.hotkeys)
@@ -458,6 +559,27 @@ class AppController:
             self.settings.language_mode,
             self.settings.language_favorites,
             self.set_language_preferences,
+        )
+
+    def open_permission_setup(self) -> None:
+        if sys.platform == "darwin":
+            self.permission_setup_window.show()
+
+    def _microphone_readiness_error(self) -> str | None:
+        if sys.platform != "darwin":
+            return None
+        status = get_permission_snapshot().microphone
+        if status.ready:
+            return None
+        self.open_permission_setup()
+        if status.state is PermissionState.MISCONFIGURED:
+            return (
+                "This Speech build is missing the macOS audio-input entitlement. "
+                "Install a correctly signed build."
+            )
+        return (
+            "Microphone permission is not ready. Use Permissions in the Speech "
+            "menu, then recheck."
         )
 
     def open_settings_file(self) -> None:
@@ -1135,6 +1257,63 @@ def _open_path(path: Path) -> None:
         stdout=subprocess.DEVNULL,
         stderr=subprocess.DEVNULL,
     )
+
+
+def _macos_app_bundle_path(executable: str | Path) -> PurePosixPath | None:
+    """Return the .app bundle for a packaged MacOS executable, if any.
+
+    Expected layout: ``<Name>.app/Contents/MacOS/<executable>``.
+    """
+    path = PurePosixPath(str(executable))
+    if path.parent.name != "MacOS":
+        return None
+    if path.parent.parent.name != "Contents":
+        return None
+    app_path = path.parent.parent.parent
+    if not app_path.name.endswith(".app"):
+        return None
+    return app_path
+
+
+def _launch_macos_relaunch_helper(
+    *,
+    pid: int,
+    app_path: Path | PurePosixPath,
+) -> None:
+    """Start a detached shell that reopens the app after ``pid`` exits.
+
+    PID and app path are passed as separate argv values so spaces and shell
+    metacharacters in the path are never interpolated into shell source.
+    """
+    import subprocess
+
+    # $1 = pid, $2 = .app path (see argv after -c below).
+    script = (
+        'while /bin/kill -0 "$1" 2>/dev/null; do /bin/sleep 0.2; done; '
+        'exec /usr/bin/open -n "$2"'
+    )
+    subprocess.Popen(
+        [
+            "/bin/sh",
+            "-c",
+            script,
+            "speech-hotkey-relaunch",
+            str(pid),
+            str(app_path),
+        ],
+        start_new_session=True,
+        stdin=subprocess.DEVNULL,
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+        close_fds=True,
+    )
+
+
+def _queue_macos_main_operation(operation: Callable[[], None]) -> None:
+    """Queue work on AppKit's main operation queue (after the current modal)."""
+    from Foundation import NSOperationQueue
+
+    NSOperationQueue.mainQueue().addOperationWithBlock_(operation)
 
 
 def _shortcut_label(shortcut: PasteShortcut) -> str:

@@ -16,14 +16,20 @@ Packaged applications also support `--diagnostics` from a terminal.
 
 ## macOS hotkey does not respond
 
-1. Open **System Settings > Privacy & Security**.
-2. Enable Speech under both **Accessibility** and **Input Monitoring**.
+1. Choose **Permissions...** from the Speech menu-bar icon.
+2. Use **Allow / Settings** for both **Accessibility** and **Input Monitoring**.
 3. If Speech was replaced or updated, switch both permissions off and on again.
 4. Quit Speech from its menu-bar icon, then reopen it from Applications.
 
 Input Monitoring lets Speech receive global hotkeys. Accessibility lets it restore focus and paste into another application.
 
-If Speech is missing from either list, launch it once, retry the permission request, and reopen the privacy panes.
+The permission assistant requests access before opening System Settings, which registers a fresh installation in Apple's privacy lists. **Recheck** only reads the current state; it never displays a system prompt. Speech does not start its global hotkey listener until both shortcut permissions were already ready at launch.
+
+## macOS microphone permission or build problem
+
+Choose **Permissions...** from the Speech menu and check the Microphone row. **Allow** uses Apple's permission dialog without blocking the Speech window. If access was denied previously, use **Open Settings**, enable Speech under **Privacy & Security > Microphone**, and recheck.
+
+If the row says **Build problem**, the packaged executable is missing the required `com.apple.security.device.audio-input` signing entitlement. Privacy settings cannot repair that build; install a correctly signed Speech release. Recording and the microphone test stay disabled until microphone readiness is confirmed.
 
 ## macOS or Windows blocks the app
 
