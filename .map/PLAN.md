@@ -29,7 +29,7 @@
 ## Tasks
 | # | Task | Scope (files/areas) | Bar | Status |
 |---|------|---------------------|-----|--------|
-| 01 | Add local signing and notarization pipeline | `packaging/Speech.spec`, `scripts/build_macos.sh`, focused tests if needed | build+tests+flow | pending |
+| 01 | Add local signing and notarization pipeline | `packaging/Speech.spec`, `scripts/build_macos.sh`, focused tests if needed | build+tests+flow | done |
 | 02 | Provision ephemeral CI signing credentials | `.github/workflows/release.yml` | build+tests | pending |
 
 Bar legend: build = diff review + build/typecheck · +tests = also relevant tests ·
