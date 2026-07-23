@@ -23,14 +23,14 @@
 ## Verify commands
 - tests: `/Users/andreslee/PythonProjects/speech/.venv/bin/python -m pytest -q`
 - shell: `bash -n scripts/build_macos.sh`
-- workflow: `ruby -e 'require "yaml"; YAML.load_file(".github/workflows/release.yml", aliases: true); puts "workflow yaml ok"'`
+- workflow: `ruby -e 'require "yaml"; YAML.load_file(".github/workflows/release.yml"); puts "workflow yaml ok"'`
 - flow check: build locally with the Developer ID identity, run `--version` and `--diagnostics`, verify the app and DMG signatures, submit the DMG with `notarytool --wait`, staple it, and validate it.
 
 ## Tasks
 | # | Task | Scope (files/areas) | Bar | Status |
 |---|------|---------------------|-----|--------|
 | 01 | Add local signing and notarization pipeline | `packaging/Speech.spec`, `scripts/build_macos.sh`, focused tests if needed | build+tests+flow | done |
-| 02 | Provision ephemeral CI signing credentials | `.github/workflows/release.yml` | build+tests | pending |
+| 02 | Provision ephemeral CI signing credentials | `.github/workflows/release.yml` | build+tests | done |
 
 Bar legend: build = diff review + build/typecheck · +tests = also relevant tests ·
 +flow = also drive the affected flow.
