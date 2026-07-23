@@ -10,7 +10,7 @@ import threading
 import time
 from contextlib import redirect_stdout
 from pathlib import Path
-from typing import Any, Literal
+from typing import Any, Callable, Literal
 
 from . import __version__
 from .audio_inputs import normalize_audio_input_device
@@ -428,6 +428,79 @@ class AppController:
             hotkeys,
             language_favorites=self.settings.language_favorites,
         )
+        if sys.platform == "darwin":
+            self._set_hotkeys_macos(normalized)
+            return
+        self._set_hotkeys_live_rebind(normalized)
+
+    def _set_hotkeys_macos(self, normalized: dict[str, str]) -> None:
+        """Persist hotkeys on macOS without restarting the pynput listener.
+
+        Replacing HotkeyManager from the AppKit settings modal races Text Services
+        Manager work on the pynput worker thread and can crash Speech. Validate and
+        save here; packaged builds relaunch after the modal unwinds.
+        """
+        previous_settings = dict(self.settings.hotkeys)
+        self.settings.hotkeys = normalized
+        try:
+            save_settings(self.settings)
+        except Exception as exc:
+            self.settings.hotkeys = previous_settings
+            raise HotkeyConfigurationError(
+                "The hotkey settings could not be saved."
+            ) from exc
+
+        if self._try_schedule_macos_hotkey_relaunch():
+            self.logger.info(
+                "Hotkey settings saved; restarting %s to apply them.",
+                APP_NAME,
+            )
+            self.notify(
+                APP_NAME,
+                "Hotkeys saved. Speech is restarting to apply them.",
+            )
+            return
+
+        self.logger.info(
+            "Hotkey settings saved; quit and reopen %s to apply them.",
+            APP_NAME,
+        )
+        self.notify(
+            APP_NAME,
+            "Hotkeys saved. Quit and reopen Speech to apply them.",
+        )
+
+    def _try_schedule_macos_hotkey_relaunch(self) -> bool:
+        """Launch a detached relaunch helper and queue exit after the modal returns.
+
+        Returns True only when both the helper started and shutdown was queued.
+        """
+        if not getattr(sys, "frozen", False):
+            return False
+        app_path = _macos_app_bundle_path(sys.executable)
+        if app_path is None:
+            self.logger.warning(
+                "Hotkey settings saved, but the Speech.app bundle path could not "
+                "be resolved from %s.",
+                sys.executable,
+            )
+            return False
+        try:
+            _launch_macos_relaunch_helper(pid=os.getpid(), app_path=app_path)
+        except Exception:
+            self.logger.exception("Could not launch the Speech relaunch helper.")
+            return False
+        try:
+            _queue_macos_main_operation(self.exit_app)
+        except Exception:
+            self.logger.exception(
+                "Could not schedule Speech shutdown after hotkey save."
+            )
+            return False
+        return True
+
+    def _set_hotkeys_live_rebind(self, normalized: dict[str, str]) -> None:
+        """Replace the running hotkey manager (Windows/Linux)."""
         replacement = HotkeyManager(normalized, self.on_hotkey)
         previous = self.hotkeys
         previous_settings = dict(self.settings.hotkeys)
@@ -1184,6 +1257,63 @@ def _open_path(path: Path) -> None:
         stdout=subprocess.DEVNULL,
         stderr=subprocess.DEVNULL,
     )
+
+
+def _macos_app_bundle_path(executable: str | Path) -> Path | None:
+    """Return the .app bundle for a packaged MacOS executable, if any.
+
+    Expected layout: ``<Name>.app/Contents/MacOS/<executable>``.
+    """
+    path = Path(executable)
+    try:
+        resolved = path.resolve()
+    except OSError:
+        resolved = path
+    if resolved.parent.name != "MacOS":
+        return None
+    if resolved.parent.parent.name != "Contents":
+        return None
+    app_path = resolved.parent.parent.parent
+    if not app_path.name.endswith(".app"):
+        return None
+    return app_path
+
+
+def _launch_macos_relaunch_helper(*, pid: int, app_path: Path) -> None:
+    """Start a detached shell that reopens the app after ``pid`` exits.
+
+    PID and app path are passed as separate argv values so spaces and shell
+    metacharacters in the path are never interpolated into shell source.
+    """
+    import subprocess
+
+    # $1 = pid, $2 = .app path (see argv after -c below).
+    script = (
+        'while /bin/kill -0 "$1" 2>/dev/null; do /bin/sleep 0.2; done; '
+        'exec /usr/bin/open -n "$2"'
+    )
+    subprocess.Popen(
+        [
+            "/bin/sh",
+            "-c",
+            script,
+            "speech-hotkey-relaunch",
+            str(pid),
+            str(app_path),
+        ],
+        start_new_session=True,
+        stdin=subprocess.DEVNULL,
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+        close_fds=True,
+    )
+
+
+def _queue_macos_main_operation(operation: Callable[[], None]) -> None:
+    """Queue work on AppKit's main operation queue (after the current modal)."""
+    from Foundation import NSOperationQueue
+
+    NSOperationQueue.mainQueue().addOperationWithBlock_(operation)
 
 
 def _shortcut_label(shortcut: PasteShortcut) -> str:

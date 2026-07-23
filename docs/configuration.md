@@ -53,7 +53,9 @@ If the API key is missing, the request fails, or it times out, Speech falls back
 | Favorite 2 | `Ctrl+Shift+S` | `Control+Shift+S` | `Ctrl+Shift+S` |
 | Favorite 3 | Disabled | Disabled | Disabled |
 
-Open **Hotkey Settings...**, select a suggestion or enter a combination, then save. Speech rejects duplicates and applies valid changes without a restart.
+Open **Hotkey Settings...**, select a suggestion or enter a combination, then save. Speech rejects duplicates.
+
+On Windows and Linux, valid changes rebind immediately without a restart. On macOS, Speech saves the new profile and does not restart the global-hotkey listener from the settings window: a packaged Speech.app relaunches after the settings dialog closes so the new shortcuts take effect; source/dev runs keep the saved settings and ask you to quit and reopen Speech. If the save fails, the previous hotkeys stay in effect.
 
 On Windows, an operating-system registration conflict keeps the previous working hotkeys. On macOS, Alt is displayed as Option and Win is displayed as Command.
 

@@ -368,6 +368,266 @@ def test_failed_rollback_is_reported_to_settings_window(monkeypatch, tmp_path):
         controller.set_hotkeys({"toggle_recording": "Ctrl + Shift + F8"})
 
 
+def _prepare_macos_hotkey_controller(monkeypatch, tmp_path, *, frozen: bool = True):
+    """Build a controller under darwin and optional frozen packaging flags."""
+    controller = make_controller(monkeypatch, tmp_path, [], [])
+    monkeypatch.setattr(sys, "platform", "darwin")
+    monkeypatch.setattr(sys, "frozen", frozen, raising=False)
+    controller.hotkeys.start()
+    return controller
+
+
+def test_macos_packaged_hotkey_save_persists_and_queues_relaunch(monkeypatch, tmp_path):
+    controller = _prepare_macos_hotkey_controller(monkeypatch, tmp_path, frozen=True)
+    original_manager = controller.hotkeys
+    managers_before = list(FakeHotkeys.instances)
+    app_executable = "/Applications/Speech App.app/Contents/MacOS/Speech"
+    monkeypatch.setattr(sys, "executable", app_executable)
+
+    popen_calls: list[tuple[tuple, dict]] = []
+
+    def fake_popen(*args, **kwargs):
+        popen_calls.append((args, kwargs))
+        return types.SimpleNamespace(pid=4242)
+
+    import subprocess
+
+    monkeypatch.setattr(subprocess, "Popen", fake_popen)
+
+    queued: list = []
+
+    def capture_queue(operation):
+        queued.append(operation)
+
+    monkeypatch.setattr(main_module, "_queue_macos_main_operation", capture_queue)
+
+    selected = {"toggle_recording": "Control + Shift + F8"}
+    expected = {"toggle_recording": "<ctrl>+<shift>+<f8>"}
+
+    controller.set_hotkeys(selected)
+
+    assert controller.settings.hotkeys == expected
+    assert load_settings().hotkeys == expected
+    assert controller.hotkeys is original_manager
+    assert original_manager.stopped is False
+    assert original_manager.started is True
+    assert FakeHotkeys.instances == managers_before
+    assert len(popen_calls) == 1
+    assert len(queued) == 1
+    assert controller._shutdown is False
+
+    popen_args, popen_kwargs = popen_calls[0]
+    argv = popen_args[0] if popen_args else popen_kwargs.get("args")
+    assert argv[0] == "/bin/sh"
+    assert argv[1] == "-c"
+    script = argv[2]
+    # PID and app path must be argv values, not interpolated into the script.
+    assert str(os.getpid()) not in script
+    assert "Speech App.app" not in script
+    assert argv[3] == "speech-hotkey-relaunch"
+    assert argv[4] == str(os.getpid())
+    assert argv[5] == "/Applications/Speech App.app"
+    assert popen_kwargs["start_new_session"] is True
+    assert popen_kwargs["close_fds"] is True
+    assert popen_kwargs["stdin"] is subprocess.DEVNULL
+    assert popen_kwargs["stdout"] is subprocess.DEVNULL
+    assert popen_kwargs["stderr"] is subprocess.DEVNULL
+    assert any(
+        "restarting" in message.casefold()
+        for _, message in controller.tray.notifications
+    )
+
+
+def test_macos_packaged_queued_exit_performs_normal_shutdown(monkeypatch, tmp_path):
+    controller = _prepare_macos_hotkey_controller(monkeypatch, tmp_path, frozen=True)
+    original_manager = controller.hotkeys
+    monkeypatch.setattr(
+        sys,
+        "executable",
+        "/Applications/Speech.app/Contents/MacOS/Speech",
+    )
+
+    import subprocess
+
+    monkeypatch.setattr(
+        subprocess,
+        "Popen",
+        lambda *args, **kwargs: types.SimpleNamespace(pid=1),
+    )
+
+    queued: list = []
+    monkeypatch.setattr(
+        main_module,
+        "_queue_macos_main_operation",
+        lambda operation: queued.append(operation),
+    )
+
+    controller.set_hotkeys({"toggle_recording": "Control + Shift + F9"})
+
+    assert original_manager.stopped is False
+    assert controller._shutdown is False
+    assert len(queued) == 1
+
+    queued[0]()
+
+    assert controller._shutdown is True
+    assert original_manager.stopped is True
+
+
+def test_macos_source_hotkey_save_requests_manual_restart(monkeypatch, tmp_path):
+    controller = _prepare_macos_hotkey_controller(monkeypatch, tmp_path, frozen=False)
+    original_manager = controller.hotkeys
+    managers_before = list(FakeHotkeys.instances)
+
+    launch_calls: list = []
+    queue_calls: list = []
+    monkeypatch.setattr(
+        main_module,
+        "_launch_macos_relaunch_helper",
+        lambda **kwargs: launch_calls.append(kwargs),
+    )
+    monkeypatch.setattr(
+        main_module,
+        "_queue_macos_main_operation",
+        lambda operation: queue_calls.append(operation),
+    )
+
+    selected = {"toggle_recording": "Control + Shift + F8"}
+    expected = {"toggle_recording": "<ctrl>+<shift>+<f8>"}
+    controller.set_hotkeys(selected)
+
+    assert controller.settings.hotkeys == expected
+    assert load_settings().hotkeys == expected
+    assert controller.hotkeys is original_manager
+    assert original_manager.stopped is False
+    assert FakeHotkeys.instances == managers_before
+    assert launch_calls == []
+    assert queue_calls == []
+    assert controller._shutdown is False
+    assert any(
+        "quit and reopen" in message.casefold()
+        for _, message in controller.tray.notifications
+    )
+
+
+def test_macos_helper_or_queue_failure_keeps_saved_settings(monkeypatch, tmp_path):
+    controller = _prepare_macos_hotkey_controller(monkeypatch, tmp_path, frozen=True)
+    original_manager = controller.hotkeys
+    monkeypatch.setattr(
+        sys,
+        "executable",
+        "/Applications/Speech.app/Contents/MacOS/Speech",
+    )
+
+    selected = {"toggle_recording": "Control + Shift + F8"}
+    expected = {"toggle_recording": "<ctrl>+<shift>+<f8>"}
+
+    def fail_helper(**kwargs):
+        raise OSError("helper failed")
+
+    queue_calls: list = []
+    monkeypatch.setattr(main_module, "_launch_macos_relaunch_helper", fail_helper)
+    monkeypatch.setattr(
+        main_module,
+        "_queue_macos_main_operation",
+        lambda operation: queue_calls.append(operation),
+    )
+
+    controller.set_hotkeys(selected)
+
+    assert controller.settings.hotkeys == expected
+    assert load_settings().hotkeys == expected
+    assert controller.hotkeys is original_manager
+    assert original_manager.stopped is False
+    assert queue_calls == []
+    assert controller._shutdown is False
+    assert any(
+        "quit and reopen" in message.casefold()
+        for _, message in controller.tray.notifications
+    )
+
+    # Helper succeeds but queue fails: settings still kept, no exit.
+    controller.tray.notifications.clear()
+    monkeypatch.setattr(
+        main_module,
+        "_launch_macos_relaunch_helper",
+        lambda **kwargs: None,
+    )
+
+    def fail_queue(operation):
+        raise RuntimeError("queue failed")
+
+    monkeypatch.setattr(main_module, "_queue_macos_main_operation", fail_queue)
+
+    selected2 = {"toggle_recording": "Control + Shift + F9"}
+    expected2 = {"toggle_recording": "<ctrl>+<shift>+<f9>"}
+    controller.set_hotkeys(selected2)
+
+    assert controller.settings.hotkeys == expected2
+    assert load_settings().hotkeys == expected2
+    assert controller._shutdown is False
+    assert any(
+        "quit and reopen" in message.casefold()
+        for _, message in controller.tray.notifications
+    )
+
+
+def test_macos_hotkey_save_failure_restores_prior_and_does_not_relaunch(
+    monkeypatch, tmp_path
+):
+    controller = _prepare_macos_hotkey_controller(monkeypatch, tmp_path, frozen=True)
+    original_manager = controller.hotkeys
+    original_settings = dict(controller.settings.hotkeys)
+    monkeypatch.setattr(
+        sys,
+        "executable",
+        "/Applications/Speech.app/Contents/MacOS/Speech",
+    )
+
+    launch_calls: list = []
+    queue_calls: list = []
+    monkeypatch.setattr(
+        main_module,
+        "_launch_macos_relaunch_helper",
+        lambda **kwargs: launch_calls.append(kwargs),
+    )
+    monkeypatch.setattr(
+        main_module,
+        "_queue_macos_main_operation",
+        lambda operation: queue_calls.append(operation),
+    )
+
+    def fail_save(settings):
+        raise OSError("disk full")
+
+    monkeypatch.setattr(main_module, "save_settings", fail_save)
+
+    with pytest.raises(HotkeyConfigurationError, match="could not be saved"):
+        controller.set_hotkeys({"toggle_recording": "Control + Shift + F8"})
+
+    assert controller.settings.hotkeys == original_settings
+    assert controller.hotkeys is original_manager
+    assert original_manager.stopped is False
+    assert launch_calls == []
+    assert queue_calls == []
+    assert controller._shutdown is False
+    assert FakeHotkeys.instances == [original_manager]
+
+
+def test_macos_app_bundle_path_resolves_packaged_layout():
+    path = main_module._macos_app_bundle_path(
+        "/Volumes/Disk/Speech Tools.app/Contents/MacOS/Speech"
+    )
+    assert path == Path("/Volumes/Disk/Speech Tools.app")
+    assert main_module._macos_app_bundle_path("/usr/local/bin/speech") is None
+    assert (
+        main_module._macos_app_bundle_path(
+            "/Applications/Speech.app/Contents/Resources/helper"
+        )
+        is None
+    )
+
+
 def test_controller_opens_hotkey_window_with_live_save_callback(monkeypatch, tmp_path):
     FakeHotkeySettingsWindow.instances.clear()
     monkeypatch.setattr(
