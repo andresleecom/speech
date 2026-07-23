@@ -45,7 +45,9 @@ from .languages import (
     normalize_language_mode,
 )
 from .logger import get_logger
+from .macos_permissions import PermissionState, get_permission_snapshot
 from .overlay import RecordingOverlay
+from .permission_setup_window import PermissionSetupWindow
 if sys.platform == "darwin":
     from .recorder_mac import MicrophoneTest, Recorder
 else:
@@ -108,6 +110,7 @@ class AppController:
         )
         self.hotkey_settings_window = HotkeySettingsWindow()
         self.language_settings_window = LanguageSettingsWindow()
+        self.permission_setup_window = PermissionSetupWindow()
         self.hotkeys = HotkeyManager(settings.hotkeys, self.on_hotkey)
         self._status: Status = STATUS_IDLE
         self._processing = False
@@ -126,22 +129,40 @@ class AppController:
 
     def run(self) -> None:
         self.set_status(STATUS_IDLE)
-        try:
-            activation = self.hotkeys.start()
-            if activation.successful:
-                self.logger.info("Hotkey listener started.")
-            else:
-                failed = ", ".join(
-                    display_hotkey(combo) for combo in activation.failed
+        start_hotkeys = True
+        if sys.platform == "darwin":
+            permissions = get_permission_snapshot()
+            if not permissions.ready:
+                self.open_permission_setup()
+            if not permissions.hotkeys_ready:
+                start_hotkeys = False
+                self.logger.warning(
+                    "Global hotkeys were not started because macOS shortcut "
+                    "permissions are not ready."
                 )
-                self.logger.warning("Hotkeys could not be registered: %s.", failed)
                 self.notify(
                     APP_NAME,
-                    f"{failed} could not be registered. Open Hotkey Settings "
-                    "and choose another shortcut.",
+                    "Finish Input Monitoring and Accessibility setup, then "
+                    "quit and reopen Speech to enable the dictation hotkey.",
                 )
-        except Exception:
-            self._handle_error("Hotkey listener failed to start.")
+
+        if start_hotkeys:
+            try:
+                activation = self.hotkeys.start()
+                if activation.successful:
+                    self.logger.info("Hotkey listener started.")
+                else:
+                    failed = ", ".join(
+                        display_hotkey(combo) for combo in activation.failed
+                    )
+                    self.logger.warning("Hotkeys could not be registered: %s.", failed)
+                    self.notify(
+                        APP_NAME,
+                        f"{failed} could not be registered. Open Hotkey Settings "
+                        "and choose another shortcut.",
+                    )
+            except Exception:
+                self._handle_error("Hotkey listener failed to start.")
         if getattr(self.hotkeys, "accessibility_missing", False):
             self.notify(
                 APP_NAME,
@@ -267,29 +288,33 @@ class AppController:
             if self.recorder.is_recording():
                 beep = self._begin_stop_locked()
             else:
-                language_mode = language_override or self.settings.language_mode
-                self._paste_target_window = get_foreground_window()
-                self._paste_target_process_name = get_window_process_name(
-                    self._paste_target_window
-                )
-                self._overlay_anchor = get_cursor_anchor(self._paste_target_window)
-                try:
-                    self.recorder.start_recording()
-                except Exception as exc:
-                    self._paste_target_window = None
-                    self._paste_target_process_name = None
-                    self._overlay_anchor = None
-                    start_error = str(exc) or "Recording failed to start."
+                microphone_error = self._microphone_readiness_error()
+                if microphone_error is not None:
+                    start_error = microphone_error
                 else:
-                    self._recording_language_mode = language_mode
-                    self.logger.info(
-                        "Recording started (language_mode=%s; overlay_anchor=%s).",
-                        language_mode,
-                        self._overlay_anchor,
+                    language_mode = language_override or self.settings.language_mode
+                    self._paste_target_window = get_foreground_window()
+                    self._paste_target_process_name = get_window_process_name(
+                        self._paste_target_window
                     )
-                    self.recording_overlay.show(self._overlay_anchor)
-                    self.set_status(STATUS_RECORDING)
-                    beep = (880, 120)
+                    self._overlay_anchor = get_cursor_anchor(self._paste_target_window)
+                    try:
+                        self.recorder.start_recording()
+                    except Exception as exc:
+                        self._paste_target_window = None
+                        self._paste_target_process_name = None
+                        self._overlay_anchor = None
+                        start_error = str(exc) or "Recording failed to start."
+                    else:
+                        self._recording_language_mode = language_mode
+                        self.logger.info(
+                            "Recording started (language_mode=%s; overlay_anchor=%s).",
+                            language_mode,
+                            self._overlay_anchor,
+                        )
+                        self.recording_overlay.show(self._overlay_anchor)
+                        self.set_status(STATUS_RECORDING)
+                        beep = (880, 120)
 
         if start_error is not None:
             self._handle_error(start_error)
@@ -361,6 +386,9 @@ class AppController:
         self.logger.info("Audio input device set to %s.", selected_device)
 
     def start_microphone_test(self) -> None:
+        microphone_error = self._microphone_readiness_error()
+        if microphone_error is not None:
+            raise RuntimeError(microphone_error)
         with self._lock:
             if self._shutdown:
                 raise RuntimeError("Speech is shutting down.")
@@ -458,6 +486,27 @@ class AppController:
             self.settings.language_mode,
             self.settings.language_favorites,
             self.set_language_preferences,
+        )
+
+    def open_permission_setup(self) -> None:
+        if sys.platform == "darwin":
+            self.permission_setup_window.show()
+
+    def _microphone_readiness_error(self) -> str | None:
+        if sys.platform != "darwin":
+            return None
+        status = get_permission_snapshot().microphone
+        if status.ready:
+            return None
+        self.open_permission_setup()
+        if status.state is PermissionState.MISCONFIGURED:
+            return (
+                "This Speech build is missing the macOS audio-input entitlement. "
+                "Install a correctly signed build."
+            )
+        return (
+            "Microphone permission is not ready. Use Permissions in the Speech "
+            "menu, then recheck."
         )
 
     def open_settings_file(self) -> None:

@@ -30,7 +30,7 @@
 ## Tasks
 | # | Task | Scope (files/areas) | Bar | Status |
 |---|------|---------------------|-----|--------|
-| 01 | Add permission assistant and audio entitlement | macOS permission modules/UI, controller/tray integration, package/build validation, focused tests/docs | build+tests+flow | pending |
+| 01 | Add permission assistant and audio entitlement | macOS permission modules/UI, controller/tray integration, package/build validation, focused tests/docs | build+tests+flow | done |
 | 02 | Make macOS hotkey saves relaunch safely | controller/hotkey settings behavior and focused tests/docs | build+tests+flow | pending |
 
 Bar legend: build = diff review + build/typecheck · +tests = also relevant tests ·

@@ -11,6 +11,11 @@ from winwhisper.config import load_settings, save_settings
 from winwhisper.focus import ScreenPoint
 from winwhisper.hotkey_settings import HotkeyConfigurationError
 from winwhisper.hotkeys import HotkeyActivationResult
+from winwhisper.macos_permissions import (
+    MacOSPermissionSnapshot,
+    PermissionState,
+    PermissionStatus,
+)
 from winwhisper.main import AppController
 from winwhisper.overlay import (
     dragged_overlay_position,
@@ -201,6 +206,26 @@ class FakeLanguageSettingsWindow:
 
     def show(self, language_mode, language_favorites, on_save) -> None:
         self.shown_with = (language_mode, list(language_favorites), on_save)
+
+
+class FakePermissionSetupWindow:
+    def __init__(self) -> None:
+        self.show_count = 0
+
+    def show(self) -> None:
+        self.show_count += 1
+
+
+def permission_snapshot(
+    microphone=PermissionState.GRANTED,
+    input_monitoring=PermissionState.GRANTED,
+    accessibility=PermissionState.GRANTED,
+) -> MacOSPermissionSnapshot:
+    return MacOSPermissionSnapshot(
+        PermissionStatus(microphone),
+        PermissionStatus(input_monitoring),
+        PermissionStatus(accessibility),
+    )
 
 
 class ImmediateThread:
@@ -468,6 +493,9 @@ def test_opening_advanced_settings_does_not_overwrite_external_edit(
 def test_startup_surfaces_saved_hotkey_registration_conflict(monkeypatch, tmp_path):
     controller = make_controller(monkeypatch, tmp_path, [], [])
     monkeypatch.setattr(sys, "platform", "darwin")
+    monkeypatch.setattr(
+        main_module, "get_permission_snapshot", permission_snapshot
+    )
     FakeHotkeys.fail_next_start = True
 
     controller.run()
@@ -486,6 +514,72 @@ def test_startup_surfaces_missing_input_monitoring(monkeypatch, tmp_path):
 
     assert any(
         "input monitoring" in message.lower()
+        for _title, message in controller.tray.notifications
+    )
+
+
+def test_macos_startup_gates_hotkeys_and_shows_permission_assistant(
+    monkeypatch, tmp_path
+):
+    controller = make_controller(monkeypatch, tmp_path, [], [])
+    controller.permission_setup_window = FakePermissionSetupWindow()
+    monkeypatch.setattr(sys, "platform", "darwin")
+    monkeypatch.setattr(
+        main_module,
+        "get_permission_snapshot",
+        lambda: permission_snapshot(
+            input_monitoring=PermissionState.MISSING,
+            accessibility=PermissionState.MISSING,
+        ),
+    )
+
+    controller.run()
+
+    assert controller.hotkeys.started is False
+    assert controller.permission_setup_window.show_count == 1
+    assert any(
+        "quit and reopen" in message.lower()
+        for _title, message in controller.tray.notifications
+    )
+
+
+def test_macos_startup_starts_hotkeys_only_when_permissions_are_ready(
+    monkeypatch, tmp_path
+):
+    controller = make_controller(monkeypatch, tmp_path, [], [])
+    controller.permission_setup_window = FakePermissionSetupWindow()
+    monkeypatch.setattr(sys, "platform", "darwin")
+    monkeypatch.setattr(
+        main_module, "get_permission_snapshot", permission_snapshot
+    )
+
+    controller.run()
+
+    assert controller.hotkeys.started is True
+    assert controller.permission_setup_window.show_count == 0
+
+
+def test_macos_recording_and_test_are_gated_by_microphone_permission(
+    monkeypatch, tmp_path
+):
+    controller = make_controller(monkeypatch, tmp_path, [], [])
+    controller.permission_setup_window = FakePermissionSetupWindow()
+    monkeypatch.setattr(sys, "platform", "darwin")
+    monkeypatch.setattr(
+        main_module,
+        "get_permission_snapshot",
+        lambda: permission_snapshot(microphone=PermissionState.DENIED),
+    )
+
+    controller.toggle()
+    with pytest.raises(RuntimeError, match="Microphone permission is not ready"):
+        controller.start_microphone_test()
+
+    assert controller.recorder.is_recording() is False
+    assert FakeMicrophoneTest.instances == []
+    assert controller.permission_setup_window.show_count == 2
+    assert any(
+        "microphone permission is not ready" in message.lower()
         for _title, message in controller.tray.notifications
     )
 
@@ -628,6 +722,9 @@ def test_slow_transcription_message_changes_only_on_linux(
 ):
     controller = make_controller(monkeypatch, tmp_path, [], [])
     monkeypatch.setattr(sys, "platform", platform)
+    monkeypatch.setattr(
+        main_module, "get_permission_snapshot", permission_snapshot
+    )
     monkeypatch.setattr(main_module, "SLOW_TRANSCRIPTION_NOTIFY_SECONDS", 0)
     monkeypatch.setattr(main_module, "_RealThread", ImmediateThread)
 
