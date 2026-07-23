@@ -9,7 +9,7 @@ import sys
 import threading
 import time
 from contextlib import redirect_stdout
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 from typing import Any, Callable, Literal
 
 from . import __version__
@@ -1259,27 +1259,27 @@ def _open_path(path: Path) -> None:
     )
 
 
-def _macos_app_bundle_path(executable: str | Path) -> Path | None:
+def _macos_app_bundle_path(executable: str | Path) -> PurePosixPath | None:
     """Return the .app bundle for a packaged MacOS executable, if any.
 
     Expected layout: ``<Name>.app/Contents/MacOS/<executable>``.
     """
-    path = Path(executable)
-    try:
-        resolved = path.resolve()
-    except OSError:
-        resolved = path
-    if resolved.parent.name != "MacOS":
+    path = PurePosixPath(str(executable))
+    if path.parent.name != "MacOS":
         return None
-    if resolved.parent.parent.name != "Contents":
+    if path.parent.parent.name != "Contents":
         return None
-    app_path = resolved.parent.parent.parent
+    app_path = path.parent.parent.parent
     if not app_path.name.endswith(".app"):
         return None
     return app_path
 
 
-def _launch_macos_relaunch_helper(*, pid: int, app_path: Path) -> None:
+def _launch_macos_relaunch_helper(
+    *,
+    pid: int,
+    app_path: Path | PurePosixPath,
+) -> None:
     """Start a detached shell that reopens the app after ``pid`` exits.
 
     PID and app path are passed as separate argv values so spaces and shell

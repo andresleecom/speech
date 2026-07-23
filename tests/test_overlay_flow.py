@@ -1,4 +1,4 @@
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 import os
 import sys
 import types
@@ -618,7 +618,7 @@ def test_macos_app_bundle_path_resolves_packaged_layout():
     path = main_module._macos_app_bundle_path(
         "/Volumes/Disk/Speech Tools.app/Contents/MacOS/Speech"
     )
-    assert path == Path("/Volumes/Disk/Speech Tools.app")
+    assert path == PurePosixPath("/Volumes/Disk/Speech Tools.app")
     assert main_module._macos_app_bundle_path("/usr/local/bin/speech") is None
     assert (
         main_module._macos_app_bundle_path(
