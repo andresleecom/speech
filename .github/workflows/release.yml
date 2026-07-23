@@ -100,7 +100,7 @@ jobs:
           test "$tray_status" -eq 124
           grep -q "Hotkey listener started" "$tray_state/logs/app.log"
       - name: Upload Linux release assets
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: linux-release
           path: |
@@ -140,7 +140,7 @@ jobs:
           $diagnosticsProcess = Start-Process -FilePath $exe -ArgumentList "--diagnostics" -Wait -PassThru
           if ($diagnosticsProcess.ExitCode -ne 0) { throw "Diagnostics smoke test failed with exit code $($diagnosticsProcess.ExitCode)." }
       - name: Upload Windows release assets
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: windows-release
           path: dist/installer/Speech-Setup*.exe*
@@ -240,7 +240,7 @@ jobs:
           test "$("$BIN" --version)" = "$SPEECH_VERSION"
           "$BIN" --diagnostics
       - name: Upload macOS release assets
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: macos-${{ matrix.architecture }}-release
           path: |
