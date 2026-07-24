@@ -53,13 +53,38 @@ If the API key is missing, the request fails, or it times out, Speech falls back
 | Favorite 2 | `Ctrl+Shift+S` | `Control+Shift+S` | `Ctrl+Shift+S` |
 | Favorite 3 | Disabled | Disabled | Disabled |
 
-Open **Hotkey Settings...**, select a suggestion or enter a combination, then save. Speech rejects duplicates.
+Open **Hotkey Settings...**, select a suggestion, enter a combination, or press **Record** and click a mouse button, then save. Speech rejects duplicates.
 
 On Windows and Linux, valid changes rebind immediately without a restart. On macOS, Speech saves the new profile and does not restart the global-hotkey listener from the settings window: a packaged Speech.app relaunches after the settings dialog closes so the new shortcuts take effect; source/dev runs keep the saved settings and ask you to quit and reopen Speech. If the save fails, the previous hotkeys stay in effect.
 
 On Windows, an operating-system registration conflict keeps the previous working hotkeys. On macOS, Alt is displayed as Option and Win is displayed as Command.
 
 Printable trigger keys require a modifier so normal typing cannot start dictation. Function keys such as `F8` can be used alone. Choose **Disabled** to leave an action without a shortcut.
+
+### Mouse buttons
+
+Any action can be bound to a mouse button instead of a key.
+In **Hotkey Settings...**, press **Record** next to an action and then press the mouse button you want. Whatever the button reports is what gets bound, so mice with extra buttons work without Speech knowing the model.
+
+Side buttons, the middle button, and the right button can be bound on their own.
+Left click always needs a modifier, because bound bare it would swallow the click you need to undo it.
+Mouse buttons can be combined with modifiers, for example `Ctrl + Mouse Back`.
+
+On Windows, a bound button no longer performs its normal action: binding **Mouse Back** starts dictation and does not navigate back. Every other button and every unbound modifier combination passes through untouched.
+On macOS and Linux the click still performs its normal action as well, because the only suppression available there is all-or-nothing for the whole mouse.
+
+Serialized names follow the button names the operating system reports:
+
+```json
+"hotkeys": {
+  "toggle_recording": "<mouse_x1>",
+  "force_english": "<ctrl>+<mouse_middle>"
+}
+```
+
+`<mouse_x1>` is the back button and `<mouse_x2>` is forward. `mouse_back` and `mouse_forward` are accepted as aliases.
+
+If a button does nothing when you press Record, the mouse vendor's software is probably remapping it to a keystroke before Windows sees it as a mouse button. Logitech Options+ and similar tools do this by default on gesture buttons. Either set that button to "Mouse button" in the vendor software, or bind the keystroke it sends as a normal keyboard shortcut. `python scripts/probe_mouse_buttons.py` lists exactly which buttons reach the operating system.
 
 ### Serialized hotkeys
 
