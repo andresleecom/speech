@@ -96,13 +96,18 @@ Use product names, people's names, company terminology, and technical terms. A f
 - `small` with CPU and `int8` is the default balance.
 - `medium` improves accuracy at the cost of speed and memory.
 - `large-v3` offers the highest accuracy and needs the most resources.
-- Supported NVIDIA GPUs can use CUDA with `float16` or `int8_float16`.
+- Supported NVIDIA GPUs can use CUDA with `float16` or `int8_float16`, once the CUDA math libraries are installed separately.
 
 The selected model downloads from Hugging Face on first use. CUDA does not apply to normal macOS builds.
 
 ### Running on an NVIDIA GPU
 
-Set `device` to `cuda` and `compute_type` to `float16`, then restart Speech.
+**The packaged Speech builds do not include the CUDA math libraries, so `cuda` works only if you supply them yourself.**
+The installers ship CTranslate2 with CUDA support compiled in, but not `cublas64_12.dll`, which the encoder loads the first time it actually transcribes.
+Without it, the model loads on the GPU and then fails on the first real dictation. Speech detects that and continues on the CPU.
+
+To use the GPU, install the NVIDIA CUDA 12 runtime, or `pip install nvidia-cublas-cu12`, so that `cublas64_12.dll` is on the library search path.
+Then set the device and restart Speech.
 
 ```json
 "device": "cuda",
@@ -112,9 +117,9 @@ Set `device` to `cuda` and `compute_type` to `float16`, then restart Speech.
 `gpu` is accepted as a spelling of `cuda`, and `auto` picks the GPU when one is usable and the CPU otherwise.
 Any other value, such as `mps` or `rocm`, is rejected on load and Speech keeps using the CPU.
 
-If the GPU cannot be used, Speech falls back to CPU `int8` and notifies you rather than failing the dictation.
-The usual causes are no NVIDIA GPU, a driver too old for the bundled CUDA runtime, or a `compute_type` the card does not support.
+Speech falls back to CPU `int8` and notifies you rather than failing a dictation, whether the GPU fails when the model loads or later when it first runs.
 Run `speech --diagnostics` to see the configured device next to the number of CUDA devices actually detected.
+A non-zero count only means a GPU was found; it does not prove the math libraries are present.
 
 ## Settings reference
 

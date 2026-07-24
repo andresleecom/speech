@@ -79,8 +79,19 @@ Pair the GPU with a compute type it supports, normally `float16` or `int8_float1
 Run `speech --diagnostics`, or choose **Diagnostics** from the tray menu, and compare `Configured device` with `CUDA devices detected`.
 A count of `0` means CTranslate2 cannot see a usable GPU, usually because the machine has no NVIDIA card or the driver is older than the bundled CUDA runtime.
 
-When the requested device fails to load, Speech notifies you and transcribes on the CPU instead of failing the dictation.
-The log records the reason as `Model load failed ... falling back to CPU int8`.
+## GPU is detected but dictation logs a cuBLAS error
+
+```
+RuntimeError: Library cublas64_12.dll is not found or cannot be loaded
+```
+
+The packaged builds do not ship the CUDA math libraries, only CTranslate2 itself.
+The model therefore loads on the GPU and fails later, the first time it actually encodes audio, so a healthy startup log is not evidence that the GPU works.
+
+Install the NVIDIA CUDA 12 runtime, or `pip install nvidia-cublas-cu12`, so `cublas64_12.dll` is on the search path. Otherwise set `"device": "cpu"`.
+
+Speech recovers on its own either way: it notifies you, switches to CPU `int8`, and finishes the dictation.
+The log records `Transcription failed with RuntimeError ... retrying on CPU int8`.
 
 ## LLM cleanup does not run
 

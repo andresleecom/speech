@@ -86,29 +86,31 @@ class Transcriber:
             language_mode,
             audio_path.name,
         )
-        load_started = time.perf_counter()
-        model = self._load_model()
-        load_elapsed = time.perf_counter() - load_started
-        if load_elapsed >= 0.05:
-            self._logger.info("Model ready in %.2fs.", load_elapsed)
-
         language = resolve_language(language_mode)
 
         started_at = time.perf_counter()
-        segments, info = model.transcribe(
-            str(audio_path),
-            language=language,
-            vad_filter=True,
-            beam_size=5,
-            hotwords=self._hotwords,
-        )
-        text = " ".join(
-            segment_text
-            for segment_text in (
-                getattr(segment, "text", "").strip() for segment in segments
+        try:
+            text, info = self._run_model(audio_path, language)
+        except Exception as exc:
+            # A GPU can load a model and still fail once inference actually
+            # runs, because the encoder needs libraries the loader never
+            # touched (cuBLAS is the usual one). Falling back only at load time
+            # leaves that case with no recovery at all, so retry here too.
+            if (self._device, self._compute_type) == CPU_FALLBACK:
+                raise
+
+            fallback_from = (self._device, self._compute_type)
+            self._logger.warning(
+                "Transcription failed with %s (device=%s; compute_type=%s); "
+                "retrying on CPU %s.",
+                exc.__class__.__name__,
+                self._device,
+                self._compute_type,
+                CPU_FALLBACK[1],
             )
-            if segment_text
-        )
+            self._reset_to_cpu()
+            text, info = self._run_model(audio_path, language)
+            self._report_device_fallback(*fallback_from)
         elapsed = time.perf_counter() - started_at
 
         detected_language = getattr(info, "language", None)
@@ -130,6 +132,40 @@ class Transcriber:
             model_size=self._model_size,
             device=self._device,
         )
+
+    def _run_model(self, audio_path: Path, language: str | None) -> tuple[str, Any]:
+        """Transcribe on the current device, draining the segment generator.
+
+        faster-whisper defers the real work until the generator is consumed, so
+        the join below is where a device failure actually surfaces. It has to
+        stay inside the caller's try block.
+        """
+        load_started = time.perf_counter()
+        model = self._load_model()
+        load_elapsed = time.perf_counter() - load_started
+        if load_elapsed >= 0.05:
+            self._logger.info("Model ready in %.2fs.", load_elapsed)
+
+        segments, info = model.transcribe(
+            str(audio_path),
+            language=language,
+            vad_filter=True,
+            beam_size=5,
+            hotwords=self._hotwords,
+        )
+        text = " ".join(
+            segment_text
+            for segment_text in (
+                getattr(segment, "text", "").strip() for segment in segments
+            )
+            if segment_text
+        )
+        return text, info
+
+    def _reset_to_cpu(self) -> None:
+        with self._load_lock:
+            self._model = None
+            self._device, self._compute_type = CPU_FALLBACK
 
     def _load_model(self) -> Any:
         fallback_from: tuple[str, str] | None = None
