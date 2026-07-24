@@ -1,10 +1,12 @@
 from pathlib import Path, PurePosixPath
+from typing import Callable
 import os
 import sys
 import types
 
 import winwhisper.overlay as overlay_module
 import winwhisper.main as main_module
+import winwhisper.update_controller as update_controller_module
 import pytest
 from winwhisper.config import Settings
 from winwhisper.config import load_settings, save_settings
@@ -79,8 +81,13 @@ class FakeMicrophoneTest:
 class FakeTranscriber:
     text = "hola mundo"
 
-    def __init__(self, settings: Settings) -> None:
+    def __init__(
+        self,
+        settings: Settings,
+        on_device_fallback: Callable[[str, str], None] | None = None,
+    ) -> None:
         self.settings = settings
+        self.on_device_fallback = on_device_fallback
         self._loaded = False
 
     def is_model_loaded(self) -> bool:
@@ -286,6 +293,13 @@ def make_controller(
         lambda text, shortcut="ctrl_v": inserted.append((text, shortcut)) or True,
     )
     monkeypatch.setattr(main_module.threading, "Thread", ImmediateThread)
+    # controller.run() starts the Windows update check, and ImmediateThread makes
+    # it synchronous. Stub the release lookup so flow tests never reach GitHub:
+    # the real network call is slow, non-deterministic, and aborts the whole
+    # process on machines whose antivirus injects a device-path SSLKEYLOGFILE.
+    monkeypatch.setattr(
+        update_controller_module, "fetch_latest_release", lambda current_version: None
+    )
     monkeypatch.setattr(AppController, "_beep", lambda self, frequency, duration_ms: None)
     return AppController(Settings(language_mode="es", delete_audio_after_transcription=False))
 

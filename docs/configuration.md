@@ -100,13 +100,29 @@ Use product names, people's names, company terminology, and technical terms. A f
 
 The selected model downloads from Hugging Face on first use. CUDA does not apply to normal macOS builds.
 
+### Running on an NVIDIA GPU
+
+Set `device` to `cuda` and `compute_type` to `float16`, then restart Speech.
+
+```json
+"device": "cuda",
+"compute_type": "float16"
+```
+
+`gpu` is accepted as a spelling of `cuda`, and `auto` picks the GPU when one is usable and the CPU otherwise.
+Any other value, such as `mps` or `rocm`, is rejected on load and Speech keeps using the CPU.
+
+If the GPU cannot be used, Speech falls back to CPU `int8` and notifies you rather than failing the dictation.
+The usual causes are no NVIDIA GPU, a driver too old for the bundled CUDA runtime, or a `compute_type` the card does not support.
+Run `speech --diagnostics` to see the configured device next to the number of CUDA devices actually detected.
+
 ## Settings reference
 
 | Key | Default | Description |
 | --- | --- | --- |
 | `model_size` | `small` | faster-whisper model size. |
-| `device` | `cpu` | Inference device such as `cpu` or `cuda`. |
-| `compute_type` | `int8` | faster-whisper compute type. |
+| `device` | `cpu` | `cpu`, `cuda` for an NVIDIA GPU (`gpu` also works), or `auto`. |
+| `compute_type` | `int8` | faster-whisper compute type, such as `int8`, `float16`, or `int8_float16`. |
 | `audio_input_device` | `null` | System Default, or a non-negative device index selected from the Microphone menu. |
 | `language_mode` | `auto` | Automatic detection or one supported Whisper language code. |
 | `language_favorites` | `["en", "es", null]` | Three distinct non-auto language codes; `null` leaves a slot unassigned. |
