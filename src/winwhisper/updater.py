@@ -5,8 +5,10 @@ import json
 import os
 import re
 import subprocess
+import sys
 import urllib.error
 import urllib.request
+from collections.abc import Iterable
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -181,6 +183,50 @@ def updates_dir() -> Path:
     return app_data_dir() / "updates"
 
 
+def current_app_executable() -> Path | None:
+    """The installed Speech executable, or ``None`` when running from source.
+
+    Used to bring Speech back after a silent update. Running from source,
+    ``sys.executable`` is the interpreter, which is not worth relaunching.
+    """
+    if not getattr(sys, "frozen", False):
+        return None
+    return Path(sys.executable)
+
+
+def prune_update_downloads(target_dir: Path, keep: Iterable[str] = ()) -> int:
+    """Delete installers left over from earlier updates. Returns bytes freed.
+
+    Every update used to leave its installer behind forever, so the directory
+    grew by ~73 MB per release with nothing ever clearing it. Pruning runs
+    before the next download rather than after, so the space is reclaimed
+    before another installer is written instead of on top of it. Old installers
+    are dead weight either way: the version they carry is already installed.
+    """
+    keep_lowered = {name.lower() for name in keep}
+    freed = 0
+    try:
+        entries = list(target_dir.iterdir())
+    except OSError:
+        return 0
+
+    for entry in entries:
+        name = entry.name.lower()
+        # Only ever touch our own download artifacts, including .partial files
+        # abandoned by an interrupted download.
+        if not name.startswith("speech-setup"):
+            continue
+        if name in keep_lowered:
+            continue
+        try:
+            size = entry.stat().st_size
+            entry.unlink()
+        except OSError:
+            continue
+        freed += size
+    return freed
+
+
 def safe_asset_filename(name: str) -> str:
     """Return a basename-only asset name, rejecting path traversal."""
     if not name or name.strip() != name:
@@ -233,6 +279,8 @@ def download_update(
     installer_path = _resolve_under(target_dir, installer_name)
     checksum_path = _resolve_under(target_dir, checksum_name)
 
+    prune_update_downloads(target_dir, keep=(installer_name, checksum_name))
+
     _download_to_path(update.installer.download_url, installer_path, max_bytes=max_bytes)
     try:
         _download_to_path(update.checksum.download_url, checksum_path, max_bytes=max_bytes)
@@ -266,11 +314,18 @@ def sha256_file(target: Path) -> str:
 def launch_installer(
     installer_path: Path,
     wait_for_pid: int | None = None,
+    relaunch_path: Path | None = None,
 ) -> None:
     """Launch the installer, optionally after the given process exits.
 
     Waiting for our own PID lets Speech release file locks before Inno Setup
     replaces binaries under the install directory.
+
+    ``relaunch_path`` starts Speech again once the installer finishes. The
+    installer's own post-install launch cannot do this: its ``[Run]`` entry is
+    marked ``skipifsilent`` and updates are installed with ``/SILENT``, so
+    updating used to leave the user with no Speech running and no indication
+    that they had to start it themselves.
     """
     installer = str(installer_path.resolve())
     args = [installer, "/SILENT", "/NORESTART", "/CURRENTUSER"]
@@ -281,6 +336,14 @@ def launch_installer(
             f"Start-Process -FilePath {json.dumps(installer)} "
             f"-ArgumentList '/SILENT','/NORESTART','/CURRENTUSER'"
         )
+        if relaunch_path is not None:
+            # -Wait so Speech restarts after the install completes, not during
+            # it. Even if the install fails, starting the old build back up
+            # leaves the user better off than with nothing running.
+            command += (
+                " -Wait; Start-Process -FilePath "
+                f"{json.dumps(str(relaunch_path.resolve()))}"
+            )
         creationflags = 0
         if hasattr(subprocess, "CREATE_NO_WINDOW"):
             creationflags |= subprocess.CREATE_NO_WINDOW

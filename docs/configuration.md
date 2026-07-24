@@ -146,6 +146,17 @@ Speech falls back to CPU `int8` and notifies you rather than failing a dictation
 Run `speech --diagnostics` to see the configured device next to the number of CUDA devices actually detected.
 A non-zero count only means a GPU was found; it does not prove the math libraries are present.
 
+## Updates
+
+On Windows, Speech checks GitHub Releases once a day and can install an update from **Check for Updates** in the tray menu.
+
+Choosing to install downloads the installer, verifies its SHA-256, and waits for Speech to exit before running it, so the installer is never fighting a locked binary.
+Speech reopens on its own once the install finishes.
+
+Installers are cached in `%APPDATA%\Speech\updates`. Each update deletes the installers left by earlier ones before downloading the new one, so the directory holds at most the current download rather than growing by roughly 73 MB per release.
+
+macOS and Linux updates are installed manually from the Releases page.
+
 ## Settings reference
 
 | Key | Default | Description |
@@ -159,7 +170,7 @@ A non-zero count only means a GPU was found; it does not prove the math librarie
 | `cleanup_mode` | `basic` | `none`, `basic`, or `llm`. |
 | `paste_mode` | `auto` | Use the platform default and switch supported Windows/Linux terminals to `Ctrl+Shift+V`. |
 | `delete_audio_after_transcription` | `true` | Delete temporary WAV files after transcription. |
-| `check_for_updates` | `true` | Check GitHub Releases daily on Windows. Ignored on macOS and Linux. |
+| `check_for_updates` | `true` | Check GitHub Releases daily on Windows. Ignored on macOS and Linux. See [Updates](#updates). |
 | `last_update_check_at` | `null` | Internal timestamp used to throttle update checks. |
 | `hotkeys` | See defaults above | Global hotkey bindings. |
 | `custom_vocabulary` | `[]` | Exact spellings used to bias transcription and cleanup. |
