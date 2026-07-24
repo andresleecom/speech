@@ -4,8 +4,9 @@ import threading
 import time
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 
+from .compute_devices import CPU_FALLBACK
 from .languages import AUTO_LANGUAGE_MODE, normalize_language_mode
 from .logger import get_logger
 
@@ -50,7 +51,11 @@ def resolve_language(language_mode: str) -> str | None:
 
 
 class Transcriber:
-    def __init__(self, settings: Any) -> None:
+    def __init__(
+        self,
+        settings: Any,
+        on_device_fallback: Callable[[str, str], None] | None = None,
+    ) -> None:
         self._settings = settings
         self._model: Any | None = None
         self._model_size = str(settings.model_size)
@@ -59,6 +64,13 @@ class Transcriber:
         self._hotwords = build_hotwords(getattr(settings, "custom_vocabulary", None))
         self._logger = get_logger(__name__)
         self._load_lock = threading.Lock()
+        self._on_device_fallback = on_device_fallback
+
+    @property
+    def device(self) -> str:
+        """The device actually in use, which is the CPU after a fallback."""
+        return self._device
+
     def is_model_loaded(self) -> bool:
         return self._model is not None
 
@@ -120,6 +132,8 @@ class Transcriber:
         )
 
     def _load_model(self) -> Any:
+        fallback_from: tuple[str, str] | None = None
+
         with self._load_lock:
             if self._model is not None:
                 return self._model
@@ -140,15 +154,24 @@ class Transcriber:
                     compute_type=self._compute_type,
                 )
             except Exception as exc:
-                if self._device != "cuda":
+                # Any device or compute type other than the universal CPU
+                # baseline can fail on a given machine: no NVIDIA GPU, missing
+                # CUDA libraries, or a quantization the hardware lacks. Retry on
+                # the baseline so a settings mistake costs speed, never
+                # dictation.
+                if (self._device, self._compute_type) == CPU_FALLBACK:
                     raise
 
+                fallback_from = (self._device, self._compute_type)
                 self._logger.warning(
-                    "CUDA model load failed with %s; falling back to CPU int8.",
+                    "Model load failed with %s (device=%s; compute_type=%s); "
+                    "falling back to CPU %s.",
                     exc.__class__.__name__,
+                    self._device,
+                    self._compute_type,
+                    CPU_FALLBACK[1],
                 )
-                self._device = "cpu"
-                self._compute_type = "int8"
+                self._device, self._compute_type = CPU_FALLBACK
                 self._model = WhisperModel(
                     self._model_size,
                     device=self._device,
@@ -161,7 +184,20 @@ class Transcriber:
                 self._device,
                 self._compute_type,
             )
-            return self._model
+            model = self._model
+
+        if fallback_from is not None:
+            self._report_device_fallback(*fallback_from)
+        return model
+
+    def _report_device_fallback(self, device: str, compute_type: str) -> None:
+        """Tell the user the requested device was unusable, never the caller."""
+        if self._on_device_fallback is None:
+            return
+        try:
+            self._on_device_fallback(device, compute_type)
+        except Exception:
+            self._logger.exception("Device fallback notification failed.")
 
 
 def _format_duration(duration: float | None) -> str:

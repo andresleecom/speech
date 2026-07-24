@@ -68,6 +68,20 @@ If FUSE mounting is unavailable, use the supported extraction fallback:
 APPIMAGE_EXTRACT_AND_RUN=1 ./Speech.AppImage
 ```
 
+## GPU setting does not take effect
+
+Set `"device": "cuda"` in `settings.json` and restart Speech.
+CTranslate2, the engine behind faster-whisper, understands `cpu`, `cuda`, and `auto`; `gpu` and `nvidia` are accepted as spellings of `cuda`.
+Anything else, such as `mps` or `rocm`, is rejected on load and Speech keeps using the CPU.
+
+Pair the GPU with a compute type it supports, normally `float16` or `int8_float16`.
+
+Run `speech --diagnostics`, or choose **Diagnostics** from the tray menu, and compare `Configured device` with `CUDA devices detected`.
+A count of `0` means CTranslate2 cannot see a usable GPU, usually because the machine has no NVIDIA card or the driver is older than the bundled CUDA runtime.
+
+When the requested device fails to load, Speech notifies you and transcribes on the CPU instead of failing the dictation.
+The log records the reason as `Model load failed ... falling back to CPU int8`.
+
 ## LLM cleanup does not run
 
 Set `OPENAI_API_KEY` before launching Speech and select **Cleanup > LLM**.

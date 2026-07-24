@@ -102,7 +102,7 @@ class AppController:
             on_max_duration=self._on_max_recording_duration,
             audio_input_device=settings.audio_input_device,
         )
-        self.transcriber = Transcriber(settings)
+        self.transcriber = Transcriber(settings, self._on_device_fallback)
         self.tray = TrayApp(self)
         self.recording_overlay = RecordingOverlay(
             self.stop_from_overlay,
@@ -609,6 +609,19 @@ class AppController:
 
     def notify(self, title: str, message: str) -> None:
         self.tray.notify(title, message)
+
+    def _on_device_fallback(self, device: str, compute_type: str) -> None:
+        """Surface a silent CPU fallback; otherwise it only shows up as slowness."""
+        self.logger.warning(
+            "Configured device %s (compute_type=%s) is unavailable; using the CPU.",
+            device,
+            compute_type,
+        )
+        self.notify(
+            APP_NAME,
+            f"{device} is unavailable on this machine. Speech is transcribing on "
+            "the CPU instead.",
+        )
 
     def set_status(self, status: Status) -> None:
         with self._lock:
