@@ -16,14 +16,20 @@ Packaged applications also support `--diagnostics` from a terminal.
 
 ## macOS hotkey does not respond
 
-1. Open **System Settings > Privacy & Security**.
-2. Enable Speech under both **Accessibility** and **Input Monitoring**.
+1. Choose **Permissions...** from the Speech menu-bar icon.
+2. Use **Allow / Settings** for both **Accessibility** and **Input Monitoring**.
 3. If Speech was replaced or updated, switch both permissions off and on again.
 4. Quit Speech from its menu-bar icon, then reopen it from Applications.
 
 Input Monitoring lets Speech receive global hotkeys. Accessibility lets it restore focus and paste into another application.
 
-If Speech is missing from either list, launch it once, retry the permission request, and reopen the privacy panes.
+The permission assistant requests access before opening System Settings, which registers a fresh installation in Apple's privacy lists. **Recheck** only reads the current state; it never displays a system prompt. Speech does not start its global hotkey listener until both shortcut permissions were already ready at launch.
+
+## macOS microphone permission or build problem
+
+Choose **Permissions...** from the Speech menu and check the Microphone row. **Allow** uses Apple's permission dialog without blocking the Speech window. If access was denied previously, use **Open Settings**, enable Speech under **Privacy & Security > Microphone**, and recheck.
+
+If the row says **Build problem**, the packaged executable is missing the required `com.apple.security.device.audio-input` signing entitlement. Privacy settings cannot repair that build; install a correctly signed Speech release. Recording and the microphone test stay disabled until microphone readiness is confirmed.
 
 ## macOS or Windows blocks the app
 
@@ -61,6 +67,31 @@ If FUSE mounting is unavailable, use the supported extraction fallback:
 ```bash
 APPIMAGE_EXTRACT_AND_RUN=1 ./Speech.AppImage
 ```
+
+## GPU setting does not take effect
+
+Set `"device": "cuda"` in `settings.json` and restart Speech.
+CTranslate2, the engine behind faster-whisper, understands `cpu`, `cuda`, and `auto`; `gpu` and `nvidia` are accepted as spellings of `cuda`.
+Anything else, such as `mps` or `rocm`, is rejected on load and Speech keeps using the CPU.
+
+Pair the GPU with a compute type it supports, normally `float16` or `int8_float16`.
+
+Run `speech --diagnostics`, or choose **Diagnostics** from the tray menu, and compare `Configured device` with `CUDA devices detected`.
+A count of `0` means CTranslate2 cannot see a usable GPU, usually because the machine has no NVIDIA card or the driver is older than the bundled CUDA runtime.
+
+## GPU is detected but dictation logs a cuBLAS error
+
+```
+RuntimeError: Library cublas64_12.dll is not found or cannot be loaded
+```
+
+The packaged builds do not ship the CUDA math libraries, only CTranslate2 itself.
+The model therefore loads on the GPU and fails later, the first time it actually encodes audio, so a healthy startup log is not evidence that the GPU works.
+
+Install the NVIDIA CUDA 12 runtime, or `pip install nvidia-cublas-cu12`, so `cublas64_12.dll` is on the search path. Otherwise set `"device": "cpu"`.
+
+Speech recovers on its own either way: it notifies you, switches to CPU `int8`, and finishes the dictation.
+The log records `Transcription failed with RuntimeError ... retrying on CPU int8`.
 
 ## LLM cleanup does not run
 

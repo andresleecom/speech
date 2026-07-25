@@ -10,6 +10,7 @@ from typing import Any
 
 from .hotkey_actions import HOTKEY_ACTIONS, is_macos_supported_trigger
 from .logger import get_logger
+from .mouse_buttons import is_mouse_trigger, mouse_button_name
 
 _MODIFIER_ALIASES = {
     "ctrl": "ctrl",
@@ -183,6 +184,35 @@ def combo_to_hotkey(combo: str) -> tuple[int, int]:
     return fs_modifiers, trigger_to_vk(trigger)
 
 
+def windows_modifier_state() -> set[str]:
+    """Read live modifier state, for matching a mouse button against a chord.
+
+    Windows has no keyboard listener here (RegisterHotKey handles keys), so the
+    modifiers held at click time have to be queried directly.
+    """
+    import ctypes
+
+    # Private handle: never mutate the process-wide ctypes.windll cache, whose
+    # function objects are shared with other modules.
+    user32 = ctypes.WinDLL("user32", use_last_error=True)
+    user32.GetAsyncKeyState.argtypes = [ctypes.c_int]
+    user32.GetAsyncKeyState.restype = ctypes.c_short
+
+    def is_down(vk: int) -> bool:
+        return bool(user32.GetAsyncKeyState(vk) & 0x8000)
+
+    pressed: set[str] = set()
+    if is_down(0x11):  # VK_CONTROL
+        pressed.add("ctrl")
+    if is_down(0x12):  # VK_MENU
+        pressed.add("alt")
+    if is_down(0x10):  # VK_SHIFT
+        pressed.add("shift")
+    if is_down(0x5B) or is_down(0x5C):  # VK_LWIN / VK_RWIN
+        pressed.add("cmd")
+    return pressed
+
+
 @dataclass(frozen=True)
 class HotkeyActivationResult:
     active: tuple[str, ...]
@@ -223,6 +253,8 @@ class HotkeyManager:
         self._bindings: list[tuple[int, int, int, str, str]] = []
         # Listener-backend bindings: (modifiers, trigger name, action, combo).
         self._name_bindings: list[tuple[frozenset[str], str, str, str]] = []
+        # Mouse bindings: (modifiers, pynput button name, action, combo).
+        self._mouse_bindings: list[tuple[frozenset[str], str, str, str]] = []
         hotkey_id = 1
         for action in HOTKEY_ACTIONS:
             combo = hotkey_map.get(action.setting_key)
@@ -236,6 +268,18 @@ class HotkeyManager:
                     action.setting_key,
                 )
                 self._rejected_combos.append(combo)
+                continue
+            if is_mouse_trigger(trigger):
+                # Mouse buttons bypass RegisterHotKey and the macOS key-trigger
+                # allowlist alike; they are matched by the mouse listener.
+                self._mouse_bindings.append(
+                    (
+                        modifiers,
+                        mouse_button_name(trigger),
+                        action.dispatch_action,
+                        combo,
+                    )
+                )
                 continue
             if sys.platform == "darwin" and not is_macos_supported_trigger(trigger):
                 self._logger.warning(
@@ -273,8 +317,47 @@ class HotkeyManager:
         self._started = threading.Event()
         self._stop_requested = False
         self._backend: _PynputHotkeyBackend | None = None
+        self._mouse_backend: _MouseHotkeyBackend | None = None
         self.accessibility_missing = False
         self.input_monitoring_missing = False
+
+    def _start_mouse_backend(self) -> tuple[str, ...]:
+        """Start mouse hotkeys. Returns the combos that failed to activate."""
+        if not self._mouse_bindings or self._mouse_backend is not None:
+            return ()
+
+        if os.name == "nt":
+            modifier_state: Callable[[], set[str]] = windows_modifier_state
+        else:
+            backend = self._backend
+            modifier_state = (
+                backend.current_modifiers if backend is not None else lambda: set()
+            )
+
+        try:
+            mouse_backend = _MouseHotkeyBackend(
+                self._mouse_bindings,
+                self._dispatch,
+                self._logger,
+                modifier_state,
+            )
+            mouse_backend.start()
+        except Exception:
+            # Keyboard hotkeys are unaffected, so this degrades rather than fails.
+            self._logger.exception(
+                "Mouse hotkeys could not start; keyboard shortcuts are unaffected."
+            )
+            return tuple(combo for *_binding, combo in self._mouse_bindings)
+
+        self._mouse_backend = mouse_backend
+        for *_binding, combo in self._mouse_bindings:
+            self._logger.info("Registered mouse hotkey %s.", combo)
+        if os.name != "nt":
+            self._logger.info(
+                "Mouse hotkeys pass the click through on this platform; "
+                "only Windows can suppress a single button."
+            )
+        return ()
 
     def start(self) -> HotkeyActivationResult:
         if os.name == "nt":
@@ -294,6 +377,19 @@ class HotkeyManager:
                 self._activation_result = HotkeyActivationResult(
                     active=(),
                     failed=self._requested_combos,
+                )
+                return self._activation_result
+            mouse_failed = self._start_mouse_backend()
+            if mouse_failed:
+                self._activation_result = HotkeyActivationResult(
+                    active=self._activation_result.active,
+                    failed=self._activation_result.failed + mouse_failed,
+                )
+            else:
+                self._activation_result = HotkeyActivationResult(
+                    active=self._activation_result.active
+                    + tuple(combo for *_b, combo in self._mouse_bindings),
+                    failed=self._activation_result.failed,
                 )
             return self._activation_result
 
@@ -341,13 +437,28 @@ class HotkeyManager:
         self._backend = backend
         for _modifiers, _trigger, _action, combo in self._name_bindings:
             self._logger.info("Registered global hotkey %s (listener backend).", combo)
+        mouse_failed = self._start_mouse_backend()
+        active_mouse = tuple(
+            combo
+            for *_binding, combo in self._mouse_bindings
+            if combo not in mouse_failed
+        )
         self._activation_result = HotkeyActivationResult(
-            active=tuple(combo for *_binding, combo in self._name_bindings),
-            failed=tuple(self._rejected_combos),
+            active=tuple(combo for *_binding, combo in self._name_bindings)
+            + active_mouse,
+            failed=tuple(self._rejected_combos) + mouse_failed,
         )
         return self._activation_result
 
     def stop(self) -> None:
+        mouse_backend = self._mouse_backend
+        if mouse_backend is not None:
+            self._mouse_backend = None
+            try:
+                mouse_backend.stop()
+            except Exception:
+                self._logger.warning("Mouse hotkey listener did not stop cleanly.")
+
         backend = self._backend
         if backend is not None:
             self._backend = None
@@ -585,6 +696,157 @@ def normalize_char_key(char: str) -> str:
     return char.lower()
 
 
+class _MouseHotkeyBackend:
+    """Mouse-button hotkeys, on every platform.
+
+    ``RegisterHotKey`` is keyboard-only, so mouse buttons need a listener even
+    on Windows where keys deliberately do not use one. The blast radius is much
+    smaller than the old keyboard hook: this one only ever swallows a button the
+    user explicitly bound, and a failure to install it costs mouse shortcuts
+    rather than all dictation.
+
+    Suppression is Windows-only. pynput can suppress a single event there via
+    ``win32_event_filter``; on macOS and Linux its only lever is suppressing
+    every mouse event, which would be far worse than letting the click through.
+    """
+
+    # winuser.h button messages, as (down, up, button-name-or-None-for-x).
+    _BUTTON_MESSAGES = {
+        0x0201: ("left", True),
+        0x0202: ("left", False),
+        0x0204: ("right", True),
+        0x0205: ("right", False),
+        0x0207: ("middle", True),
+        0x0208: ("middle", False),
+        0x020B: (None, True),  # WM_XBUTTONDOWN, index in mouseData
+        0x020C: (None, False),  # WM_XBUTTONUP
+    }
+
+    def __init__(
+        self,
+        bindings: list[tuple[frozenset[str], str, str, str]],
+        dispatch: Callable[[str], None],
+        logger: Any,
+        modifier_state: Callable[[], set[str]],
+    ) -> None:
+        self._bindings = [(m, b, a) for m, b, a, _combo in bindings]
+        self._dispatch = dispatch
+        self._logger = logger
+        self._modifier_state = modifier_state
+        self._listener: Any | None = None
+        self._state_lock = threading.Lock()
+        self._last_action_at: dict[str, float] = {}
+        self._held: set[str] = set()
+
+    def start(self) -> None:
+        from pynput import mouse
+
+        kwargs: dict[str, Any] = {}
+        if os.name == "nt":
+            # Dispatching happens inside the filter, because suppressing an
+            # event also stops pynput from delivering it to on_click.
+            kwargs["win32_event_filter"] = self._win32_event_filter
+        else:
+            kwargs["on_click"] = self._on_click
+        self._listener = mouse.Listener(**kwargs)
+        self._listener.start()
+
+    def stop(self) -> None:
+        listener = self._listener
+        self._listener = None
+        if listener is not None:
+            listener.stop()
+        self.reset_state()
+
+    def reset_state(self) -> None:
+        with self._state_lock:
+            self._held.clear()
+
+    def _match(self, button: str) -> str | None:
+        """Return the action bound to this button under the current modifiers."""
+        try:
+            pressed = self._modifier_state()
+        except Exception:
+            self._logger.exception("Could not read modifier state for a mouse hotkey.")
+            return None
+        for modifiers, bound_button, action in self._bindings:
+            if bound_button == button and modifiers == pressed:
+                return action
+        return None
+
+    def _fire(self, action: str) -> bool:
+        now = time.monotonic()
+        with self._state_lock:
+            if now - self._last_action_at.get(action, 0.0) < _ACTION_DEBOUNCE_SECONDS:
+                return False
+            self._last_action_at[action] = now
+        self._dispatch(action)
+        return True
+
+    def _win32_event_filter(self, msg: int, data: Any) -> None:
+        listener = self._listener
+        if listener is None:
+            return
+
+        suppress = False
+        try:
+            entry = self._BUTTON_MESSAGES.get(msg)
+            if entry is None:
+                return
+            button, is_press = entry
+            if button is None:
+                # X buttons pack their index into the high word of mouseData.
+                index = (getattr(data, "mouseData", 0) >> 16) & 0xFFFF
+                button = {1: "x1", 2: "x2"}.get(index)
+                if button is None:
+                    return
+
+            if listener_is_suppressed():
+                return
+
+            if is_press:
+                action = self._match(button)
+                if action is None:
+                    return
+                # Swallow the release too, so the target app never sees a
+                # dangling button-up for a click it was never told about.
+                with self._state_lock:
+                    self._held.add(button)
+                # Dispatch before suppressing, never after: suppress_event
+                # signals by raising, so anything below it would not run.
+                self._fire(action)
+                suppress = True
+            else:
+                with self._state_lock:
+                    suppress = button in self._held
+                    self._held.discard(button)
+        except Exception:
+            # pynput tears the hook down if this raises, which would wedge the
+            # mouse. Never let that happen; a missed shortcut is recoverable.
+            self._logger.exception("Mouse hotkey filter failed; listener kept alive.")
+            return
+
+        if suppress:
+            # Deliberately outside the try. pynput requests suppression by
+            # raising SuppressException, and that exception has to travel up to
+            # its own hook handler to take effect. Catching it here would leave
+            # the click unsuppressed and log a bogus error for every press.
+            listener.suppress_event()
+
+    def _on_click(self, x: int, y: int, button: Any, pressed: bool) -> None:
+        try:
+            if not pressed or listener_is_suppressed():
+                return
+            name = getattr(button, "name", None)
+            if not name:
+                return
+            action = self._match(str(name))
+            if action is not None:
+                self._fire(action)
+        except Exception:
+            self._logger.exception("Mouse hotkey handler failed; listener kept alive.")
+
+
 class _PynputHotkeyBackend:
     """Listener-based hotkey matching for macOS and Linux (X11).
 
@@ -637,6 +899,11 @@ class _PynputHotkeyBackend:
     def reset_trigger_state(self) -> None:
         with self._state_lock:
             self._down_triggers.clear()
+
+    def current_modifiers(self) -> set[str]:
+        """Modifiers held right now, so mouse chords can match against them."""
+        with self._state_lock:
+            return set(self._pressed_modifiers)
 
     def _on_press(self, key: Any) -> None:
         try:

@@ -108,6 +108,63 @@ def _choice_labels(
     return tuple(dict.fromkeys(values))
 
 
+def _make_record_command(
+    root: Any,
+    button: Any,
+    value: Any,
+    setting_key: str,
+    captures: dict[str, Any],
+    platform: str,
+    error_setter: Callable[[str], None],
+) -> Callable[[], None]:
+    """Build the per-row Record handler.
+
+    Capture callbacks arrive on a listener thread, so every UI touch is bounced
+    back through ``root.after``. Tk is not thread-safe and will crash or hang if
+    widgets are poked from anywhere but its own loop.
+    """
+    from .mouse_capture import MouseCapture
+
+    def restore() -> None:
+        button.configure(text="Record")
+        captures.pop(setting_key, None)
+
+    def on_captured(combo: str) -> None:
+        def apply() -> None:
+            value.set(display_hotkey(combo, platform=platform))
+            error_setter("")
+            restore()
+
+        root.after(0, apply)
+
+    def on_cancelled() -> None:
+        def apply() -> None:
+            error_setter("No mouse button detected. Try again, or type a shortcut.")
+            restore()
+
+        root.after(0, apply)
+
+    def start() -> None:
+        existing = captures.get(setting_key)
+        if existing is not None:
+            existing.cancel()
+            restore()
+            return
+
+        capture = MouseCapture(on_captured, on_cancelled)
+        try:
+            capture.start()
+        except Exception:
+            get_logger(__name__).exception("Mouse capture could not start.")
+            error_setter("Mouse capture is unavailable on this system.")
+            return
+        captures[setting_key] = capture
+        button.configure(text="Press a button...")
+        error_setter("Press a mouse button now. Left click needs a modifier.")
+
+    return start
+
+
 def _run_tk_dialog(
     hotkeys: dict[str, str],
     on_save: SaveHotkeys,
@@ -136,7 +193,10 @@ def _run_tk_dialog(
     ).grid(row=0, column=0, columnspan=2, sticky="w")
     tk.Label(
         frame,
-        text="Choose a shortcut or type one, such as Ctrl + Alt + Space.",
+        text=(
+            "Choose a shortcut, type one such as Ctrl + Alt + Space, or press "
+            "Record and click a mouse button."
+        ),
         bg="#F7F7F8",
         fg="#62626A",
         font=("Segoe UI", 9),
@@ -144,6 +204,7 @@ def _run_tk_dialog(
     ).grid(row=1, column=0, columnspan=2, sticky="w", pady=(4, 18))
 
     values: dict[str, tk.StringVar] = {}
+    captures: dict[str, Any] = {}
     for row, action in enumerate(HOTKEY_ACTIONS, start=2):
         tk.Label(
             frame,
@@ -164,8 +225,31 @@ def _run_tk_dialog(
             frame,
             textvariable=value,
             values=_choice_labels(platform, hotkeys, action),
-            width=34,
+            width=30,
         ).grid(row=row, column=1, sticky="ew", pady=6)
+
+        record_button = tk.Button(
+            frame,
+            text="Record",
+            padx=10,
+            pady=4,
+            relief="flat",
+            bg="#E7E7EA",
+            activebackground="#DCDCE0",
+            fg="#303036",
+        )
+        record_button.grid(row=row, column=2, sticky="w", padx=(8, 0), pady=6)
+        record_button.configure(
+            command=_make_record_command(
+                root,
+                record_button,
+                value,
+                action.setting_key,
+                captures,
+                platform,
+                error_setter=lambda message: error.set(message),
+            )
+        )
 
     error = tk.StringVar(value="")
     tk.Label(
@@ -194,18 +278,26 @@ def _run_tk_dialog(
         pady=(12, 0),
     )
 
+    def close() -> None:
+        # Leaving a capture running would keep a mouse listener alive with no
+        # window to report into.
+        for capture in list(captures.values()):
+            capture.cancel()
+        captures.clear()
+        root.destroy()
+
     def save() -> None:
         try:
             on_save({key: value.get() for key, value in values.items()})
         except Exception as exc:
             error.set(str(exc) or "The hotkey settings could not be saved.")
             return
-        root.destroy()
+        close()
 
     tk.Button(
         actions,
         text="Cancel",
-        command=root.destroy,
+        command=close,
         padx=14,
         pady=7,
         relief="flat",
@@ -227,7 +319,8 @@ def _run_tk_dialog(
     ).pack(side="left")
 
     root.bind("<Return>", lambda event: save())
-    root.bind("<Escape>", lambda event: root.destroy())
+    root.bind("<Escape>", lambda event: close())
+    root.protocol("WM_DELETE_WINDOW", close)
     root.update_idletasks()
     x = max(0, (root.winfo_screenwidth() - root.winfo_width()) // 2)
     y = max(0, (root.winfo_screenheight() - root.winfo_height()) // 3)

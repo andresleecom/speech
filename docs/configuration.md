@@ -53,11 +53,38 @@ If the API key is missing, the request fails, or it times out, Speech falls back
 | Favorite 2 | `Ctrl+Shift+S` | `Control+Shift+S` | `Ctrl+Shift+S` |
 | Favorite 3 | Disabled | Disabled | Disabled |
 
-Open **Hotkey Settings...**, select a suggestion or enter a combination, then save. Speech rejects duplicates and applies valid changes without a restart.
+Open **Hotkey Settings...**, select a suggestion, enter a combination, or press **Record** and click a mouse button, then save. Speech rejects duplicates.
+
+On Windows and Linux, valid changes rebind immediately without a restart. On macOS, Speech saves the new profile and does not restart the global-hotkey listener from the settings window: a packaged Speech.app relaunches after the settings dialog closes so the new shortcuts take effect; source/dev runs keep the saved settings and ask you to quit and reopen Speech. If the save fails, the previous hotkeys stay in effect.
 
 On Windows, an operating-system registration conflict keeps the previous working hotkeys. On macOS, Alt is displayed as Option and Win is displayed as Command.
 
 Printable trigger keys require a modifier so normal typing cannot start dictation. Function keys such as `F8` can be used alone. Choose **Disabled** to leave an action without a shortcut.
+
+### Mouse buttons
+
+Any action can be bound to a mouse button instead of a key.
+In **Hotkey Settings...**, press **Record** next to an action and then press the mouse button you want. Whatever the button reports is what gets bound, so mice with extra buttons work without Speech knowing the model.
+
+Side buttons, the middle button, and the right button can be bound on their own.
+Left click always needs a modifier, because bound bare it would swallow the click you need to undo it.
+Mouse buttons can be combined with modifiers, for example `Ctrl + Mouse Back`.
+
+On Windows, a bound button no longer performs its normal action: binding **Mouse Back** starts dictation and does not navigate back. Every other button and every unbound modifier combination passes through untouched.
+On macOS and Linux the click still performs its normal action as well, because the only suppression available there is all-or-nothing for the whole mouse.
+
+Serialized names follow the button names the operating system reports:
+
+```json
+"hotkeys": {
+  "toggle_recording": "<mouse_x1>",
+  "force_english": "<ctrl>+<mouse_middle>"
+}
+```
+
+`<mouse_x1>` is the back button and `<mouse_x2>` is forward. `mouse_back` and `mouse_forward` are accepted as aliases.
+
+If a button does nothing when you press Record, the mouse vendor's software is probably remapping it to a keystroke before Windows sees it as a mouse button. Logitech Options+ and similar tools do this by default on gesture buttons. Either set that button to "Mouse button" in the vendor software, or bind the keystroke it sends as a normal keyboard shortcut. `python scripts/probe_mouse_buttons.py` lists exactly which buttons reach the operating system.
 
 ### Serialized hotkeys
 
@@ -94,24 +121,59 @@ Use product names, people's names, company terminology, and technical terms. A f
 - `small` with CPU and `int8` is the default balance.
 - `medium` improves accuracy at the cost of speed and memory.
 - `large-v3` offers the highest accuracy and needs the most resources.
-- Supported NVIDIA GPUs can use CUDA with `float16` or `int8_float16`.
+- Supported NVIDIA GPUs can use CUDA with `float16` or `int8_float16`, once the CUDA math libraries are installed separately.
 
 The selected model downloads from Hugging Face on first use. CUDA does not apply to normal macOS builds.
+
+### Running on an NVIDIA GPU
+
+**The packaged Speech builds do not include the CUDA math libraries, so `cuda` works only if you supply them yourself.**
+The installers ship CTranslate2 with CUDA support compiled in, but not `cublas64_12.dll`, which the encoder loads the first time it actually transcribes.
+Without it, the model loads on the GPU and then fails on the first real dictation. Speech detects that and continues on the CPU.
+
+To use the GPU, install the NVIDIA CUDA 12 runtime, or `pip install nvidia-cublas-cu12`, so that `cublas64_12.dll` is on the library search path.
+Then set the device and restart Speech.
+
+```json
+"device": "cuda",
+"compute_type": "float16"
+```
+
+`gpu` is accepted as a spelling of `cuda`, and `auto` picks the GPU when one is usable and the CPU otherwise.
+Any other value, such as `mps` or `rocm`, is rejected on load and Speech keeps using the CPU.
+
+Speech falls back to CPU `int8` and notifies you rather than failing a dictation, whether the GPU fails when the model loads or later when it first runs.
+Run `speech --diagnostics` to see the configured device next to the number of CUDA devices actually detected.
+A non-zero count only means a GPU was found; it does not prove the math libraries are present.
+
+## Updates
+
+On Windows, Speech checks GitHub Releases once a day and can install an update from **Check for Updates** in the tray menu.
+
+Choosing to install downloads the installer, verifies its SHA-256, and waits for Speech to exit before running it, so the installer is never fighting a locked binary.
+Speech reopens on its own once the install finishes.
+
+Installing a new version removes the previous one first, so each update is a clean install rather than a new build layered over the old files.
+Your settings, hotkeys, custom vocabulary, and logs live in `%APPDATA%\Speech` and are never touched by this.
+
+Installers are cached in `%APPDATA%\Speech\updates`. Each update deletes the installers left by earlier ones before downloading the new one, so the directory holds at most the current download rather than growing by roughly 73 MB per release.
+
+macOS and Linux updates are installed manually from the Releases page.
 
 ## Settings reference
 
 | Key | Default | Description |
 | --- | --- | --- |
 | `model_size` | `small` | faster-whisper model size. |
-| `device` | `cpu` | Inference device such as `cpu` or `cuda`. |
-| `compute_type` | `int8` | faster-whisper compute type. |
+| `device` | `cpu` | `cpu`, `cuda` for an NVIDIA GPU (`gpu` also works), or `auto`. |
+| `compute_type` | `int8` | faster-whisper compute type, such as `int8`, `float16`, or `int8_float16`. |
 | `audio_input_device` | `null` | System Default, or a non-negative device index selected from the Microphone menu. |
 | `language_mode` | `auto` | Automatic detection or one supported Whisper language code. |
 | `language_favorites` | `["en", "es", null]` | Three distinct non-auto language codes; `null` leaves a slot unassigned. |
 | `cleanup_mode` | `basic` | `none`, `basic`, or `llm`. |
 | `paste_mode` | `auto` | Use the platform default and switch supported Windows/Linux terminals to `Ctrl+Shift+V`. |
 | `delete_audio_after_transcription` | `true` | Delete temporary WAV files after transcription. |
-| `check_for_updates` | `true` | Check GitHub Releases daily on Windows. Ignored on macOS and Linux. |
+| `check_for_updates` | `true` | Check GitHub Releases daily on Windows. Ignored on macOS and Linux. See [Updates](#updates). |
 | `last_update_check_at` | `null` | Internal timestamp used to throttle update checks. |
 | `hotkeys` | See defaults above | Global hotkey bindings. |
 | `custom_vocabulary` | `[]` | Exact spellings used to bias transcription and cleanup. |
