@@ -787,6 +787,8 @@ class _MouseHotkeyBackend:
         listener = self._listener
         if listener is None:
             return
+
+        suppress = False
         try:
             entry = self._BUTTON_MESSAGES.get(msg)
             if entry is None:
@@ -803,27 +805,33 @@ class _MouseHotkeyBackend:
                 return
 
             if is_press:
-                if self._match(button) is None:
+                action = self._match(button)
+                if action is None:
                     return
                 # Swallow the release too, so the target app never sees a
                 # dangling button-up for a click it was never told about.
                 with self._state_lock:
                     self._held.add(button)
-                listener.suppress_event()
-                action = self._match(button)
-                if action is not None:
-                    self._fire(action)
-                return
-
-            with self._state_lock:
-                held = button in self._held
-                self._held.discard(button)
-            if held:
-                listener.suppress_event()
+                # Dispatch before suppressing, never after: suppress_event
+                # signals by raising, so anything below it would not run.
+                self._fire(action)
+                suppress = True
+            else:
+                with self._state_lock:
+                    suppress = button in self._held
+                    self._held.discard(button)
         except Exception:
             # pynput tears the hook down if this raises, which would wedge the
             # mouse. Never let that happen; a missed shortcut is recoverable.
             self._logger.exception("Mouse hotkey filter failed; listener kept alive.")
+            return
+
+        if suppress:
+            # Deliberately outside the try. pynput requests suppression by
+            # raising SuppressException, and that exception has to travel up to
+            # its own hook handler to take effect. Catching it here would leave
+            # the click unsuppressed and log a bogus error for every press.
+            listener.suppress_event()
 
     def _on_click(self, x: int, y: int, button: Any, pressed: bool) -> None:
         try:
