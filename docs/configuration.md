@@ -153,6 +153,9 @@ On Windows, Speech checks GitHub Releases once a day and can install an update f
 Choosing to install downloads the installer, verifies its SHA-256, and waits for Speech to exit before running it, so the installer is never fighting a locked binary.
 Speech reopens on its own once the install finishes.
 
+Installing a new version removes the previous one first, so each update is a clean install rather than a new build layered over the old files.
+Your settings, hotkeys, custom vocabulary, and logs live in `%APPDATA%\Speech` and are never touched by this.
+
 Installers are cached in `%APPDATA%\Speech\updates`. Each update deletes the installers left by earlier ones before downloading the new one, so the directory holds at most the current download rather than growing by roughly 73 MB per release.
 
 macOS and Linux updates are installed manually from the Releases page.
