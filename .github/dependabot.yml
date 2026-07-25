@@ -12,3 +12,15 @@ updates:
     schedule:
       interval: "weekly"
     open-pull-requests-limit: 5
+    ignore:
+      # PyGObject 3.50+ builds against girepository-2.0, which needs glib 2.80,
+      # meaning Ubuntu 24.04 or newer. The Linux release job builds on
+      # ubuntu-22.04 on purpose, so lifting the <3.50 cap in pyproject.toml
+      # fails CI and would break the release build even with the CI apt list
+      # fixed. Moving that job to 24.04 raises the glibc floor for the AppImage
+      # and .deb, which is a user-facing decision rather than a dependency bump.
+      # Without this rule Dependabot reopened the same failing PR every week.
+      - dependency-name: "PyGObject"
+        update-types:
+          - "version-update:semver-major"
+          - "version-update:semver-minor"
