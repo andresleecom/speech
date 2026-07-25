@@ -1,3 +1,4 @@
+import os
 import sys
 import types
 
@@ -11,13 +12,38 @@ WM_XBUTTONUP = 0x020C
 WM_MBUTTONDOWN = 0x0207
 WM_MBUTTONUP = 0x0208
 
+_WINDOWS_ONLY = pytest.mark.skipif(
+    os.name != "nt", reason="pynput's win32 hook internals only import on Windows"
+)
+
+
+class _FakeSuppress(Exception):
+    """Stand-in for pynput's SuppressException."""
+
 
 class _FakeListener:
+    """Models pynput: suppression is requested by *raising*, not returning.
+
+    The first version of this fake merely counted calls, which let a filter that
+    swallowed the exception look correct in tests while suppressing nothing and
+    never dispatching in production.
+    """
+
     def __init__(self):
         self.suppressed = 0
 
     def suppress_event(self):
         self.suppressed += 1
+        raise _FakeSuppress()
+
+
+def _run_filter(backend, msg, data):
+    """Call the filter; return True if suppression was requested."""
+    try:
+        backend._win32_event_filter(msg, data)
+    except _FakeSuppress:
+        return True
+    return False
 
 
 class _FakeLogger:
@@ -50,44 +76,58 @@ def _x_event(index):
 def test_bound_side_button_dispatches_and_is_suppressed():
     backend, dispatched = _backend([(frozenset(), "x1", "toggle", "<mouse_x1>")])
 
-    backend._win32_event_filter(WM_XBUTTONDOWN, _x_event(1))
+    suppressed = _run_filter(backend, WM_XBUTTONDOWN, _x_event(1))
 
+    # Both halves matter: the action must fire *and* the click must be swallowed.
+    # Dispatching after suppress_event silently loses the action, because that
+    # call raises.
     assert dispatched == ["toggle"]
-    assert backend._listener.suppressed == 1
+    assert suppressed is True
+
+
+def test_the_suppression_signal_is_not_swallowed_by_error_handling():
+    # Regression: a blanket except around the whole filter caught pynput's
+    # SuppressException, so nothing was ever suppressed and the action was
+    # never dispatched, while an error was logged on every single press.
+    backend, _ = _backend([(frozenset(), "x1", "toggle", "<mouse_x1>")])
+
+    with pytest.raises(_FakeSuppress):
+        backend._win32_event_filter(WM_XBUTTONDOWN, _x_event(1))
 
 
 def test_matching_release_is_suppressed_so_no_dangling_button_up_escapes():
     backend, _ = _backend([(frozenset(), "x1", "toggle", "<mouse_x1>")])
 
-    backend._win32_event_filter(WM_XBUTTONDOWN, _x_event(1))
-    backend._win32_event_filter(WM_XBUTTONUP, _x_event(1))
+    pressed = _run_filter(backend, WM_XBUTTONDOWN, _x_event(1))
+    released = _run_filter(backend, WM_XBUTTONUP, _x_event(1))
 
-    assert backend._listener.suppressed == 2
+    assert pressed is True
+    assert released is True
 
 
 def test_unbound_buttons_are_never_suppressed():
     backend, dispatched = _backend([(frozenset(), "x1", "toggle", "<mouse_x1>")])
 
-    backend._win32_event_filter(WM_XBUTTONDOWN, _x_event(2))  # forward, unbound
-    backend._win32_event_filter(WM_LBUTTONDOWN, types.SimpleNamespace(mouseData=0))
-    backend._win32_event_filter(WM_XBUTTONUP, _x_event(2))
-
+    assert _run_filter(backend, WM_XBUTTONDOWN, _x_event(2)) is False  # unbound
+    assert (
+        _run_filter(backend, WM_LBUTTONDOWN, types.SimpleNamespace(mouseData=0))
+        is False
+    )
+    assert _run_filter(backend, WM_XBUTTONUP, _x_event(2)) is False
     assert dispatched == []
-    assert backend._listener.suppressed == 0
 
 
 def test_modifier_combo_only_fires_while_the_modifier_is_held():
     binding = [(frozenset({"ctrl"}), "middle", "toggle", "<ctrl>+<mouse_middle>")]
+    plain = types.SimpleNamespace(mouseData=0)
 
     without, dispatched_without = _backend(binding, modifiers=frozenset())
-    without._win32_event_filter(WM_MBUTTONDOWN, types.SimpleNamespace(mouseData=0))
+    assert _run_filter(without, WM_MBUTTONDOWN, plain) is False
     assert dispatched_without == []
-    assert without._listener.suppressed == 0
 
     with_ctrl, dispatched_with = _backend(binding, modifiers=frozenset({"ctrl"}))
-    with_ctrl._win32_event_filter(WM_MBUTTONDOWN, types.SimpleNamespace(mouseData=0))
+    assert _run_filter(with_ctrl, WM_MBUTTONDOWN, plain) is True
     assert dispatched_with == ["toggle"]
-    assert with_ctrl._listener.suppressed == 1
 
 
 def test_synthetic_paste_suppression_window_is_respected(monkeypatch):
@@ -96,10 +136,31 @@ def test_synthetic_paste_suppression_window_is_respected(monkeypatch):
     backend, dispatched = _backend([(frozenset(), "x1", "toggle", "<mouse_x1>")])
     monkeypatch.setattr(hotkeys_module, "listener_is_suppressed", lambda: True)
 
-    backend._win32_event_filter(WM_XBUTTONDOWN, _x_event(1))
-
+    assert _run_filter(backend, WM_XBUTTONDOWN, _x_event(1)) is False
     assert dispatched == []
-    assert backend._listener.suppressed == 0
+
+
+@_WINDOWS_ONLY
+def test_real_pynput_suppression_exception_reaches_its_own_handler():
+    """Bind to the actual dependency, not just our stand-in for it."""
+    from pynput._util.win32 import SystemHook
+
+    class _RealListener:
+        def suppress_event(self):
+            raise SystemHook.SuppressException()
+
+    dispatched = []
+    backend = _MouseHotkeyBackend(
+        [(frozenset(), "x1", "toggle", "<mouse_x1>")],
+        dispatched.append,
+        _FakeLogger(),
+        lambda: set(),
+    )
+    backend._listener = _RealListener()
+
+    with pytest.raises(SystemHook.SuppressException):
+        backend._win32_event_filter(WM_XBUTTONDOWN, _x_event(1))
+    assert dispatched == ["toggle"]
 
 
 def test_a_failing_modifier_read_never_raises_into_the_hook():
@@ -121,7 +182,9 @@ def test_a_failing_modifier_read_never_raises_into_the_hook():
     )
     backend._listener = _FakeListener()
 
-    backend._win32_event_filter(WM_XBUTTONDOWN, _x_event(1))
+    # Must not raise: pynput tears the hook down on an unexpected exception,
+    # which would leave the mouse wedged.
+    assert _run_filter(backend, WM_XBUTTONDOWN, _x_event(1)) is False
 
     assert logged
     assert backend._listener.suppressed == 0
