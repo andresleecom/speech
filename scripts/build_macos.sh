@@ -108,6 +108,36 @@ if [ ! -x "$APP_BINARY" ]; then
     exit 1
 fi
 
+ENTITLEMENTS_PLIST="$(mktemp)"
+ENTITLEMENTS_JSON="$(mktemp)"
+ENTITLEMENTS_ERRORS="$(mktemp)"
+if ! /usr/bin/codesign --display --entitlements - --xml "$APP_BINARY" \
+    >"$ENTITLEMENTS_PLIST" 2>"$ENTITLEMENTS_ERRORS"; then
+    echo "Could not inspect Speech microphone entitlement." >&2
+    cat "$ENTITLEMENTS_ERRORS" >&2
+    rm -f "$ENTITLEMENTS_PLIST" "$ENTITLEMENTS_JSON" "$ENTITLEMENTS_ERRORS"
+    exit 1
+fi
+if [ ! -s "$ENTITLEMENTS_PLIST" ]; then
+    echo "Speech executable has no signed entitlements." >&2
+    rm -f "$ENTITLEMENTS_PLIST" "$ENTITLEMENTS_JSON" "$ENTITLEMENTS_ERRORS"
+    exit 1
+fi
+if ! /usr/bin/plutil -convert json -o "$ENTITLEMENTS_JSON" "$ENTITLEMENTS_PLIST"; then
+    echo "Could not parse Speech executable entitlements." >&2
+    rm -f "$ENTITLEMENTS_PLIST" "$ENTITLEMENTS_JSON" "$ENTITLEMENTS_ERRORS"
+    exit 1
+fi
+if ! "$PYTHON" -c \
+    'import json,sys; data=json.load(open(sys.argv[1], encoding="utf-8")); sys.exit(0 if data.get("com.apple.security.device.audio-input") is True else 1)' \
+    "$ENTITLEMENTS_JSON"; then
+    echo "Speech executable lacks com.apple.security.device.audio-input=true." >&2
+    rm -f "$ENTITLEMENTS_PLIST" "$ENTITLEMENTS_JSON" "$ENTITLEMENTS_ERRORS"
+    exit 1
+fi
+rm -f "$ENTITLEMENTS_PLIST" "$ENTITLEMENTS_JSON" "$ENTITLEMENTS_ERRORS"
+echo "Verified microphone entitlement."
+
 ACTUAL_ARCHS="$(lipo -archs "$APP_BINARY")"
 if [[ " $ACTUAL_ARCHS " != *" $EXPECTED_ARCH "* ]]; then
     echo "Expected $EXPECTED_ARCH binary, found: $ACTUAL_ARCHS" >&2

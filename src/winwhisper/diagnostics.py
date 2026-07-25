@@ -14,6 +14,7 @@ from .audio_inputs import (
     list_audio_input_devices,
 )
 from .branding import APP_NAME
+from .compute_devices import cuda_device_count
 from .config import app_data_dir, load_settings
 
 
@@ -26,6 +27,8 @@ def run_diagnostics() -> None:
     _print_microphone_devices(settings.audio_input_device)
     print(f"Configured model_size: {settings.model_size}")
     print(f"Configured device: {settings.device}")
+    print(f"Configured compute_type: {settings.compute_type}")
+    print(f"CUDA devices detected: {cuda_device_count()}")
     print(f"faster-whisper import: {_import_status('faster_whisper')}")
     print(f"ctranslate2 import: {_import_status('ctranslate2')}")
     print(f"sounddevice import: {_import_status('sounddevice')}")

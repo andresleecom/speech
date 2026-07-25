@@ -70,6 +70,49 @@ def test_settings_normalize_audio_input_device_and_recover_invalid_saved_value(
     assert settings.model_size == "medium"
 
 
+def test_settings_accept_gpu_as_an_alias_for_cuda():
+    assert Settings(device="gpu").device == "cuda"
+    assert Settings(device="GPU").device == "cuda"
+    assert Settings(device="auto").device == "auto"
+    assert Settings().device == "cpu"
+
+    with pytest.raises(ValueError, match="Unsupported device"):
+        Settings(device="mps")
+
+    assert Settings(compute_type="FLOAT16").compute_type == "float16"
+    with pytest.raises(ValueError, match="Unsupported compute type"):
+        Settings(compute_type="float8")
+
+
+def test_saved_gpu_device_is_normalized_on_load(monkeypatch, tmp_path):
+    monkeypatch.setenv("WINWHISPER_APPDATA_DIR", str(tmp_path))
+    (tmp_path / "settings.json").write_text(
+        json.dumps({"device": "gpu", "compute_type": "float16"}),
+        encoding="utf-8",
+    )
+
+    settings = load_settings()
+
+    assert settings.device == "cuda"
+    assert settings.compute_type == "float16"
+
+
+def test_unusable_saved_device_falls_back_to_cpu_without_losing_other_settings(
+    monkeypatch, tmp_path
+):
+    monkeypatch.setenv("WINWHISPER_APPDATA_DIR", str(tmp_path))
+    (tmp_path / "settings.json").write_text(
+        json.dumps({"device": "mps", "compute_type": "float8", "model_size": "medium"}),
+        encoding="utf-8",
+    )
+
+    settings = load_settings()
+
+    assert settings.device == "cpu"
+    assert settings.compute_type == "int8"
+    assert settings.model_size == "medium"
+
+
 def test_invalid_saved_language_falls_back_to_auto_without_losing_other_settings(
     monkeypatch, tmp_path
 ):

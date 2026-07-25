@@ -86,6 +86,11 @@ pyz = PYZ(a.pure)
 
 # Real Developer ID when SPEECH_CODESIGN_IDENTITY is set; empty keeps ad-hoc local builds.
 CODESIGN_IDENTITY = os.environ.get("SPEECH_CODESIGN_IDENTITY") or None
+ENTITLEMENTS_FILE = (
+    str(ROOT / "packaging" / "Speech.entitlements")
+    if sys.platform == "darwin"
+    else None
+)
 
 exe = EXE(
     pyz,
@@ -100,6 +105,7 @@ exe = EXE(
     console=False,
     disable_windowed_traceback=False,
     codesign_identity=CODESIGN_IDENTITY,
+    entitlements_file=ENTITLEMENTS_FILE,
 )
 
 coll = COLLECT(

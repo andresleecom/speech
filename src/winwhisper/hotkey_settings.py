@@ -11,6 +11,12 @@ from .hotkey_actions import (
     is_macos_supported_trigger,
 )
 from .hotkeys import combo_to_hotkey, parse_combo
+from .mouse_buttons import (
+    display_mouse_trigger,
+    is_mouse_trigger,
+    normalize_mouse_trigger,
+    requires_modifier,
+)
 
 _MODIFIER_ORDER = ("ctrl", "alt", "shift", "cmd")
 _MODIFIER_INPUT_ALIASES = {
@@ -122,10 +128,17 @@ def normalize_hotkey_input(value: str, *, platform: str | None = None) -> str | 
             raise HotkeyConfigurationError(
                 "Use zero or more modifiers and exactly one trigger key."
             )
+        mouse_trigger = normalize_mouse_trigger(token)
+        if mouse_trigger is not None:
+            trigger = mouse_trigger
+            continue
         trigger = _TRIGGER_INPUT_ALIASES.get(token, token)
 
     if trigger is None:
         raise HotkeyConfigurationError("Choose a trigger key for the shortcut.")
+
+    if is_mouse_trigger(trigger):
+        return _normalize_mouse_combo(trigger, modifiers)
 
     if platform == "darwin":
         trigger = {"pageup": "page_up", "pagedown": "page_down"}.get(
@@ -221,6 +234,24 @@ def display_hotkey(combo: str | None, *, platform: str | None = None) -> str:
     return " + ".join(parts)
 
 
+def _normalize_mouse_combo(trigger: str, modifiers: set[str]) -> str:
+    """Build a mouse combo.
+
+    Mouse buttons skip the "needs a modifier or a function key" rule that keeps
+    bare letters from hijacking typing, because a side button has no meaning to
+    type over. Left click is the exception: bound bare, it would swallow the
+    click needed to undo it.
+    """
+    if requires_modifier(trigger) and not modifiers:
+        raise HotkeyConfigurationError(
+            "Left click needs at least one modifier, otherwise it would stop "
+            "you clicking anything. Use a side or middle button on its own."
+        )
+
+    ordered_modifiers = [name for name in _MODIFIER_ORDER if name in modifiers]
+    return "+".join([*(f"<{name}>" for name in ordered_modifiers), f"<{trigger}>"])
+
+
 def _plain_token(value: str) -> str:
     token = value.strip().lower()
     if token.startswith("<") and token.endswith(">"):
@@ -241,6 +272,8 @@ def _validate_platform_trigger(combo: str, trigger: str, platform: str) -> None:
 
 
 def _display_trigger(trigger: str) -> str:
+    if is_mouse_trigger(trigger):
+        return display_mouse_trigger(trigger)
     if trigger in _TRIGGER_LABELS:
         return _TRIGGER_LABELS[trigger]
     if trigger.startswith("f") and trigger[1:].isdigit():

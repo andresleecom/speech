@@ -11,6 +11,12 @@ from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_valida
 
 from .audio_inputs import normalize_audio_input_device
 from .branding import APP_NAME, LEGACY_APP_NAME
+from .compute_devices import (
+    CPU_DEVICE,
+    DEFAULT_COMPUTE_TYPE,
+    normalize_compute_type,
+    normalize_device,
+)
 from .hotkey_actions import DEFAULT_HOTKEYS
 from .languages import (
     AUTO_LANGUAGE_MODE,
@@ -26,8 +32,8 @@ _SAVE_LOCK = threading.Lock()
 
 class Settings(BaseModel):
     model_size: str = "small"
-    device: str = "cpu"
-    compute_type: str = "int8"
+    device: str = CPU_DEVICE
+    compute_type: str = DEFAULT_COMPUTE_TYPE
     audio_input_device: int | None = None
     language_mode: str = AUTO_LANGUAGE_MODE
     language_favorites: list[str | None] = Field(
@@ -52,6 +58,16 @@ class Settings(BaseModel):
         if normalized is None:
             raise ValueError(f"Unsupported language mode: {value!r}")
         return normalized
+
+    @field_validator("device", mode="before")
+    @classmethod
+    def validate_device(cls, value: object) -> str:
+        return normalize_device(value)
+
+    @field_validator("compute_type", mode="before")
+    @classmethod
+    def validate_compute_type(cls, value: object) -> str:
+        return normalize_compute_type(value)
 
     @field_validator("audio_input_device", mode="before")
     @classmethod
@@ -109,6 +125,8 @@ def load_settings() -> Settings:
         _migrate_language_mode(data)
         _migrate_language_favorites(data)
         _migrate_audio_input_device(data)
+        _migrate_device(data)
+        _migrate_compute_type(data)
         return Settings(**data)
     except (OSError, ValueError, json.JSONDecodeError, ValidationError) as exc:
         _log_warning(
@@ -210,6 +228,35 @@ def _migrate_audio_input_device(data: dict[str, object]) -> None:
     except ValueError:
         _log_warning("Invalid audio input device; restoring System Default.")
         data["audio_input_device"] = None
+
+
+def _migrate_device(data: dict[str, object]) -> None:
+    """Keep a hand-edited unusable device from discarding all settings."""
+    if "device" not in data:
+        return
+    try:
+        data["device"] = normalize_device(data["device"])
+    except ValueError:
+        _log_warning(
+            "Unsupported device %r; using the CPU. Set 'cuda' (or 'gpu') for an "
+            "NVIDIA GPU.",
+            data["device"],
+        )
+        data["device"] = CPU_DEVICE
+
+
+def _migrate_compute_type(data: dict[str, object]) -> None:
+    if "compute_type" not in data:
+        return
+    try:
+        data["compute_type"] = normalize_compute_type(data["compute_type"])
+    except ValueError:
+        _log_warning(
+            "Unsupported compute type %r; using %s.",
+            data["compute_type"],
+            DEFAULT_COMPUTE_TYPE,
+        )
+        data["compute_type"] = DEFAULT_COMPUTE_TYPE
 
 
 def _load_dotenv() -> None:

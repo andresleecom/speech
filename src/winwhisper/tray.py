@@ -129,6 +129,11 @@ class TrayApp:
                 ),
             ),
             item_cls("Hotkey Settings...", self._on_hotkey_settings),
+            item_cls(
+                "Permissions...",
+                self._on_permissions,
+                visible=sys.platform == "darwin",
+            ),
             item_cls("Open Settings File", self._on_open_settings),
             item_cls(
                 "Check for Updates",
@@ -245,6 +250,9 @@ class TrayApp:
 
     def _on_hotkey_settings(self, icon: Any, item: Any) -> None:
         self._controller.open_hotkey_settings()
+
+    def _on_permissions(self, icon: Any, item: Any) -> None:
+        self._controller.open_permission_setup()
 
     def _on_language_settings(self, icon: Any, item: Any) -> None:
         self._controller.open_language_settings()

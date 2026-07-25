@@ -11,6 +11,7 @@ from .branding import APP_NAME
 from .config import Settings, save_settings
 from .updater import (
     UpdateInfo,
+    current_app_executable,
     download_update,
     fetch_latest_release,
     launch_installer,
@@ -82,9 +83,20 @@ class UpdateCoordinator:
 
             self._notify(APP_NAME, f"Downloading version {update.version}.")
             installer_path, _checksum_path = download_update(update)
-            self._notify(APP_NAME, "Starting installer after Speech exits.")
+            relaunch_path = current_app_executable()
+            if relaunch_path is None:
+                self._notify(APP_NAME, "Starting installer after Speech exits.")
+            else:
+                self._notify(
+                    APP_NAME,
+                    "Installing after Speech exits. Speech reopens when it finishes.",
+                )
             # Wait for this process to exit so install-dir binaries are unlocked.
-            launch_installer(installer_path, wait_for_pid=os.getpid())
+            launch_installer(
+                installer_path,
+                wait_for_pid=os.getpid(),
+                relaunch_path=relaunch_path,
+            )
             self._exit_app()
         except Exception as exc:
             self._logger.warning("Update check failed with %s.", exc.__class__.__name__)

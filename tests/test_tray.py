@@ -24,6 +24,7 @@ class FakeController:
     def __init__(self) -> None:
         self.hotkey_settings_opened = False
         self.language_settings_opened = False
+        self.permissions_opened = False
         self.settings = type(
             "Settings",
             (),
@@ -41,6 +42,9 @@ class FakeController:
 
     def open_language_settings(self) -> None:
         self.language_settings_opened = True
+
+    def open_permission_setup(self) -> None:
+        self.permissions_opened = True
 
     def set_language_mode(self, mode: str) -> None:
         self.settings.language_mode = mode
@@ -119,6 +123,7 @@ def test_tray_opens_in_app_hotkey_settings():
 def test_tray_shows_update_check_only_on_windows(monkeypatch):
     controller = FakeController()
     tray = TrayApp(controller)
+    monkeypatch.setattr(tray_module, "list_audio_input_devices", lambda: ())
 
     monkeypatch.setattr(tray_module.sys, "platform", "win32")
     windows_menu = tray._make_menu(FakeMenu, FakeMenuItem)
@@ -134,6 +139,28 @@ def test_tray_shows_update_check_only_on_windows(monkeypatch):
 
     assert windows_update.options["visible"] is True
     assert linux_update.options["visible"] is False
+
+
+def test_tray_shows_permissions_only_on_macos_and_opens_assistant(monkeypatch):
+    controller = FakeController()
+    tray = TrayApp(controller)
+
+    monkeypatch.setattr(tray_module.sys, "platform", "darwin")
+    macos_menu = tray._make_menu(FakeMenu, FakeMenuItem)
+    permissions_item = next(
+        item for item in macos_menu.items if item.label == "Permissions..."
+    )
+    permissions_item.action(None, None)
+
+    monkeypatch.setattr(tray_module.sys, "platform", "linux")
+    linux_menu = tray._make_menu(FakeMenu, FakeMenuItem)
+    linux_permissions = next(
+        item for item in linux_menu.items if item.label == "Permissions..."
+    )
+
+    assert permissions_item.options["visible"] is True
+    assert linux_permissions.options["visible"] is False
+    assert controller.permissions_opened is True
 
 
 def test_linux_tray_rejects_backend_without_menus(monkeypatch):
