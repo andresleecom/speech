@@ -39,7 +39,7 @@ dependencies = [
   # release CI runs on Ubuntu 22.04, whose libgirepository1.0-dev provides
   # girepository-1.0. Building from source needs system libs:
   # libgirepository1.0-dev, libcairo2-dev, and pkg-config (Debian/Ubuntu).
-  "PyGObject>=3.42,<3.50; sys_platform == 'linux'",
+  "PyGObject>=3.56.3,<3.57; sys_platform == 'linux'",
   "python-xlib; sys_platform == 'linux'",
 ]
 
