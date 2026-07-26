@@ -3,6 +3,7 @@
 [![Latest release](https://img.shields.io/github/v/release/andresleecom/speech)](https://github.com/andresleecom/speech/releases/latest)
 [![CI](https://github.com/andresleecom/speech/actions/workflows/ci.yml/badge.svg)](https://github.com/andresleecom/speech/actions/workflows/ci.yml)
 [![License: MIT](https://img.shields.io/github/license/andresleecom/speech)](LICENSE)
+![Downloads](https://img.shields.io/github/downloads/andresleecom/speech/total?style=flat-square) ![Stars](https://img.shields.io/github/stars/andresleecom/speech?style=flat-square)
 
 **Local dictation that pastes wherever you type.**
 
