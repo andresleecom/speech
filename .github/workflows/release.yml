@@ -88,17 +88,44 @@ jobs:
           sha256sum --check Speech*.sha256
           cd ../..
           tray_state="$(mktemp -d)"
-          set +e
-          timeout 8s dbus-run-session -- xvfb-run -a env \
+          app_log="$tray_state/logs/app.log"
+          # Startup time is dominated by APPIMAGE_EXTRACT_AND_RUN unpacking the
+          # whole AppImage into /tmp, which varies wildly between runners. A
+          # fixed 8s timeout raced against that and lost on a slow runner (the
+          # app was still extracting when it was killed, so the log never
+          # existed and the grep below failed the release). Poll for the
+          # startup line instead, and keep only a generous ceiling as the
+          # backstop against a hang.
+          timeout 120s dbus-run-session -- xvfb-run -a env \
             APPIMAGE_EXTRACT_AND_RUN=1 \
             HF_HUB_OFFLINE=1 \
             PYSTRAY_BACKEND=appindicator \
             WINWHISPER_APPDATA_DIR="$tray_state" \
-            dist/installer/Speech.AppImage
-          tray_status=$?
-          set -e
-          test "$tray_status" -eq 124
-          grep -q "Hotkey listener started" "$tray_state/logs/app.log"
+            dist/installer/Speech.AppImage &
+          app_pid=$!
+          started=""
+          for _ in $(seq 1 360); do
+            if grep -q "Hotkey listener started" "$app_log" 2>/dev/null; then
+              started=1
+              break
+            fi
+            if ! kill -0 "$app_pid" 2>/dev/null; then
+              echo "Speech exited before startup completed." >&2
+              cat "$app_log" 2>/dev/null || true
+              exit 1
+            fi
+            sleep 0.25
+          done
+          if [ -z "$started" ]; then
+            echo "Speech did not finish starting within 90s." >&2
+            cat "$app_log" 2>/dev/null || true
+            exit 1
+          fi
+          # Same liveness guarantee the old exit-124 check gave: the tray app
+          # must still be running after startup completed, not started-then-died.
+          kill -0 "$app_pid"
+          kill "$app_pid" 2>/dev/null || true
+          wait "$app_pid" || true
       - name: Upload Linux release assets
         uses: actions/upload-artifact@v7
         with:
