@@ -33,7 +33,7 @@ If the row says **Build problem**, the packaged executable is missing the requir
 
 ## macOS or Windows blocks the app
 
-Current releases are not code-signed. On macOS, right-click Speech and choose **Open**. On Windows, inspect the SmartScreen prompt before choosing to run the app.
+Current macOS DMGs are Developer ID signed, notarized by Apple, and stapled. Download the latest DMG again if Gatekeeper rejects it, then compare its checksum below. The Windows installer is not yet code-signed, so inspect the SmartScreen prompt and checksum before choosing to run it.
 
 Every release includes a `.sha256` file for each asset. Compare your download with the matching checksum on the release page.
 

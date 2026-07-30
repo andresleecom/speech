@@ -34,12 +34,12 @@ Choose a package from the [latest release](https://github.com/andresleecom/speec
 | Linux | [AppImage](https://github.com/andresleecom/speech/releases/latest/download/Speech.AppImage) | x86_64, X11, FUSE |
 | Debian/Ubuntu | [Debian package](https://github.com/andresleecom/speech/releases/latest/download/Speech.deb) | Ubuntu 22.04+ or Debian 12+, x86_64, X11 |
 
-The binaries are not yet code-signed. Windows SmartScreen and macOS Gatekeeper may warn on first launch. Every release includes SHA-256 checksums and is built by the public [release workflow](.github/workflows/release.yml).
+The macOS DMGs are Developer ID signed, notarized by Apple, stapled, and verified with Gatekeeper before publication. The Windows installer is not yet code-signed, so SmartScreen may warn on first launch. Every release includes SHA-256 checksums and is built by the public [release workflow](.github/workflows/release.yml).
 
 Before your first dictation:
 
 - **Windows:** run the per-user installer. It does not require administrator privileges.
-- **macOS:** right-click Speech, choose **Open**, then enable Microphone, Accessibility, and Input Monitoring permissions. Quit and reopen Speech after granting them.
+- **macOS:** open the DMG, move Speech to Applications, and launch it normally. Then enable Microphone, Accessibility, and Input Monitoring permissions. Quit and reopen Speech after granting them.
 - **Linux:** use an X11 session and an AppIndicator-compatible tray. Wayland is not supported yet. AppImage users may need `fuse3` and `libfuse2`.
 
 The selected Whisper model downloads from Hugging Face on first use. Windows can check for updates inside the app; macOS and Linux updates are installed manually from Releases.
@@ -98,7 +98,7 @@ Releases are built from this repository in public GitHub Actions, scanned with C
 - Linux support requires X11; Wayland is not supported yet.
 - A recording stops after 10 minutes to prevent unbounded memory use.
 - Dictated text remains on the clipboard after pasting; the previous clipboard value is not restored.
-- Unsigned Windows and macOS builds can trigger operating-system warnings.
+- The unsigned Windows installer can trigger a SmartScreen warning while Windows signing remains on the roadmap.
 
 Run `python -m winwhisper.diagnostics` from a development environment to inspect the OS, microphone, model, dependencies, API-key presence, and temporary directory.
 
@@ -121,7 +121,7 @@ Run the test suite with `python -m pytest -q`. Platform dependencies, environmen
 
 ## Roadmap
 
-- Sign and notarize releases, then add native macOS updates.
+- Sign Windows releases and add native macOS updates.
 - Support configurable or streamed long recordings.
 - Add post-dictation controls and optional local-only history.
 - Add push-to-talk and voice-activity modes.
