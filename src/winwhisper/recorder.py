@@ -161,6 +161,42 @@ class Recorder:
         with self._lock:
             return self._stream is not None
 
+    def recent_audio(self, seconds: float) -> Any | None:
+        """Copy of the most recent recorded audio as an int16 1-D array.
+
+        Used by the stop-word monitor while a hands-free recording is active.
+        Returns None when not recording or nothing has been captured yet.
+        """
+        try:
+            import numpy as np
+        except ImportError:
+            return None
+
+        wanted = max(1, int(seconds * SAMPLE_RATE))
+        with self._lock:
+            if self._stream is None or not self._blocks:
+                return None
+            tail: list[Any] = []
+            remaining = wanted
+            for block in reversed(self._blocks):
+                if remaining <= 0:
+                    break
+                if block.shape[0] <= remaining:
+                    tail.append(block)
+                    remaining -= int(block.shape[0])
+                else:
+                    tail.append(block[-remaining:])
+                    remaining = 0
+            tail.reverse()
+            return np.concatenate(tail, axis=0).reshape(-1).copy()
+
+    def set_recent_audio_capture(self, enabled: bool) -> None:
+        """No-op here: recorded blocks are always buffered for recent_audio.
+
+        Kept for interface parity with the macOS recorder, which only buffers
+        live samples when asked before start_recording.
+        """
+
     def max_duration_reached(self) -> bool:
         with self._lock:
             return self._max_duration_reached
