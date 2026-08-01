@@ -646,6 +646,23 @@ class FakeMonitor:
         self.stopped = True
 
 
+class FakeWakeAudioSource:
+    """No-op stand-in so controller tests never touch real audio backends.
+
+    The macOS source spawns a worker thread in __init__, which ImmediateThread
+    would otherwise run synchronously and hang the test.
+    """
+
+    def __init__(self, audio_input_device=None) -> None:
+        pass
+
+    def start(self, on_block) -> None:
+        pass
+
+    def stop(self) -> None:
+        pass
+
+
 class ImmediateThread:
     def __init__(self, target, args=(), **kwargs) -> None:
         self.target = target
@@ -673,6 +690,7 @@ def make_controller(
     monkeypatch.setattr(main_module, "HotkeyManager", FakeHotkeys)
     monkeypatch.setattr(main_module, "RecordingOverlay", FakeOverlay)
     monkeypatch.setattr(main_module, "WakeWordListener", FakeListener)
+    monkeypatch.setattr(main_module, "WakeWordAudioSource", FakeWakeAudioSource)
     monkeypatch.setattr(main_module, "StopWordMonitor", FakeMonitor)
     monkeypatch.setattr(main_module, "get_foreground_window", lambda: 777)
     monkeypatch.setattr(main_module, "get_window_process_name", lambda hwnd: "notepad.exe")
