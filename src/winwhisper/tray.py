@@ -95,6 +95,11 @@ class TrayApp:
         return menu_cls(
             item_cls("Start/Stop Recording", self._on_toggle),
             item_cls(
+                self._wake_word_label(),
+                self._on_toggle_wake_word,
+                checked=lambda item: self._current_wake_word_enabled(),
+            ),
+            item_cls(
                 "Language",
                 self._make_language_menu(menu_cls, item_cls),
             ),
@@ -244,6 +249,19 @@ class TrayApp:
 
     def _on_toggle(self, icon: Any, item: Any) -> None:
         self._controller.toggle()
+
+    def _on_toggle_wake_word(self, icon: Any, item: Any) -> None:
+        self._controller.set_wake_word_enabled(not self._current_wake_word_enabled())
+
+    def _current_wake_word_enabled(self) -> bool:
+        return bool(getattr(self._controller.settings, "wake_word_enabled", False))
+
+    def _wake_word_label(self) -> str:
+        phrases = getattr(self._controller.settings, "wake_phrases", None) or [
+            "hey speech"
+        ]
+        label = " / ".join(f'"{phrase}"' for phrase in phrases)
+        return f"Wake word ({label})"
 
     def _on_open_settings(self, icon: Any, item: Any) -> None:
         self._controller.open_settings_file()

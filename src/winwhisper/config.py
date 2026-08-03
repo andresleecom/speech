@@ -48,6 +48,17 @@ class Settings(BaseModel):
     # Names and terms you use often (e.g. product names, people, jargon).
     # They bias transcription and cleanup toward these exact spellings.
     custom_vocabulary: list[str] = Field(default_factory=list)
+    # Hands-free mode: say any wake phrase to start dictation, the stop
+    # phrase (or a few seconds of silence) to finish and paste.
+    wake_word_enabled: bool = False
+    wake_phrases: list[str] = Field(
+        default_factory=lambda: ["hey speech", "oye speech"]
+    )
+    stop_phrase: str = "stop"
+    wake_silence_timeout_seconds: float = 3.0
+    # tiny is the safe default for CPU-only machines. On a GPU, base/small
+    # hear accented or code-switched phrases much better.
+    wake_model_size: str = "tiny"
 
     model_config = ConfigDict(extra="ignore")
 
@@ -78,6 +89,41 @@ class Settings(BaseModel):
     @classmethod
     def validate_language_favorites(cls, value: object) -> list[str | None]:
         return list(normalize_language_favorites(value))
+
+    @field_validator("wake_phrases", mode="before")
+    @classmethod
+    def validate_wake_phrases(cls, value: object) -> list[str]:
+        from .wake_word import normalize_phrase
+
+        raw = [value] if isinstance(value, str) else list(value or ())
+        phrases = [phrase for phrase in (normalize_phrase(item) for item in raw) if phrase]
+        if not phrases:
+            raise ValueError(f"At least one wake phrase is required: {value!r}")
+        return phrases
+
+    @field_validator("stop_phrase", mode="before")
+    @classmethod
+    def validate_phrase(cls, value: object) -> str:
+        from .wake_word import normalize_phrase
+
+        normalized = normalize_phrase(value)
+        if not normalized:
+            raise ValueError(f"Phrase must contain at least one word: {value!r}")
+        return normalized
+
+    @field_validator("wake_model_size", mode="before")
+    @classmethod
+    def validate_wake_model_size(cls, value: object) -> str:
+        size = str(value).strip()
+        if not size:
+            raise ValueError("wake_model_size must not be empty")
+        return size
+
+    @field_validator("wake_silence_timeout_seconds", mode="before")
+    @classmethod
+    def validate_silence_timeout(cls, value: object) -> float:
+        seconds = float(value)  # raises for non-numeric input
+        return min(30.0, max(1.0, seconds))
 
 
 def app_data_dir() -> Path:
@@ -127,6 +173,7 @@ def load_settings() -> Settings:
         _migrate_audio_input_device(data)
         _migrate_device(data)
         _migrate_compute_type(data)
+        _migrate_wake_phrase(data)
         return Settings(**data)
     except (OSError, ValueError, json.JSONDecodeError, ValidationError) as exc:
         _log_warning(
@@ -257,6 +304,15 @@ def _migrate_compute_type(data: dict[str, object]) -> None:
             DEFAULT_COMPUTE_TYPE,
         )
         data["compute_type"] = DEFAULT_COMPUTE_TYPE
+
+
+def _migrate_wake_phrase(data: dict[str, object]) -> None:
+    """Move the old single wake_phrase key into the wake_phrases list."""
+    if "wake_phrase" not in data or "wake_phrases" in data:
+        return
+    old_phrase = data.pop("wake_phrase")
+    if isinstance(old_phrase, str) and old_phrase.strip():
+        data["wake_phrases"] = [old_phrase]
 
 
 def _load_dotenv() -> None:
