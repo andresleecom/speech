@@ -266,6 +266,14 @@ jobs:
           test -x "$BIN" || { echo "Packaged app not found."; exit 1; }
           test "$("$BIN" --version)" = "$SPEECH_VERSION"
           "$BIN" --diagnostics
+      - name: Verify macOS release trust
+        run: |
+          case "$SPEECH_MACOS_ARCH" in
+            arm64) DMG="dist/installer/Speech.dmg" ;;
+            intel) DMG="dist/installer/Speech-intel.dmg" ;;
+            *) echo "Unsupported macOS architecture: $SPEECH_MACOS_ARCH" >&2; exit 1 ;;
+          esac
+          bash scripts/verify_macos_release.sh "$DMG" XB92PXFQ2L
       - name: Upload macOS release assets
         uses: actions/upload-artifact@v7
         with:

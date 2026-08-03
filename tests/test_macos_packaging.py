@@ -24,3 +24,24 @@ def test_macos_build_verifies_boolean_entitlement_without_grep_or_plistlib():
     assert 'data.get("com.apple.security.device.audio-input") is True' in script
     assert "plistlib" not in script
     assert "grep" not in script
+
+
+def test_release_workflow_verifies_notarized_macos_artifact_before_upload():
+    workflow = (ROOT / ".github" / "workflows" / "release.yml").read_text(
+        encoding="utf-8"
+    )
+    verifier = (ROOT / "scripts" / "verify_macos_release.sh").read_text(
+        encoding="utf-8"
+    )
+
+    verify_step = workflow.index("- name: Verify macOS release trust")
+    upload_step = workflow.index("- name: Upload macOS release assets")
+
+    assert verify_step < upload_step
+    assert 'bash scripts/verify_macos_release.sh "$DMG" XB92PXFQ2L' in workflow
+    assert "hdiutil verify" in verifier
+    assert "codesign --verify --deep --strict" in verifier
+    assert "xcrun stapler validate" in verifier
+    assert "spctl --assess --type execute" in verifier
+    assert "flags=.*runtime" in verifier
+    assert "com.apple.security.get-task-allow" in verifier
