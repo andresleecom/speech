@@ -24,6 +24,7 @@ from .recorder import (
     RecorderError,
     _smooth_audio_level,
 )
+from .wake_word import RollingBuffer
 
 NATIVE_SAMPLE_RATE = 48_000.0
 METER_POLL_SECONDS = 0.05
@@ -31,6 +32,128 @@ METER_FLOOR_DB = -80.0
 RECORDING_START_TIMEOUT_SECONDS = 3.0
 RECORDING_FINALIZE_TIMEOUT_SECONDS = 3.0
 MICROPHONE_PERMISSION_TIMEOUT_SECONDS = 60.0
+# Seconds of live audio kept for the stop-word monitor while recording.
+RECENT_AUDIO_SECONDS = 8.0
+
+
+def samples_from_sample_buffer(sample_buffer: Any) -> Any | None:
+    """Convert a CMSampleBuffer to 16 kHz mono int16 samples, or None."""
+    try:
+        import numpy as np
+        from CoreMedia import (
+            CMAudioFormatDescriptionGetStreamBasicDescription,
+            CMBlockBufferCopyDataBytes,
+            CMBlockBufferGetDataLength,
+            CMSampleBufferGetDataBuffer,
+            CMSampleBufferGetFormatDescription,
+        )
+    except ImportError:
+        return None
+
+    try:
+        data_buffer = CMSampleBufferGetDataBuffer(sample_buffer)
+        if data_buffer is None:
+            return None
+        description = CMSampleBufferGetFormatDescription(sample_buffer)
+        asbd = CMAudioFormatDescriptionGetStreamBasicDescription(description)
+        sample_rate = float(
+            getattr(asbd, "mSampleRate", NATIVE_SAMPLE_RATE) or NATIVE_SAMPLE_RATE
+        )
+        channels = max(1, int(getattr(asbd, "mChannelsPerFrame", 1) or 1))
+        bits_per_channel = int(getattr(asbd, "mBitsPerChannel", 16) or 16)
+        format_flags = int(getattr(asbd, "mFormatFlags", 0) or 0)
+
+        length = CMBlockBufferGetDataLength(data_buffer)
+        if length <= 0:
+            return None
+        raw = CMBlockBufferCopyDataBytes(data_buffer, 0, length, None)
+        if isinstance(raw, tuple):
+            raw = raw[-1]
+        if raw is None:
+            return None
+
+        is_float = bool(format_flags & 1)
+        non_interleaved = bool(format_flags & 0x200)
+        if is_float:
+            samples = np.frombuffer(bytes(raw), dtype=np.float32)
+        elif bits_per_channel == 16:
+            samples = np.frombuffer(bytes(raw), dtype=np.int16).astype(np.float32)
+            samples /= 32768.0
+        elif bits_per_channel == 32:
+            samples = np.frombuffer(bytes(raw), dtype=np.int32).astype(np.float32)
+            samples /= 2147483648.0
+        else:
+            return None
+
+        if channels > 1:
+            if non_interleaved:
+                samples = samples[: samples.size // channels]
+            else:
+                samples = samples[::channels]
+        if samples.size == 0:
+            return None
+
+        if abs(sample_rate - SAMPLE_RATE) > 1.0:
+            duration = samples.size / sample_rate
+            target_size = int(duration * SAMPLE_RATE)
+            if target_size <= 0:
+                return None
+            old_axis = np.linspace(0.0, duration, num=samples.size, endpoint=False)
+            new_axis = np.linspace(0.0, duration, num=target_size, endpoint=False)
+            samples = np.interp(new_axis, old_axis, samples).astype(np.float32)
+
+        return np.clip(samples * 32768.0, -32768, 32767).astype(np.int16)
+    except Exception:
+        get_logger(__name__).exception(
+            "Could not convert a macOS audio sample buffer."
+        )
+        return None
+
+
+_DATA_OUTPUT_DELEGATE_CLASS: Any | None = None
+
+
+def _new_data_output_delegate(on_samples: Callable[[Any], None]) -> Any:
+    delegate = _data_output_delegate_class().alloc().init()
+    delegate.on_samples = on_samples
+    return delegate
+
+
+def _data_output_delegate_class() -> Any:
+    global _DATA_OUTPUT_DELEGATE_CLASS
+    if _DATA_OUTPUT_DELEGATE_CLASS is not None:
+        return _DATA_OUTPUT_DELEGATE_CLASS
+
+    # Importing AVFoundation registers its Objective-C protocols with PyObjC.
+    import AVFoundation  # noqa: F401
+    import objc
+    from Foundation import NSObject
+
+    protocol = objc.protocolNamed("AVCaptureAudioDataOutputSampleBufferDelegate")
+
+    class _SpeechAudioDataOutputDelegate(NSObject, protocols=[protocol]):
+        def captureOutput_didOutputSampleBuffer_fromConnection_(
+            self,
+            output,
+            sample_buffer,
+            connection,
+        ) -> None:
+            callback = getattr(self, "on_samples", None)
+            if callback is None:
+                return
+            samples = samples_from_sample_buffer(sample_buffer)
+            if samples is not None and samples.size:
+                callback(samples)
+
+    _DATA_OUTPUT_DELEGATE_CLASS = _SpeechAudioDataOutputDelegate
+    return _DATA_OUTPUT_DELEGATE_CLASS
+
+
+def _new_data_output_queue() -> Any:
+    from Dispatch import dispatch_queue_create
+
+    return dispatch_queue_create(b"winwhisper.audio-data-output", None)
+
 
 
 class Recorder:
@@ -44,6 +167,7 @@ class Recorder:
     ) -> None:
         self._lock = threading.Lock()
         self._audio_input_device = normalize_audio_input_device(audio_input_device)
+        self._capture_recent_audio = False
         self._capture = _CaptureWorker(
             max_duration_seconds=max(1, max_samples) / SAMPLE_RATE,
             on_max_duration=on_max_duration,
@@ -54,7 +178,13 @@ class Recorder:
             return
         with self._lock:
             selected_device = self._audio_input_device
-        self._capture.start(_new_output_path("rec"), selected_device)
+            capture_recent_audio = self._capture_recent_audio
+            self._capture_recent_audio = False
+        self._capture.start(
+            _new_output_path("rec"),
+            selected_device,
+            capture_recent_audio=capture_recent_audio,
+        )
 
     def stop_recording(self) -> Path | None:
         return self._capture.stop()
@@ -67,6 +197,19 @@ class Recorder:
 
     def current_level(self) -> float:
         return self._capture.current_level()
+
+    def recent_audio(self, seconds: float) -> Any | None:
+        """Copy of the most recent recorded audio as an int16 1-D array.
+
+        Only has data for recordings started with set_recent_audio_capture,
+        i.e. wake-word-initiated takes watched by the stop-word monitor.
+        """
+        return self._capture.recent_audio(seconds)
+
+    def set_recent_audio_capture(self, enabled: bool) -> None:
+        """Ask the next start_recording to also buffer live audio samples."""
+        with self._lock:
+            self._capture_recent_audio = bool(enabled)
 
     def audio_input_device(self) -> int | None:
         with self._lock:
@@ -131,6 +274,7 @@ class _CaptureCommand:
     name: Literal["start", "stop", "close"]
     output_path: Path | None = None
     audio_input_device: int | None = None
+    capture_recent_audio: bool = False
     done: threading.Event = field(default_factory=threading.Event)
     result: Path | None = None
     error: BaseException | None = None
@@ -142,6 +286,8 @@ class _NativeCapture:
     output: Any
     delegate: Any
     output_path: Path
+    data_output: Any | None = None
+    data_delegate: Any | None = None
 
 
 class _CaptureWorker:
@@ -166,6 +312,7 @@ class _CaptureWorker:
         self._max_duration_was_reached = False
         self._on_max_duration = on_max_duration
         self._meter_warning_logged = False
+        self._recent_audio = RollingBuffer(seconds=RECENT_AUDIO_SECONDS)
         self._thread = threading.Thread(
             target=self._run,
             name="winwhisper-avfoundation-capture",
@@ -173,7 +320,13 @@ class _CaptureWorker:
         )
         self._thread.start()
 
-    def start(self, output_path: Path, audio_input_device: int | None) -> None:
+    def start(
+        self,
+        output_path: Path,
+        audio_input_device: int | None,
+        *,
+        capture_recent_audio: bool = False,
+    ) -> None:
         with self._lock:
             if self._active:
                 return
@@ -184,6 +337,7 @@ class _CaptureWorker:
                 "start",
                 output_path=output_path,
                 audio_input_device=audio_input_device,
+                capture_recent_audio=capture_recent_audio,
             )
         )
 
@@ -215,6 +369,18 @@ class _CaptureWorker:
     def max_duration_reached(self) -> bool:
         with self._lock:
             return self._max_duration_was_reached
+
+    def recent_audio(self, seconds: float) -> Any | None:
+        """Tail of the live recording as int16 samples, or None if inactive."""
+        if not self.is_active():
+            return None
+        samples = self._recent_audio.snapshot()
+        if samples.size == 0:
+            return None
+        wanted = max(1, int(seconds * SAMPLE_RATE))
+        if samples.size > wanted:
+            return samples[-wanted:].copy()
+        return samples.copy()
 
     def _call(
         self,
@@ -250,6 +416,7 @@ class _CaptureWorker:
                         self._start_native_capture(
                             command.output_path,
                             command.audio_input_device,
+                            capture_recent_audio=command.capture_recent_audio,
                         )
                     elif command.name == "stop":
                         command.result = self._stop_native_capture()
@@ -268,6 +435,8 @@ class _CaptureWorker:
         self,
         output_path: Path,
         audio_input_device: int | None,
+        *,
+        capture_recent_audio: bool = False,
     ) -> None:
         avfoundation, nsurl, linear_pcm = _native_audio_frameworks()
         _ensure_microphone_permission(avfoundation)
@@ -279,6 +448,8 @@ class _CaptureWorker:
 
         session: Any | None = None
         output: Any | None = None
+        data_output: Any | None = None
+        data_delegate: Any | None = None
         try:
             device_input, input_error = _objc_result(
                 avfoundation.AVCaptureDeviceInput.deviceInputWithDevice_error_(
@@ -295,6 +466,9 @@ class _CaptureWorker:
 
             session = avfoundation.AVCaptureSession.alloc().init()
             output = avfoundation.AVCaptureAudioFileOutput.alloc().init()
+            if capture_recent_audio:
+                data_output = avfoundation.AVCaptureAudioDataOutput.alloc().init()
+                data_delegate = _new_data_output_delegate(self._recent_audio.append)
             session.beginConfiguration()
             try:
                 if not session.canAddInput_(device_input):
@@ -318,6 +492,17 @@ class _CaptureWorker:
                         avfoundation.AVLinearPCMIsBigEndianKey: False,
                     }
                 )
+                if data_output is not None:
+                    if not session.canAddOutput_(data_output):
+                        raise RecorderError(
+                            "macOS could not create a streaming audio capture "
+                            "output."
+                        )
+                    session.addOutput_(data_output)
+                    data_output.setSampleBufferDelegate_queue_(
+                        data_delegate,
+                        _new_data_output_queue(),
+                    )
             finally:
                 session.commitConfiguration()
 
@@ -329,6 +514,7 @@ class _CaptureWorker:
 
             delegate = _new_recording_delegate()
             output_url = nsurl.fileURLWithPath_(str(output_path))
+            self._recent_audio.clear()
             session.startRunning()
             if not session.isRunning():
                 raise RecorderError(
@@ -356,6 +542,8 @@ class _CaptureWorker:
             output=output,
             delegate=delegate,
             output_path=output_path,
+            data_output=data_output,
+            data_delegate=data_delegate,
         )
         with self._lock:
             self._active = True
@@ -404,6 +592,7 @@ class _CaptureWorker:
                         f"({exc.__class__.__name__})."
                     )
             self._native_capture = None
+            self._recent_audio.clear()
             with self._lock:
                 self._active = False
                 self._level = 0.0

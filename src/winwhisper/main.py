@@ -50,11 +50,20 @@ from .overlay import RecordingOverlay
 from .permission_setup_window import PermissionSetupWindow
 if sys.platform == "darwin":
     from .recorder_mac import MicrophoneTest, Recorder
+    from .wake_word_source_mac import MacAudioSource as WakeWordAudioSource
 else:
     from .recorder import MicrophoneTest, Recorder
+    from .wake_word_source import SounddeviceSource as WakeWordAudioSource
 from .transcriber import Transcriber
 from .tray import TrayApp
 from .update_controller import UpdateCoordinator
+from .wake_word import (
+    StopWordMonitor,
+    WakeWordListener,
+    WhisperPhraseDetector,
+    language_hints,
+    trim_trailing_phrase,
+)
 
 Status = Literal[
     "Idle",
@@ -120,6 +129,19 @@ class AppController:
         self._paste_target_window: int | None = None
         self._paste_target_process_name: str | None = None
         self._overlay_anchor: ScreenPoint | None = None
+        self._wake_detector = WhisperPhraseDetector(
+            device=str(settings.device),
+            compute_type=str(settings.compute_type),
+            languages=language_hints(
+                str(settings.language_mode),
+                settings.language_favorites,
+            ),
+            model_size=str(settings.wake_model_size),
+        )
+        self._wake_listener: WakeWordListener | None = None
+        self._stop_monitor: StopWordMonitor | None = None
+        self._recording_started_by_wake_word = False
+        self._pending_trim_phrase: str | None = None
         self.update_coordinator = UpdateCoordinator(
             self.settings,
             self.notify,
@@ -177,6 +199,7 @@ class AppController:
             )
 
         self._start_model_warmup()
+        self._start_wake_listener()
 
         if sys.platform == "win32":
             try:
@@ -210,6 +233,9 @@ class AppController:
             self.hotkeys.stop()
         except Exception:
             self.logger.exception("Hotkey listener failed to stop cleanly.")
+
+        self._stop_stop_monitor()
+        self._stop_wake_listener()
 
         self._stop_microphone_test(notify=False)
 
@@ -365,6 +391,121 @@ class AppController:
         self.settings.cleanup_mode = mode  # type: ignore[assignment]
         save_settings(self.settings)
         self.logger.info("Cleanup mode set to %s.", mode)
+
+    def set_wake_word_enabled(self, enabled: bool) -> None:
+        enabled = bool(enabled)
+        if enabled == self.settings.wake_word_enabled:
+            return
+
+        self.settings.wake_word_enabled = enabled
+        save_settings(self.settings)
+        if enabled:
+            self._start_wake_listener()
+        else:
+            self._stop_wake_listener()
+        self.tray.refresh_menu()
+        self.logger.info("Wake word %s.", "enabled" if enabled else "disabled")
+
+    def _start_wake_listener(self) -> None:
+        if not self.settings.wake_word_enabled:
+            return
+        with self._lock:
+            if self._shutdown or self._wake_listener is not None:
+                return
+        try:
+            source = WakeWordAudioSource(
+                audio_input_device=self.settings.audio_input_device
+            )
+            listener = WakeWordListener(
+                source,
+                self.settings.wake_phrases,
+                self._on_wake_word,
+                detector=self._wake_detector,
+            )
+            listener.start()
+        except Exception:
+            self.logger.exception("Wake-word listener failed to start.")
+            self.notify(
+                APP_NAME,
+                "Wake word could not start. Check the microphone, then toggle "
+                "the wake word off and on.",
+            )
+            return
+        with self._lock:
+            self._wake_listener = listener
+
+    def _stop_wake_listener(self) -> None:
+        with self._lock:
+            listener = self._wake_listener
+            self._wake_listener = None
+        if listener is None:
+            return
+        try:
+            listener.stop()
+        except Exception:
+            self.logger.exception("Wake-word listener failed to stop cleanly.")
+
+    def _on_wake_word(self) -> None:
+        with self._lock:
+            if self._shutdown or self._processing or self.recorder.is_recording():
+                self.logger.info("Ignoring wake word; dictation already active.")
+                return
+            listener = self._wake_listener
+
+        if listener is not None:
+            try:
+                listener.pause()
+            except Exception:
+                self.logger.exception("Wake-word listener failed to pause.")
+
+        with self._lock:
+            self._recording_started_by_wake_word = True
+        # The macOS recorder only buffers live samples (for the stop-word
+        # monitor) when asked before start_recording.
+        self.recorder.set_recent_audio_capture(True)
+        self.toggle()
+        with self._lock:
+            started = self.recorder.is_recording()
+
+        if started:
+            monitor = StopWordMonitor(
+                self.recorder,
+                self.settings.stop_phrase,
+                self.settings.wake_silence_timeout_seconds,
+                self._on_voice_stop,
+                detector=self._wake_detector,
+            )
+            monitor.start()
+            with self._lock:
+                self._stop_monitor = monitor
+            return
+
+        # Recording never started (microphone error or a mic test was
+        # running); hand the microphone back to the listener.
+        with self._lock:
+            self._recording_started_by_wake_word = False
+        if listener is not None:
+            try:
+                listener.resume()
+            except Exception:
+                self.logger.exception("Wake-word listener failed to resume.")
+
+    def _on_voice_stop(self, reason: str) -> None:
+        if reason == "phrase":
+            with self._lock:
+                self._pending_trim_phrase = self.settings.stop_phrase
+        self._request_stop()
+
+    def _stop_stop_monitor(self) -> None:
+        with self._lock:
+            monitor = self._stop_monitor
+            self._stop_monitor = None
+        if monitor is None:
+            return
+        try:
+            monitor.stop()
+        except Exception:
+            self.logger.exception("Stop-word monitor failed to stop cleanly.")
 
     def set_audio_input_device(self, value: object) -> None:
         selected_device = normalize_audio_input_device(value)
@@ -866,6 +1007,10 @@ class AppController:
                 self.settings.cleanup_mode,
                 self.settings.custom_vocabulary,
             )
+            with self._lock:
+                trim_phrase = self._pending_trim_phrase
+            if trim_phrase:
+                cleaned = trim_trailing_phrase(cleaned, trim_phrase)
             if not cleaned.strip():
                 self.logger.info("No speech detected; cleaned transcription text was empty.")
                 self.notify(APP_NAME, "No speech detected")
@@ -907,13 +1052,23 @@ class AppController:
             progress_cancel.set()
             if audio_path is not None:
                 self._delete_audio(audio_path)
+            self._stop_stop_monitor()
             with self._lock:
                 self._processing = False
                 self._recording_language_mode = None
                 self._paste_target_window = None
                 self._paste_target_process_name = None
                 self._overlay_anchor = None
+                self._pending_trim_phrase = None
+                wake_recording = self._recording_started_by_wake_word
+                self._recording_started_by_wake_word = False
+                wake_listener = self._wake_listener
                 shutdown = self._shutdown
+            if wake_recording and wake_listener is not None and not shutdown:
+                try:
+                    wake_listener.resume()
+                except Exception:
+                    self.logger.exception("Wake-word listener failed to resume.")
             # Synthetic paste and missed key-ups can leave a phantom trigger key
             # "down", which blocks the next take. Clear only the trigger tracking
             # so a chord the user is still physically holding keeps matching.

@@ -23,6 +23,7 @@ def _bare_worker():
     worker._max_duration_was_reached = False
     worker._on_max_duration = None
     worker._meter_warning_logged = False
+    worker._recent_audio = recorder_mac.RollingBuffer(seconds=1)
     return worker
 
 
@@ -106,7 +107,24 @@ class FakeOutput:
         )
 
 
-def _fake_avfoundation(session, output):
+class FakeDataOutput:
+    def __init__(self):
+        self.delegate = None
+        self.queue = None
+        self.settings = None
+
+    def init(self):
+        return self
+
+    def setAudioSettings_(self, settings):
+        self.settings = settings
+
+    def setSampleBufferDelegate_queue_(self, delegate, queue):
+        self.delegate = delegate
+        self.queue = queue
+
+
+def _fake_avfoundation(session, output, data_output=None):
     class CaptureSession:
         @staticmethod
         def alloc():
@@ -121,6 +139,11 @@ def _fake_avfoundation(session, output):
         def availableOutputFileTypes():
             return ("wave",)
 
+    class AudioDataOutput:
+        @staticmethod
+        def alloc():
+            return data_output
+
     class DeviceInput:
         @staticmethod
         def deviceInputWithDevice_error_(device, error):
@@ -129,6 +152,7 @@ def _fake_avfoundation(session, output):
     return types.SimpleNamespace(
         AVCaptureSession=CaptureSession,
         AVCaptureAudioFileOutput=AudioFileOutput,
+        AVCaptureAudioDataOutput=AudioDataOutput,
         AVCaptureDeviceInput=DeviceInput,
         AVFileTypeWAVE="wave",
         AVFormatIDKey="format",
@@ -140,8 +164,8 @@ def _fake_avfoundation(session, output):
     )
 
 
-def _install_fake_native_capture(monkeypatch, session, output, delegate):
-    avfoundation = _fake_avfoundation(session, output)
+def _install_fake_native_capture(monkeypatch, session, output, delegate, data_output=None):
+    avfoundation = _fake_avfoundation(session, output, data_output)
     monkeypatch.setattr(
         recorder_mac,
         "_native_audio_frameworks",
@@ -185,6 +209,63 @@ def test_native_capture_starts_meters_and_finalizes_wave(monkeypatch, tmp_path):
     assert worker._stop_native_capture() == output_path
     assert worker.is_active() is False
     assert session.running is False
+
+
+def test_recent_audio_capture_attaches_data_output_and_buffers(monkeypatch, tmp_path):
+    import numpy as np
+
+    session = FakeSession()
+    output = FakeOutput()
+    data_output = FakeDataOutput()
+    delegate = types.SimpleNamespace(
+        finished_event=threading.Event(),
+        error=None,
+    )
+    _install_fake_native_capture(
+        monkeypatch, session, output, delegate, data_output=data_output
+    )
+    monkeypatch.setattr(
+        recorder_mac,
+        "_new_data_output_delegate",
+        lambda on_samples: types.SimpleNamespace(on_samples=on_samples),
+    )
+    monkeypatch.setattr(recorder_mac, "_new_data_output_queue", lambda: "queue")
+    worker = _bare_worker()
+    output_path = tmp_path / "recording.wav"
+
+    worker._start_native_capture(output_path, None, capture_recent_audio=True)
+
+    assert data_output in session.outputs
+    assert data_output.delegate is not None
+    assert data_output.queue == "queue"
+
+    data_output.delegate.on_samples(np.full(8_000, 1_000, dtype="int16"))
+    recent = worker.recent_audio(0.25)
+
+    assert recent is not None
+    assert recent.size == 4_000
+    assert int(recent[-1]) == 1_000
+
+    worker._stop_native_capture()
+
+    assert worker.recent_audio(0.25) is None
+
+
+def test_plain_capture_attaches_no_data_output(monkeypatch, tmp_path):
+    session = FakeSession()
+    output = FakeOutput()
+    delegate = types.SimpleNamespace(
+        finished_event=threading.Event(),
+        error=None,
+    )
+    _install_fake_native_capture(monkeypatch, session, output, delegate)
+    worker = _bare_worker()
+
+    worker._start_native_capture(tmp_path / "recording.wav", None)
+
+    assert session.outputs == [output]
+    assert worker._native_capture.data_output is None
+    worker._stop_native_capture()
 
 
 def test_native_capture_timeout_still_releases_session(monkeypatch, tmp_path):
