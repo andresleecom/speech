@@ -1224,7 +1224,13 @@ def main(argv: list[str] | None = None) -> int:
         print(f"{APP_NAME} is already running.", file=sys.stderr)
         return _finish_cli(0)
 
-    logger.info("%s starting.", APP_NAME)
+    logger.info(
+        "%s %s starting (settings=%s).",
+        APP_NAME,
+        __version__,
+        app_data_dir() / "settings.json",
+    )
+
 
     settings = load_settings()
     logger.info(

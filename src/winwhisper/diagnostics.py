@@ -7,6 +7,7 @@ import sys
 import tempfile
 from pathlib import Path
 
+from . import __version__
 from .audio_inputs import (
     AudioInputDeviceError,
     audio_input_device_label,
@@ -21,6 +22,7 @@ from .config import app_data_dir, load_settings
 def run_diagnostics() -> None:
     settings = load_settings()
 
+    print(f"Speech version: {__version__}")
     print(f"Python version: {sys.version.replace(os.linesep, ' ')}")
     print(f"OS version: {platform.platform()}")
     print("Microphone input devices:")

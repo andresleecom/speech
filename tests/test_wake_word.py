@@ -432,17 +432,20 @@ def test_stop_monitor_fires_on_stop_phrase():
 def test_stop_monitor_fires_after_silence_following_speech():
     recorder = FakeRecentRecorder(_loud_block())
     stopped: list[str] = []
+    detector = StubDetector([])
     monitor = StopWordMonitor(
         recorder,
         "stop",
         0.05,
         lambda reason: stopped.append(reason),
-        detector=StubDetector([]),
+        detector=detector,
         poll_seconds=0.02,
     )
     monitor.start()
     try:
-        time.sleep(0.06)  # let the monitor see speech first
+        deadline = time.monotonic() + 2.0
+        while detector.calls < 1 and time.monotonic() < deadline:
+            time.sleep(0.005)
         recorder._samples = np.zeros(16_000, dtype="int16")
 
         deadline = time.monotonic() + 2.0
