@@ -4,6 +4,7 @@ import json
 import os
 import sys
 import threading
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Literal
 
@@ -35,6 +36,8 @@ class Settings(BaseModel):
     device: str = CPU_DEVICE
     compute_type: str = DEFAULT_COMPUTE_TYPE
     audio_input_device: int | None = None
+    audio_input_device_name: str | None = None
+    audio_input_device_host_api: str | None = None
     language_mode: str = AUTO_LANGUAGE_MODE
     language_favorites: list[str | None] = Field(
         default_factory=lambda: list(DEFAULT_LANGUAGE_FAVORITES)
@@ -85,6 +88,14 @@ class Settings(BaseModel):
     def validate_audio_input_device(cls, value: object) -> int | None:
         return normalize_audio_input_device(value)
 
+    @field_validator("audio_input_device_name", "audio_input_device_host_api", mode="before")
+    @classmethod
+    def validate_optional_audio_identity(cls, value: object) -> str | None:
+        if value is None:
+            return None
+        stripped = str(value).strip()
+        return stripped or None
+
     @field_validator("language_favorites", mode="before")
     @classmethod
     def validate_language_favorites(cls, value: object) -> list[str | None]:
@@ -110,6 +121,14 @@ class Settings(BaseModel):
         if not normalized:
             raise ValueError(f"Phrase must contain at least one word: {value!r}")
         return normalized
+
+    @field_validator("model_size", mode="before")
+    @classmethod
+    def validate_model_size(cls, value: object) -> str:
+        size = str(value).strip() if value is not None else ""
+        if not size:
+            return "small"
+        return size
 
     @field_validator("wake_model_size", mode="before")
     @classmethod
@@ -153,7 +172,24 @@ def _default_app_data_dir(name: str) -> Path:
     return base / name.lower()
 
 
+@dataclass
+class SettingsLoadReport:
+    settings: Settings
+    notices: list[str] = field(default_factory=list)
+    first_run: bool = False
+
+
+_CORRUPT_SETTINGS_NOTICE = (
+    "Settings could not be read; previous copy saved as settings.json.corrupt"
+)
+_MAX_SETTINGS_DROP_ROUNDS = 3
+
+
 def load_settings() -> Settings:
+    return load_settings_report().settings
+
+
+def load_settings_report() -> SettingsLoadReport:
     _load_dotenv()
     settings_path = _settings_path()
     _migrate_legacy_settings(settings_path)
@@ -162,26 +198,96 @@ def load_settings() -> Settings:
     if not settings_path.exists():
         settings = Settings()
         save_settings(settings)
-        return settings
+        return SettingsLoadReport(settings=settings, notices=[], first_run=True)
 
     try:
         data = json.loads(settings_path.read_text(encoding="utf-8"))
         if not isinstance(data, dict):
             raise ValueError("settings file must contain a JSON object")
+    except (OSError, ValueError, json.JSONDecodeError) as exc:
+        _log_warning(
+            "Settings file is corrupt or invalid; using defaults (%s).",
+            exc.__class__.__name__,
+        )
+        _quarantine_corrupt_settings(settings_path)
+        return SettingsLoadReport(
+            settings=Settings(),
+            notices=[_CORRUPT_SETTINGS_NOTICE],
+            first_run=False,
+        )
+
+    try:
         _migrate_language_mode(data)
         _migrate_language_favorites(data)
         _migrate_audio_input_device(data)
         _migrate_device(data)
         _migrate_compute_type(data)
         _migrate_wake_phrase(data)
-        return Settings(**data)
-    except (OSError, ValueError, json.JSONDecodeError, ValidationError) as exc:
+        _migrate_model_size(data)
+    except (ValueError, TypeError) as exc:
         _log_warning(
-            "Settings file is corrupt or invalid; using defaults (%s).",
+            "Settings migration failed; using defaults (%s).",
             exc.__class__.__name__,
         )
         _quarantine_corrupt_settings(settings_path)
-        return Settings()
+        return SettingsLoadReport(
+            settings=Settings(),
+            notices=[_CORRUPT_SETTINGS_NOTICE],
+            first_run=False,
+        )
+
+    dropped: list[str] = []
+    for _round in range(_MAX_SETTINGS_DROP_ROUNDS + 1):
+        try:
+            settings = Settings(**data)
+            notices: list[str] = []
+            if dropped:
+                keys = ", ".join(sorted(dropped))
+                notices.append(
+                    f"Settings key(s) ignored: {keys} (restored defaults for them)"
+                )
+                try:
+                    save_settings(settings)
+                except OSError:
+                    pass
+            return SettingsLoadReport(
+                settings=settings,
+                notices=notices,
+                first_run=False,
+            )
+        except ValidationError as exc:
+            if _round >= _MAX_SETTINGS_DROP_ROUNDS:
+                break
+            bad_keys = _validation_error_top_level_keys(exc)
+            newly_dropped = [key for key in bad_keys if key in data]
+            if not newly_dropped:
+                break
+            for key in newly_dropped:
+                del data[key]
+                if key not in dropped:
+                    dropped.append(key)
+
+    _log_warning(
+        "Settings file is corrupt or invalid; using defaults (ValidationError)."
+    )
+    _quarantine_corrupt_settings(settings_path)
+    return SettingsLoadReport(
+        settings=Settings(),
+        notices=[_CORRUPT_SETTINGS_NOTICE],
+        first_run=False,
+    )
+
+
+def _validation_error_top_level_keys(exc: ValidationError) -> list[str]:
+    keys: list[str] = []
+    for error in exc.errors():
+        loc = error.get("loc") or ()
+        if not loc:
+            continue
+        key = loc[0]
+        if isinstance(key, str) and key not in keys:
+            keys.append(key)
+    return keys
 
 
 def save_settings(settings: Settings) -> None:
@@ -290,6 +396,22 @@ def _migrate_device(data: dict[str, object]) -> None:
             data["device"],
         )
         data["device"] = CPU_DEVICE
+
+
+def _migrate_model_size(data: dict[str, object]) -> None:
+    """Keep unknown model sizes; warn so hand-edits stay visible."""
+    if "model_size" not in data:
+        return
+    raw = data["model_size"]
+    size = str(raw).strip() if raw is not None else ""
+    if not size:
+        data["model_size"] = "small"
+        return
+    data["model_size"] = size
+    from .transcriber import MODEL_DOWNLOAD_SIZES_MB
+
+    if size not in MODEL_DOWNLOAD_SIZES_MB:
+        _log_warning("Unknown model size %r; keeping it.", size)
 
 
 def _migrate_compute_type(data: dict[str, object]) -> None:

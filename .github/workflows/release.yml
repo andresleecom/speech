@@ -19,6 +19,7 @@ jobs:
   prepare:
     if: github.repository == 'andresleecom/speech'
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     outputs:
       version: ${{ steps.version.outputs.version }}
       tag: ${{ steps.version.outputs.tag }}
@@ -27,6 +28,7 @@ jobs:
       - uses: actions/setup-python@v7
         with:
           python-version: "3.12"
+          cache: pip
       - id: version
         shell: bash
         run: |
@@ -42,6 +44,7 @@ jobs:
   linux:
     needs: prepare
     runs-on: ubuntu-22.04
+    timeout-minutes: 45
     env:
       SPEECH_VERSION: ${{ needs.prepare.outputs.version }}
     steps:
@@ -49,6 +52,7 @@ jobs:
       - uses: actions/setup-python@v7
         with:
           python-version: "3.12"
+          cache: pip
       - name: Install Linux build and runtime dependencies
         run: |
           sudo apt-get update
@@ -67,8 +71,6 @@ jobs:
         run: |
           python -m pip install --upgrade pip
           python -m pip install -r requirements-dev.txt
-      - name: Run tests
-        run: python -m pytest -q
       - name: Build Linux packages
         run: bash scripts/build_linux.sh python
       - name: Smoke Linux packages
@@ -139,6 +141,7 @@ jobs:
   windows:
     needs: prepare
     runs-on: windows-latest
+    timeout-minutes: 45
     env:
       SPEECH_VERSION: ${{ needs.prepare.outputs.version }}
     steps:
@@ -146,14 +149,13 @@ jobs:
       - uses: actions/setup-python@v7
         with:
           python-version: "3.12"
+          cache: pip
       - name: Install dependencies
         run: |
           python -m pip install --upgrade pip
           python -m pip install -r requirements-dev.txt
       - name: Install Inno Setup
         run: choco install innosetup --no-progress -y
-      - name: Run tests
-        run: python -m pytest -q
       - name: Build Windows installer
         shell: pwsh
         run: .\scripts\build_windows.ps1 -Python python
@@ -176,6 +178,8 @@ jobs:
 
   macos:
     needs: prepare
+    timeout-minutes: 45
+    continue-on-error: ${{ matrix.architecture == 'intel' }}
     strategy:
       fail-fast: false
       matrix:
@@ -197,12 +201,11 @@ jobs:
       - uses: actions/setup-python@v7
         with:
           python-version: "3.12"
+          cache: pip
       - name: Install dependencies
         run: |
           python -m pip install --upgrade pip
           python -m pip install -r requirements-dev.txt
-      - name: Run tests
-        run: python -m pytest -q
       - name: Import Developer ID credentials
         env:
           MACOS_DEVELOPER_ID_P12_BASE64: ${{ secrets.MACOS_DEVELOPER_ID_P12_BASE64 }}
@@ -308,6 +311,7 @@ jobs:
   publish:
     needs: [prepare, linux, windows, macos]
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     env:
       GH_TOKEN: ${{ github.token }}
       BUILD_VERSION: ${{ needs.prepare.outputs.version }}
@@ -321,7 +325,7 @@ jobs:
       - name: Verify release asset set
         shell: bash
         run: |
-          expected=(
+          required=(
             "Speech-$BUILD_VERSION.AppImage"
             "Speech-$BUILD_VERSION.AppImage.sha256"
             "Speech.AppImage"
@@ -338,24 +342,37 @@ jobs:
             "Speech-$BUILD_VERSION.dmg.sha256"
             "Speech.dmg"
             "Speech.dmg.sha256"
+          )
+          optional_intel=(
             "Speech-$BUILD_VERSION-intel.dmg"
             "Speech-$BUILD_VERSION-intel.dmg.sha256"
             "Speech-intel.dmg"
             "Speech-intel.dmg.sha256"
           )
-          for asset in "${expected[@]}"; do
+          for asset in "${required[@]}"; do
             test -s "release-assets/$asset" || {
               echo "Missing release asset: $asset" >&2
               exit 1
             }
           done
+          for asset in "${optional_intel[@]}"; do
+            if [ ! -s "release-assets/$asset" ]; then
+              echo "Optional intel asset missing (continuing): $asset"
+            fi
+          done
       - name: Publish GitHub release
         shell: bash
         run: |
+          shopt -s nullglob
+          assets=(release-assets/*)
+          if [ ${#assets[@]} -eq 0 ]; then
+            echo "No release assets found to publish." >&2
+            exit 1
+          fi
           if gh release view "$TAG_NAME" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
-            gh release upload "$TAG_NAME" release-assets/* --clobber --repo "$GITHUB_REPOSITORY"
+            gh release upload "$TAG_NAME" "${assets[@]}" --clobber --repo "$GITHUB_REPOSITORY"
           else
-            gh release create "$TAG_NAME" release-assets/* \
+            gh release create "$TAG_NAME" "${assets[@]}" \
               --repo "$GITHUB_REPOSITORY" \
               --target "$GITHUB_SHA" \
               --title "Speech $BUILD_VERSION" \

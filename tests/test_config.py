@@ -8,6 +8,7 @@ from winwhisper.config import (
     app_data_dir,
     legacy_app_data_dir,
     load_settings,
+    load_settings_report,
     save_settings,
 )
 
@@ -22,6 +23,8 @@ def test_defaults_when_no_file_exists(monkeypatch, tmp_path):
     assert settings.check_for_updates is True
     assert settings.last_update_check_at is None
     assert settings.audio_input_device is None
+    assert settings.audio_input_device_name is None
+    assert settings.audio_input_device_host_api is None
     assert settings.language_favorites == ["en", "es", None]
     assert settings.custom_vocabulary == []
     assert (tmp_path / "settings.json").exists()
@@ -54,6 +57,13 @@ def test_settings_normalize_audio_input_device_and_recover_invalid_saved_value(
 ):
     assert Settings(audio_input_device="4").audio_input_device == 4
     assert Settings(audio_input_device="System Default").audio_input_device is None
+    assert Settings(audio_input_device_name="  PodMic  ").audio_input_device_name == "PodMic"
+    assert Settings(audio_input_device_name="").audio_input_device_name is None
+    assert (
+        Settings(audio_input_device_host_api="  MME  ").audio_input_device_host_api
+        == "MME"
+    )
+    assert Settings(audio_input_device_host_api=" ").audio_input_device_host_api is None
 
     with pytest.raises(ValueError, match="Audio input device"):
         Settings(audio_input_device=-1)
@@ -260,6 +270,77 @@ def test_corrupt_json_falls_back_to_defaults(monkeypatch, tmp_path):
     assert (tmp_path / "settings.json.corrupt").exists()
 
 
+def test_load_settings_report_first_run_when_file_absent(monkeypatch, tmp_path):
+    monkeypatch.setenv("WINWHISPER_APPDATA_DIR", str(tmp_path))
+
+    report = load_settings_report()
+
+    assert report.first_run is True
+    assert report.notices == []
+    assert report.settings == Settings()
+    assert (tmp_path / "settings.json").exists()
+
+
+def test_load_settings_report_first_run_false_when_file_exists(monkeypatch, tmp_path):
+    monkeypatch.setenv("WINWHISPER_APPDATA_DIR", str(tmp_path))
+    save_settings(Settings(model_size="medium"))
+
+    report = load_settings_report()
+
+    assert report.first_run is False
+    assert report.notices == []
+    assert report.settings.model_size == "medium"
+
+
+def test_load_settings_report_drops_only_bad_keys(monkeypatch, tmp_path):
+    monkeypatch.setenv("WINWHISPER_APPDATA_DIR", str(tmp_path))
+    hotkeys = {"toggle_recording": "ctrl+alt+x"}
+    (tmp_path / "settings.json").write_text(
+        json.dumps(
+            {
+                "custom_vocabulary": 5,
+                "hotkeys": hotkeys,
+                "audio_input_device": 3,
+                "audio_input_device_name": "USB Mic",
+                "model_size": "medium",
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    report = load_settings_report()
+
+    assert report.first_run is False
+    assert report.settings.custom_vocabulary == []
+    assert report.settings.hotkeys == hotkeys
+    assert report.settings.audio_input_device == 3
+    assert report.settings.audio_input_device_name == "USB Mic"
+    assert report.settings.model_size == "medium"
+    assert report.notices == [
+        "Settings key(s) ignored: custom_vocabulary (restored defaults for them)"
+    ]
+    assert not (tmp_path / "settings.json.corrupt").exists()
+    saved = json.loads((tmp_path / "settings.json").read_text(encoding="utf-8"))
+    assert "custom_vocabulary" in saved
+    assert saved["custom_vocabulary"] == []
+    assert saved["hotkeys"] == hotkeys
+
+
+def test_load_settings_report_unparsable_json_quarantines(monkeypatch, tmp_path):
+    monkeypatch.setenv("WINWHISPER_APPDATA_DIR", str(tmp_path))
+    (tmp_path / "settings.json").write_text("{not json", encoding="utf-8")
+
+    report = load_settings_report()
+
+    assert report.first_run is False
+    assert report.settings == Settings()
+    assert report.notices == [
+        "Settings could not be read; previous copy saved as settings.json.corrupt"
+    ]
+    assert not (tmp_path / "settings.json").exists()
+    assert (tmp_path / "settings.json.corrupt").exists()
+
+
 def test_save_settings_is_atomic(monkeypatch, tmp_path):
     monkeypatch.setenv("WINWHISPER_APPDATA_DIR", str(tmp_path))
     settings = Settings(model_size="medium")
@@ -269,3 +350,44 @@ def test_save_settings_is_atomic(monkeypatch, tmp_path):
     assert (tmp_path / "settings.json").exists()
     assert not (tmp_path / "settings.json.tmp").exists()
     assert load_settings().model_size == "medium"
+
+
+def test_model_size_is_lenient():
+    assert Settings(model_size="  ").model_size == "small"
+    assert Settings(model_size="").model_size == "small"
+    assert Settings(model_size="large-v3-turbo").model_size == "large-v3-turbo"
+    assert Settings(model_size="custom-distil").model_size == "custom-distil"
+
+
+def test_unknown_model_size_is_kept_on_load(monkeypatch, tmp_path):
+    monkeypatch.setenv("WINWHISPER_APPDATA_DIR", str(tmp_path))
+    (tmp_path / "settings.json").write_text(
+        json.dumps({"model_size": "distil-large-v3"}),
+        encoding="utf-8",
+    )
+
+    settings = load_settings()
+
+    assert settings.model_size == "distil-large-v3"
+
+
+def test_migrate_type_error_quarantines_settings(monkeypatch, tmp_path):
+    import winwhisper.config as config_module
+
+    monkeypatch.setenv("WINWHISPER_APPDATA_DIR", str(tmp_path))
+    (tmp_path / "settings.json").write_text(
+        json.dumps({"model_size": "small"}),
+        encoding="utf-8",
+    )
+
+    def boom(data):
+        raise TypeError("migration exploded")
+
+    monkeypatch.setattr(config_module, "_migrate_device", boom)
+
+    report = load_settings_report()
+
+    assert report.notices == [
+        "Settings could not be read; previous copy saved as settings.json.corrupt"
+    ]
+    assert (tmp_path / "settings.json.corrupt").exists()

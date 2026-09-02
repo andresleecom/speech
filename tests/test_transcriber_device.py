@@ -152,3 +152,38 @@ def test_failing_fallback_notification_does_not_break_transcription(monkeypatch)
 
     assert instance.device == "cpu"
     assert instance.is_model_loaded() is True
+
+
+def test_offline_load_raises_model_download_error(monkeypatch):
+    class LocalEntryNotFoundError(Exception):
+        pass
+
+    attempts: list[tuple[str, str]] = []
+
+    class FakeWhisperModel:
+        def __init__(self, model_size, device, compute_type):
+            attempts.append((device, compute_type))
+            raise LocalEntryNotFoundError("not in cache and offline")
+
+    module = types.ModuleType("faster_whisper")
+    module.WhisperModel = FakeWhisperModel
+    monkeypatch.setitem(sys.modules, "faster_whisper", module)
+
+    instance = _transcriber().Transcriber(Settings())
+
+    with pytest.raises(_transcriber().ModelDownloadError, match="one-time download"):
+        instance.ensure_model_loaded()
+
+    assert attempts == [("cpu", "int8")]
+    assert instance.is_model_loaded() is False
+
+
+def test_is_model_cached_returns_none_for_unknown_size(monkeypatch):
+    utils = types.ModuleType("faster_whisper.utils")
+    utils._MODELS = {"small": "Systran/faster-whisper-small"}
+    package = types.ModuleType("faster_whisper")
+    package.utils = utils
+    monkeypatch.setitem(sys.modules, "faster_whisper", package)
+    monkeypatch.setitem(sys.modules, "faster_whisper.utils", utils)
+
+    assert _transcriber().is_model_cached("not-a-real-model") is None

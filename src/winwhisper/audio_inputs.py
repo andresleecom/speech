@@ -11,6 +11,11 @@ SYSTEM_DEFAULT_INPUT_LABEL: Final = "System Default"
 _SYSTEM_DEFAULT_ALIASES: Final = frozenset(
     {"", "default", "systemdefault", "system", "none", "auto"}
 )
+_SKIPPED_HOST_APIS: Final = frozenset({"Windows WDM-KS"})
+_WASAPI_HOST_API: Final = "Windows WASAPI"
+_CAPTURE_SAMPLE_RATE: Final = 16_000
+_CAPTURE_CHANNELS: Final = 1
+_CAPTURE_DTYPE: Final = "int16"
 
 
 class AudioInputDeviceError(RuntimeError):
@@ -22,10 +27,19 @@ class AudioInputDevice:
     index: int
     name: str
     input_channels: int
+    host_api: str = ""
 
     @property
     def choice_label(self) -> str:
         return f"{self.name} [{self.index}]"
+
+
+@dataclass(frozen=True, slots=True)
+class ResolvedInputDevice:
+    index: int | None
+    label: str
+    fallback: bool
+    reason: str
 
 
 def normalize_audio_input_device(value: object) -> int | None:
@@ -71,12 +85,16 @@ def list_audio_input_devices() -> tuple[AudioInputDevice, ...]:
         channels = _device_input_channels(device)
         if channels <= 0:
             continue
+        host_api = _sounddevice_host_api_name(sounddevice, device)
+        if host_api in _SKIPPED_HOST_APIS:
+            continue
         name = str(_device_value(device, "name", "Unknown microphone")).strip()
         devices.append(
             AudioInputDevice(
                 index=index,
                 name=name or "Unknown microphone",
                 input_channels=channels,
+                host_api=host_api,
             )
         )
     return tuple(devices)
@@ -116,6 +134,84 @@ def audio_input_device_label(
             if device.index == normalized:
                 return device.choice_label
     return f"Unavailable microphone [{normalized}]"
+
+
+def resolve_input_device(
+    name: str | None,
+    host_api: str | None,
+    index_hint: int | None,
+    devices: tuple[AudioInputDevice, ...] | None = None,
+) -> ResolvedInputDevice:
+    """Resolve a saved microphone identity to a live PortAudio index.
+
+    ``name is None`` with no ``index_hint`` is an intentional System Default choice.
+    ``name is None`` with a live ``index_hint`` is a legacy index-only selection.
+    When the saved device is missing, returns System Default with ``fallback=True``.
+    """
+    if name is None:
+        if index_hint is None:
+            return ResolvedInputDevice(
+                index=None,
+                label=SYSTEM_DEFAULT_INPUT_LABEL,
+                fallback=False,
+                reason="",
+            )
+        if devices is None:
+            devices = list_audio_input_devices()
+        for device in devices:
+            if device.index == index_hint:
+                return ResolvedInputDevice(
+                    index=device.index,
+                    label=device.choice_label,
+                    fallback=False,
+                    reason="",
+                )
+        return ResolvedInputDevice(
+            index=None,
+            label=SYSTEM_DEFAULT_INPUT_LABEL,
+            fallback=True,
+            reason=f"Microphone [{index_hint}] is unavailable",
+        )
+
+    if devices is None:
+        devices = list_audio_input_devices()
+
+    for device in devices:
+        if device.name == name and device.host_api == (host_api or ""):
+            return ResolvedInputDevice(
+                index=device.index,
+                label=device.choice_label,
+                fallback=False,
+                reason="",
+            )
+
+    same_name = [device for device in devices if device.name == name]
+    if index_hint is not None:
+        same_name.sort(key=lambda device: (0 if device.index == index_hint else 1, device.index))
+    for device in same_name:
+        if _device_supports_capture(device):
+            return ResolvedInputDevice(
+                index=device.index,
+                label=device.choice_label,
+                fallback=False,
+                reason="",
+            )
+
+    saved_label = name if not host_api else f"{name} ({host_api})"
+    return ResolvedInputDevice(
+        index=None,
+        label=SYSTEM_DEFAULT_INPUT_LABEL,
+        fallback=True,
+        reason=f"{saved_label} is unavailable",
+    )
+
+
+def input_stream_extra_settings(host_api: str | None) -> dict[str, Any]:
+    """Return InputStream kwargs needed for the given host API, if any."""
+    if host_api != _WASAPI_HOST_API:
+        return {}
+    sounddevice = _sounddevice()
+    return {"extra_settings": sounddevice.WasapiSettings(auto_convert=True)}
 
 
 def _sounddevice() -> Any:
@@ -171,6 +267,7 @@ def _list_macos_audio_input_devices() -> tuple[AudioInputDevice, ...]:
                 index=index,
                 name=str(device.localizedName()).strip() or "Unknown microphone",
                 input_channels=1,
+                host_api=str(device.uniqueID()),
             )
             for index, device in enumerate(devices)
         )
@@ -231,3 +328,31 @@ def _device_input_channels(device: Any) -> int:
         return max(0, int(_device_value(device, "max_input_channels", 0)))
     except (TypeError, ValueError):
         return 0
+
+
+def _sounddevice_host_api_name(sounddevice: Any, device: Any) -> str:
+    try:
+        hostapi_index = int(_device_value(device, "hostapi", -1))
+        info = sounddevice.query_hostapis(hostapi_index)
+        name = _device_value(info, "name", "")
+        return str(name).strip() or "Unknown"
+    except Exception:
+        return "Unknown"
+
+
+def _device_supports_capture(device: AudioInputDevice) -> bool:
+    if _use_native_macos_audio():
+        return True
+    try:
+        sounddevice = _sounddevice()
+        options: dict[str, Any] = {
+            "device": device.index,
+            "samplerate": _CAPTURE_SAMPLE_RATE,
+            "channels": _CAPTURE_CHANNELS,
+            "dtype": _CAPTURE_DTYPE,
+        }
+        options.update(input_stream_extra_settings(device.host_api))
+        sounddevice.check_input_settings(**options)
+        return True
+    except Exception:
+        return False

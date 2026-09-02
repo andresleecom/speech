@@ -76,3 +76,16 @@ def test_install_stays_per_user(script):
     # A machine-wide install would need elevation the updater cannot supply.
     assert "PrivilegesRequired=lowest" in script
     assert "DefaultDirName={localappdata}\\Programs\\{#MyAppName}" in script
+
+
+def test_startup_task_and_run_registry_value(script):
+    assert "[Tasks]" in script
+    assert re.search(
+        r'Name:\s*"startup";\s*Description:\s*"Start Speech when you sign in";'
+        r"\s*Flags:\s*checkedonce",
+        script,
+    )
+    assert "[Registry]" in script
+    assert 'ValueName: "Speech"' in script
+    assert "Flags: uninsdeletevalue; Tasks: startup" in script
+    assert r'Subkey: "Software\Microsoft\Windows\CurrentVersion\Run"' in script

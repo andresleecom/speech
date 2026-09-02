@@ -26,6 +26,12 @@ You can also set `language_mode` to `auto` or a supported code such as `en`, `es
 
 Choose **Microphone > System Default** to follow the operating-system selection, or choose a specific input device.
 
+Speech identifies a saved microphone by `audio_input_device_name` plus `audio_input_device_host_api`, and keeps `audio_input_device` only as an index hint.
+
+Every recording or wake-word open re-resolves that identity against the live device table.
+
+If the saved device is missing, Speech falls back to System Default for that open, shows one toast for the change, and never writes the fallback into settings.
+
 **Test Microphone** opens the recording orb for five seconds and shows the live input level. The test does not write audio to disk or transcribe it.
 
 If a selected device is disconnected, Speech keeps it visible as unavailable. Select System Default or another device, and confirm that the operating system has granted microphone access.
@@ -118,9 +124,10 @@ Use product names, people's names, company terminology, and technical terms. A f
 
 ## Model and performance
 
-- `small` with CPU and `int8` is the default balance.
-- `medium` improves accuracy at the cost of speed and memory.
-- `large-v3` offers the highest accuracy and needs the most resources.
+- `small` (~464 MB) with CPU and `int8` is the default balance.
+- `medium` (~1530 MB) improves accuracy at the cost of speed and memory.
+- `large-v3` (~3090 MB) offers the highest accuracy and needs the most resources.
+- `large-v3-turbo` (~1620 MB) is a faster large model with a smaller download.
 - Supported NVIDIA GPUs can use CUDA with `float16` or `int8_float16`, once the CUDA math libraries are installed separately.
 
 The selected model downloads from Hugging Face on first use. CUDA does not apply to normal macOS builds.
@@ -167,7 +174,9 @@ macOS and Linux updates are installed manually from the Releases page.
 | `model_size` | `small` | faster-whisper model size. |
 | `device` | `cpu` | `cpu`, `cuda` for an NVIDIA GPU (`gpu` also works), or `auto`. |
 | `compute_type` | `int8` | faster-whisper compute type, such as `int8`, `float16`, or `int8_float16`. |
-| `audio_input_device` | `null` | System Default, or a non-negative device index selected from the Microphone menu. |
+| `audio_input_device` | `null` | Index hint for the selected microphone, or `null` for System Default. |
+| `audio_input_device_name` | `null` | Stable device name used with the host API to re-resolve the microphone. |
+| `audio_input_device_host_api` | `null` | Host API name on Windows/Linux, or the AVFoundation unique ID on macOS. |
 | `language_mode` | `auto` | Automatic detection or one supported Whisper language code. |
 | `language_favorites` | `["en", "es", null]` | Three distinct non-auto language codes; `null` leaves a slot unassigned. |
 | `cleanup_mode` | `basic` | `none`, `basic`, or `llm`. |

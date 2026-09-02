@@ -112,6 +112,20 @@ def test_open_path_uses_platform_opener(monkeypatch, tmp_path):
     assert calls[-1] == ["xdg-open", str(target)]
 
 
+def test_open_log_folder_opens_logs_dir(monkeypatch, tmp_path):
+    opened: list[object] = []
+    monkeypatch.setattr(main_module, "app_data_dir", lambda: tmp_path)
+    monkeypatch.setattr(main_module, "_open_path", lambda path: opened.append(path))
+
+    class StubController:
+        def _handle_error(self, message: str) -> None:
+            raise AssertionError(message)
+
+    main_module.AppController.open_log_folder(StubController())  # type: ignore[arg-type]
+
+    assert opened == [tmp_path / "logs"]
+
+
 @pytest.mark.skipif(os.name == "nt", reason="fcntl is unavailable on Windows")
 def test_posix_single_instance_first_acquisition(
     monkeypatch, tmp_path, reset_posix_single_instance_lock
@@ -216,3 +230,19 @@ def test_posix_single_instance_setup_errors_fail_open(
 
     assert main_module._acquire_single_instance() is True
     assert main_module._single_instance_lock_handle is None
+
+
+def test_pyproject_version_is_0_1_19():
+    from pathlib import Path
+    import tomllib
+
+    data = tomllib.loads(
+        (Path(__file__).resolve().parents[1] / "pyproject.toml").read_text(
+            encoding="utf-8"
+        )
+    )
+    assert data["project"]["version"] == "0.1.19"
+
+
+def test_downloading_model_status_constant_exists():
+    assert main_module.STATUS_DOWNLOADING_MODEL == "Downloading model..."

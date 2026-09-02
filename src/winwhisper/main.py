@@ -13,9 +13,13 @@ from pathlib import Path, PurePosixPath
 from typing import Any, Callable, Literal
 
 from . import __version__
-from .audio_inputs import normalize_audio_input_device
+from .audio_inputs import (
+    SYSTEM_DEFAULT_INPUT_LABEL,
+    list_audio_input_devices,
+    normalize_audio_input_device,
+)
 from .branding import APP_NAME
-from .config import Settings, app_data_dir, load_settings, save_settings
+from .config import Settings, app_data_dir, load_settings_report, save_settings
 from .diagnostics import run_diagnostics as run_diagnostics_report
 from .focus import (
     ScreenPoint,
@@ -54,7 +58,12 @@ if sys.platform == "darwin":
 else:
     from .recorder import MicrophoneTest, Recorder
     from .wake_word_source import SounddeviceSource as WakeWordAudioSource
-from .transcriber import Transcriber
+from .transcriber import (
+    MODEL_DOWNLOAD_SIZES_MB,
+    ModelDownloadError,
+    Transcriber,
+    is_model_cached,
+)
 from .tray import TrayApp
 from .update_controller import UpdateCoordinator
 from .wake_word import (
@@ -72,6 +81,7 @@ Status = Literal[
     "Transcribing",
     "Pasting",
     "Error",
+    "Downloading model...",
 ]
 
 STATUS_IDLE: Status = "Idle"
@@ -80,6 +90,7 @@ STATUS_TESTING_MICROPHONE: Status = "Testing microphone"
 STATUS_TRANSCRIBING: Status = "Transcribing"
 STATUS_PASTING: Status = "Pasting"
 STATUS_ERROR: Status = "Error"
+STATUS_DOWNLOADING_MODEL: Status = "Downloading model..."
 
 _SINGLE_INSTANCE_MUTEX_NAME = "Local\\SpeechSingleInstanceMutex"
 _SINGLE_INSTANCE_LOCK_FILE_NAME = "single-instance.lock"
@@ -100,9 +111,40 @@ def _hard_exit(exit_code: int) -> None:
     os._exit(exit_code)
 
 
+def _adopt_audio_input_identity(settings: Settings, logger: logging.Logger) -> None:
+    """Fill name/host_api from the live table when only an index hint is saved."""
+    if settings.audio_input_device is None or settings.audio_input_device_name:
+        return
+    try:
+        for device in list_audio_input_devices():
+            if device.index != settings.audio_input_device:
+                continue
+            settings.audio_input_device_name = device.name
+            settings.audio_input_device_host_api = device.host_api
+            save_settings(settings)
+            logger.info(
+                "Adopted microphone identity name=%r host_api=%r for index %s.",
+                device.name,
+                device.host_api,
+                device.index,
+            )
+            return
+    except Exception:
+        logger.exception("Could not adopt microphone identity from the live device table.")
+
+
+
 class AppController:
-    def __init__(self, settings: Settings) -> None:
+    def __init__(
+        self,
+        settings: Settings,
+        *,
+        notices: list[str] | None = None,
+        first_run: bool = False,
+    ) -> None:
         self.settings = settings
+        self.first_run = first_run
+        self._settings_notices = list(notices or ())
         self.logger = get_logger(__name__)
         self._lock = threading.RLock()
         self._microphone_test: MicrophoneTest | None = None
@@ -111,8 +153,17 @@ class AppController:
             on_max_duration=self._on_max_recording_duration,
             audio_input_device=settings.audio_input_device,
         )
+        set_selection = getattr(self.recorder, "set_audio_input_selection", None)
+        if callable(set_selection):
+            set_selection(
+                settings.audio_input_device_name,
+                settings.audio_input_device_host_api,
+                settings.audio_input_device,
+            )
+        self._previous_mic_resolution_fallback = False
         self.transcriber = Transcriber(settings, self._on_device_fallback)
         self.tray = TrayApp(self)
+        self._sync_microphone_label()
         self.recording_overlay = RecordingOverlay(
             self.stop_from_overlay,
             self._current_microphone_level,
@@ -150,6 +201,20 @@ class AppController:
         )
 
     def run(self) -> None:
+        if self.first_run:
+            size = str(self.settings.model_size)
+            mb = MODEL_DOWNLOAD_SIZES_MB.get(size, MODEL_DOWNLOAD_SIZES_MB["small"])
+            hotkey = display_hotkey(
+                self.settings.hotkeys.get("toggle_recording")
+            )
+            self.notify(
+                APP_NAME,
+                f"Press {hotkey} to dictate. The speech model ({size}, {mb} MB) "
+                "downloads once. Microphone > Test Microphone checks your mic.",
+            )
+        for notice in self._settings_notices:
+            self.notify(APP_NAME, notice)
+        self._settings_notices.clear()
         self.set_status(STATUS_IDLE)
         start_hotkeys = True
         if sys.platform == "darwin":
@@ -301,7 +366,7 @@ class AppController:
 
     def toggle(self, language_override: LanguageMode | None = None) -> None:
         beep: tuple[int, int] | None = None
-        start_error: str | None = None
+        start_error: BaseException | str | None = None
 
         if self._stop_microphone_test():
             return
@@ -330,7 +395,7 @@ class AppController:
                         self._paste_target_window = None
                         self._paste_target_process_name = None
                         self._overlay_anchor = None
-                        start_error = str(exc) or "Recording failed to start."
+                        start_error = exc
                     else:
                         self._recording_language_mode = language_mode
                         self.logger.info(
@@ -341,9 +406,22 @@ class AppController:
                         self.recording_overlay.show(self._overlay_anchor)
                         self.set_status(STATUS_RECORDING)
                         beep = (880, 120)
+                        self._maybe_toast_microphone_fallback()
 
         if start_error is not None:
-            self._handle_error(start_error)
+            if isinstance(start_error, BaseException):
+                message = str(start_error) or "Recording failed to start."
+                self.logger.error(
+                    "%s %s",
+                    message,
+                    getattr(start_error, "details", ""),
+                    exc_info=start_error,
+                )
+                self._beep(220, 350)
+                self.set_status(STATUS_ERROR)
+                self.notify(APP_NAME, message)
+            else:
+                self._handle_error(start_error)
             return
         if beep is not None:
             self._beep(*beep)
@@ -416,6 +494,13 @@ class AppController:
             source = WakeWordAudioSource(
                 audio_input_device=self.settings.audio_input_device
             )
+            set_selection = getattr(source, "set_audio_input_selection", None)
+            if callable(set_selection):
+                set_selection(
+                    self.settings.audio_input_device_name,
+                    self.settings.audio_input_device_host_api,
+                    self.settings.audio_input_device,
+                )
             listener = WakeWordListener(
                 source,
                 self.settings.wake_phrases,
@@ -509,22 +594,64 @@ class AppController:
 
     def set_audio_input_device(self, value: object) -> None:
         selected_device = normalize_audio_input_device(value)
+        device_name: str | None = None
+        device_host_api: str | None = None
+        if selected_device is not None:
+            try:
+                for device in list_audio_input_devices():
+                    if device.index == selected_device:
+                        device_name = device.name
+                        device_host_api = device.host_api
+                        break
+            except Exception:
+                self.logger.exception(
+                    "Could not resolve microphone identity for index %s.",
+                    selected_device,
+                )
+
         with self._lock:
             if self._processing or self.recorder.is_recording() or self._microphone_test:
                 raise RuntimeError("Stop microphone capture before changing the microphone.")
 
             previous_device = self.settings.audio_input_device
-            self.recorder.set_audio_input_device(selected_device)
+            previous_name = self.settings.audio_input_device_name
+            previous_host_api = self.settings.audio_input_device_host_api
+            wake_was_running = self._wake_listener is not None
+
+            set_selection = getattr(self.recorder, "set_audio_input_selection", None)
+            if callable(set_selection):
+                set_selection(device_name, device_host_api, selected_device)
+            else:
+                self.recorder.set_audio_input_device(selected_device)
             self.settings.audio_input_device = selected_device
+            self.settings.audio_input_device_name = device_name
+            self.settings.audio_input_device_host_api = device_host_api
             try:
                 save_settings(self.settings)
             except Exception:
                 self.settings.audio_input_device = previous_device
-                self.recorder.set_audio_input_device(previous_device)
+                self.settings.audio_input_device_name = previous_name
+                self.settings.audio_input_device_host_api = previous_host_api
+                if callable(set_selection):
+                    set_selection(previous_name, previous_host_api, previous_device)
+                else:
+                    self.recorder.set_audio_input_device(previous_device)
                 raise
 
+            if wake_was_running:
+                self._stop_wake_listener()
+
+        if wake_was_running and self.settings.wake_word_enabled:
+            self._start_wake_listener()
+
+        self._sync_microphone_label()
         self.tray.refresh_menu()
-        self.logger.info("Audio input device set to %s.", selected_device)
+        self.logger.info(
+            "Audio input device set to %s (name=%r, host_api=%r).",
+            selected_device,
+            device_name,
+            device_host_api,
+        )
 
     def start_microphone_test(self) -> None:
         microphone_error = self._microphone_readiness_error()
@@ -539,6 +666,13 @@ class AppController:
                 raise RuntimeError("A microphone test is already running.")
 
             microphone_test = MicrophoneTest(self.settings.audio_input_device)
+            set_selection = getattr(microphone_test, "set_audio_input_selection", None)
+            if callable(set_selection):
+                set_selection(
+                    self.settings.audio_input_device_name,
+                    self.settings.audio_input_device_host_api,
+                    self.settings.audio_input_device,
+                )
             microphone_test.start()
             cancel = threading.Event()
             self._microphone_test = microphone_test
@@ -590,6 +724,9 @@ class AppController:
             raise HotkeyConfigurationError(
                 "The hotkey settings could not be saved."
             ) from exc
+
+        self.tray.refresh_menu()
+        self.set_status(self._status)
 
         if self._try_schedule_macos_hotkey_relaunch():
             self.logger.info(
@@ -686,6 +823,8 @@ class AppController:
                 ) from update_error
             raise
         self.hotkeys = replacement
+        self.tray.refresh_menu()
+        self.set_status(self._status)
         self.logger.info("Hotkey settings updated and applied without restart.")
 
     def open_hotkey_settings(self) -> None:
@@ -736,6 +875,12 @@ class AppController:
             )
         except Exception:
             self._handle_error("Settings file could not be opened.")
+
+    def open_log_folder(self) -> None:
+        try:
+            _open_path(app_data_dir() / "logs")
+        except Exception:
+            self._handle_error("Log folder could not be opened.")
 
     def run_diagnostics(self) -> None:
         thread = threading.Thread(
@@ -947,7 +1092,21 @@ class AppController:
         thread.start()
 
     def _warm_model_worker(self) -> None:
+        downloading = False
         try:
+            size = str(self.settings.model_size)
+            cached = is_model_cached(size)
+            if cached is False:
+                downloading = True
+                mb = MODEL_DOWNLOAD_SIZES_MB.get(
+                    size, MODEL_DOWNLOAD_SIZES_MB["small"]
+                )
+                self.notify(
+                    APP_NAME,
+                    f"Downloading speech model {size} ({mb} MB). "
+                    "The first dictation may take a minute.",
+                )
+                self.set_status(STATUS_DOWNLOADING_MODEL)
             self.logger.info(
                 "Preloading speech model in background (model_size=%s; device=%s).",
                 self.settings.model_size,
@@ -959,6 +1118,9 @@ class AppController:
             self.logger.exception(
                 "Speech model preload failed; first dictation will retry the load."
             )
+        finally:
+            if downloading and self._status == STATUS_DOWNLOADING_MODEL:
+                self.set_status(STATUS_IDLE)
 
     def _stop_and_process(
         self,
@@ -968,6 +1130,11 @@ class AppController:
         audio_path: Path | None = None
         failed = False
         progress_cancel = threading.Event()
+        stats: Any = None
+        stop_ms = 0
+        transcribe_ms = 0
+        clean_ms = 0
+        paste_ms = 0
 
         try:
             self.logger.info("Stopping microphone capture...")
@@ -977,6 +1144,8 @@ class AppController:
             finally:
                 stop_complete.set()
             stop_elapsed = time.perf_counter() - stop_started
+            stop_ms = int(stop_elapsed * 1000)
+            stats = getattr(self.recorder, "last_take_stats", lambda: None)()
             if audio_path is None:
                 self.logger.info("Recording already stopped; skipping dictation.")
                 return
@@ -989,19 +1158,39 @@ class AppController:
                 audio_size,
             )
 
+            if stats is not None and stats.frames == 0:
+                label = stats.device_label
+                self.logger.info("Nothing was captured from %s", label)
+                self.notify(
+                    APP_NAME,
+                    f"Nothing was captured from {label}. Open Microphone and "
+                    "pick System Default or another device.",
+                )
+                try:
+                    audio_path.unlink(missing_ok=True)
+                except Exception:
+                    self.logger.warning("Temporary audio file could not be deleted.")
+                audio_path = None
+                return
+
             self.set_status(STATUS_TRANSCRIBING)
             self._start_slow_transcription_watcher(progress_cancel)
 
+            transcribe_started = time.perf_counter()
             result = self.transcriber.transcribe(audio_path, language_mode)
+            transcribe_ms = int((time.perf_counter() - transcribe_started) * 1000)
             self._delete_audio(audio_path)
             audio_path = None
 
             if not result.text.strip():
-                self.logger.info("No speech detected; transcription text was empty.")
-                self.notify(APP_NAME, "No speech detected")
+                self._notify_empty_transcription(
+                    stats,
+                    "No speech detected; transcription text was empty.",
+                )
                 return
 
             self.logger.info("Cleaning transcription text (mode=%s)...", self.settings.cleanup_mode)
+            clean_started = time.perf_counter()
             cleaned = clean_text(
                 result.text,
                 self.settings.cleanup_mode,
@@ -1011,13 +1200,17 @@ class AppController:
                 trim_phrase = self._pending_trim_phrase
             if trim_phrase:
                 cleaned = trim_trailing_phrase(cleaned, trim_phrase)
+            clean_ms = int((time.perf_counter() - clean_started) * 1000)
             if not cleaned.strip():
-                self.logger.info("No speech detected; cleaned transcription text was empty.")
-                self.notify(APP_NAME, "No speech detected")
+                self._notify_empty_transcription(
+                    stats,
+                    "No speech detected; cleaned transcription text was empty.",
+                )
                 return
 
             self.set_status(STATUS_PASTING)
             self.logger.info("Restoring focus and pasting transcription...")
+            paste_started = time.perf_counter()
             restored_target = self._restore_paste_target()
             if sys.platform.startswith("linux") and not restored_target:
                 shortcut = self._paste_shortcut()
@@ -1032,6 +1225,7 @@ class AppController:
                         "Automatic paste failed, and the transcription could not "
                         "be copied.",
                     )
+                paste_ms = int((time.perf_counter() - paste_started) * 1000)
                 return
             shortcut = self._paste_shortcut()
             if insert_text(cleaned, shortcut=shortcut):
@@ -1045,10 +1239,21 @@ class AppController:
                     APP_NAME,
                     f"Automatic paste failed. Try {_shortcut_label(shortcut)}.",
                 )
+            paste_ms = int((time.perf_counter() - paste_started) * 1000)
+        except ModelDownloadError as exc:
+            failed = True
+            self._handle_error(str(exc))
         except Exception:
             failed = True
             self._handle_error("Dictation failed.")
         finally:
+            self._log_take_timing(
+                stats=stats,
+                stop_ms=stop_ms,
+                transcribe_ms=transcribe_ms,
+                clean_ms=clean_ms,
+                paste_ms=paste_ms,
+            )
             progress_cancel.set()
             if audio_path is not None:
                 self._delete_audio(audio_path)
@@ -1155,11 +1360,98 @@ class AppController:
         except Exception:
             self.logger.warning("Temporary audio file could not be deleted.")
 
+    def _notify_empty_transcription(self, stats: Any, empty_log: str) -> None:
+        if stats is not None and stats.peak == 0.0:
+            label = stats.device_label
+            self.logger.info("%s delivered silence.", label)
+            self.notify(
+                APP_NAME,
+                f"{label} delivered silence. Check the microphone or pick another one.",
+            )
+            return
+        self.logger.info(empty_log)
+        self.notify(APP_NAME, "No speech detected")
+
+    def _log_take_timing(
+        self,
+        *,
+        stats: Any,
+        stop_ms: int,
+        transcribe_ms: int,
+        clean_ms: int,
+        paste_ms: int,
+    ) -> None:
+        to_stream_ms = int(
+            getattr(self.recorder, "last_to_stream_ms", lambda: 0)()
+        )
+        if stats is None:
+            first_block_display: int | None = None
+            record_s = 0.0
+            frames = 0
+            peak = 0.0
+            device = "unknown"
+        else:
+            first_block_display = (
+                int(stats.first_block_ms)
+                if stats.first_block_ms is not None
+                else None
+            )
+            record_s = float(stats.seconds)
+            frames = int(stats.frames)
+            peak = float(stats.peak)
+            device = str(stats.device_label)
+        self.logger.info(
+            "Take timing: to_stream_ms=%d first_block_ms=%s record_s=%.1f "
+            "stop_ms=%d transcribe_ms=%d clean_ms=%d paste_ms=%d "
+            "frames=%d peak=%.3f device=%s",
+            to_stream_ms,
+            first_block_display,
+            record_s,
+            stop_ms,
+            transcribe_ms,
+            clean_ms,
+            paste_ms,
+            frames,
+            peak,
+            device,
+        )
+
     def _handle_error(self, message: str) -> None:
         self.logger.exception(message)
         self._beep(220, 350)
         self.set_status(STATUS_ERROR)
         self.notify(APP_NAME, message)
+
+    def _sync_microphone_label(self) -> None:
+        label = SYSTEM_DEFAULT_INPUT_LABEL
+        name = self.settings.audio_input_device_name
+        index = self.settings.audio_input_device
+        if name is not None:
+            label = f"{name} [{index}]" if index is not None else name
+        elif index is not None:
+            label = f"Unavailable microphone [{index}]"
+        set_label = getattr(self.tray, "set_microphone_label", None)
+        if callable(set_label):
+            set_label(label)
+
+    def _maybe_toast_microphone_fallback(self) -> None:
+        resolution = getattr(self.recorder, "last_resolution", None)
+        if resolution is None:
+            return
+        fallback = bool(getattr(resolution, "fallback", False))
+        previous = self._previous_mic_resolution_fallback
+        self._previous_mic_resolution_fallback = fallback
+        if not fallback or previous:
+            return
+        saved_name = self.settings.audio_input_device_name
+        if saved_name is None:
+            reason = (
+                f"the saved microphone [{self.settings.audio_input_device}] "
+                "is unavailable"
+            )
+        else:
+            reason = f"{saved_name} is unavailable"
+        self.notify(APP_NAME, f"Using System Default because {reason}")
 
     def _beep(self, frequency: int, duration_ms: int) -> None:
         if sys.platform == "win32":
@@ -1224,9 +1516,16 @@ def main(argv: list[str] | None = None) -> int:
         print(f"{APP_NAME} is already running.", file=sys.stderr)
         return _finish_cli(0)
 
-    logger.info("%s starting.", APP_NAME)
+    logger.info(
+        "%s %s starting (settings=%s).",
+        APP_NAME,
+        __version__,
+        app_data_dir() / "settings.json",
+    )
 
-    settings = load_settings()
+    report = load_settings_report()
+    settings = report.settings
+    _adopt_audio_input_identity(settings, logger)
     logger.info(
         "Settings loaded: model_size=%s; device=%s; compute_type=%s; "
         "language_mode=%s; cleanup_mode=%s; paste_mode=%s; "
@@ -1240,7 +1539,11 @@ def main(argv: list[str] | None = None) -> int:
         settings.delete_audio_after_transcription,
     )
 
-    controller = AppController(settings)
+    controller = AppController(
+        settings,
+        notices=report.notices,
+        first_run=report.first_run,
+    )
     try:
         controller.run()
     except KeyboardInterrupt:

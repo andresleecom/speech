@@ -5,13 +5,17 @@ import threading
 from collections.abc import Callable
 from typing import Any
 
+from . import __version__
+from . import startup as startup_module
 from .audio_inputs import (
+    AudioInputDevice,
     AudioInputDeviceError,
     SYSTEM_DEFAULT_INPUT_LABEL,
     audio_input_device_label,
     list_audio_input_devices,
 )
 from .branding import APP_NAME
+from .hotkey_settings import display_hotkey
 from .languages import language_name, tray_language_modes
 
 _STATUS_COLORS = {
@@ -21,7 +25,10 @@ _STATUS_COLORS = {
     "Transcribing": (245, 158, 11, 255),
     "Pasting": (37, 99, 235, 255),
     "Error": (127, 29, 29, 255),
+    "Downloading model...": (14, 116, 144, 255),
 }
+_TOOLTIP_MAX_LENGTH = 120
+_MAX_PENDING_NOTIFICATIONS = 20
 
 
 class TrayApp:
@@ -36,7 +43,9 @@ class TrayApp:
         self._controller = controller
         self._icon: Any | None = None
         self._status = "Idle"
+        self._microphone_label = SYSTEM_DEFAULT_INPUT_LABEL
         self._ui_lock = threading.RLock()
+        self._pending_notifications: list[tuple[str, str]] = []
 
     def run(self) -> None:
         from pystray import Icon, Menu, MenuItem
@@ -52,7 +61,7 @@ class TrayApp:
                 self._make_menu(Menu, MenuItem),
             )
             icon = self._icon
-        icon.run()
+        icon.run(setup=self._on_icon_ready)
 
     def stop(self) -> None:
         with self._ui_lock:
@@ -78,10 +87,23 @@ class TrayApp:
             except Exception:
                 pass
 
+    def set_microphone_label(self, label: str) -> None:
+        with self._ui_lock:
+            self._microphone_label = str(label).strip() or SYSTEM_DEFAULT_INPUT_LABEL
+            icon = self._icon
+            if icon is None:
+                return
+            try:
+                icon.title = self._tooltip()
+            except Exception:
+                pass
+
     def notify(self, title: str, message: str) -> None:
         with self._ui_lock:
             icon = self._icon
             if icon is None:
+                if len(self._pending_notifications) < _MAX_PENDING_NOTIFICATIONS:
+                    self._pending_notifications.append((title, message))
                 return
             try:
                 icon.notify(message, title)
@@ -91,9 +113,24 @@ class TrayApp:
     def refresh_menu(self) -> None:
         self._update_menu()
 
+    def _on_icon_ready(self, icon: Any) -> None:
+        # Win32 balloons need a visible icon; pystray's default setup only
+        # sets visible when no custom setup is provided.
+        icon.visible = True
+        with self._ui_lock:
+            pending = list(self._pending_notifications)
+            self._pending_notifications.clear()
+        for title, message in pending:
+            self.notify(title, message)
+
     def _make_menu(self, menu_cls: Any, item_cls: Any) -> Any:
         return menu_cls(
-            item_cls("Start/Stop Recording", self._on_toggle),
+            item_cls(
+                f"Speech {__version__}",
+                lambda icon, item: None,
+                enabled=False,
+            ),
+            item_cls(self._toggle_recording_label, self._on_toggle),
             item_cls(
                 self._wake_word_label(),
                 self._on_toggle_wake_word,
@@ -140,12 +177,19 @@ class TrayApp:
                 visible=sys.platform == "darwin",
             ),
             item_cls("Open Settings File", self._on_open_settings),
+            item_cls("Open Log Folder", self._on_open_log_folder),
             item_cls(
                 "Check for Updates",
                 self._on_check_updates,
                 visible=sys.platform == "win32",
             ),
             item_cls("Diagnostics", self._on_diagnostics),
+            item_cls(
+                "Start at login",
+                self._on_toggle_startup,
+                checked=lambda item: self._startup_is_enabled(),
+                visible=sys.platform == "win32",
+            ),
             item_cls("Exit", self._on_exit),
         )
 
@@ -176,14 +220,12 @@ class TrayApp:
         return menu_cls(*items)
 
     def _make_microphone_menu(self, menu_cls: Any, item_cls: Any) -> Any:
-        selected_device = self._current_audio_input_device()
         items = [
-            self._radio_item(
-                item_cls,
+            item_cls(
                 SYSTEM_DEFAULT_INPUT_LABEL,
-                None,
-                self._current_audio_input_device,
-                self._select_audio_input_device,
+                self._selection_action(None, self._select_audio_input_device),
+                checked=lambda item: self._system_default_selected(),
+                radio=True,
             )
         ]
         try:
@@ -194,12 +236,13 @@ class TrayApp:
         if devices:
             for device in devices:
                 items.append(
-                    self._radio_item(
-                        item_cls,
+                    item_cls(
                         device.choice_label,
-                        device.index,
-                        self._current_audio_input_device,
-                        self._select_audio_input_device,
+                        self._selection_action(
+                            device.index, self._select_audio_input_device
+                        ),
+                        checked=self._device_checked(device),
+                        radio=True,
                     )
                 )
         else:
@@ -207,12 +250,10 @@ class TrayApp:
                 item_cls("No microphone available", lambda icon, item: None, enabled=False)
             )
 
-        if selected_device is not None and not any(
-            device.index == selected_device for device in devices
-        ):
+        if self._saved_microphone_missing(devices):
             items.append(
                 item_cls(
-                    audio_input_device_label(selected_device, devices),
+                    self._unavailable_microphone_label(devices),
                     lambda icon, item: None,
                     enabled=False,
                 )
@@ -250,6 +291,37 @@ class TrayApp:
     def _on_toggle(self, icon: Any, item: Any) -> None:
         self._controller.toggle()
 
+    def _toggle_recording_label(self, item: Any | None = None) -> str:
+        return f"Start/Stop Recording ({self._toggle_hotkey_display()})"
+
+    def _toggle_hotkey_display(self) -> str:
+        hotkeys = getattr(self._controller.settings, "hotkeys", None) or {}
+        combo = hotkeys.get("toggle_recording")
+        return display_hotkey(combo)
+
+    def _startup_is_enabled(self) -> bool:
+        return startup_module.is_enabled()
+
+    def _on_toggle_startup(self, icon: Any, item: Any) -> None:
+        try:
+            if startup_module.is_enabled():
+                startup_module.disable()
+            else:
+                exe = startup_module.installed_executable()
+                if exe is None:
+                    self._controller.notify(
+                        APP_NAME,
+                        "Start at login is available in the installed Speech app.",
+                    )
+                    return
+                startup_module.enable(exe)
+        except Exception as exc:
+            self._controller.notify(
+                APP_NAME,
+                str(exc) or "Start at login could not be updated.",
+            )
+        self._update_menu()
+
     def _on_toggle_wake_word(self, icon: Any, item: Any) -> None:
         self._controller.set_wake_word_enabled(not self._current_wake_word_enabled())
 
@@ -265,6 +337,9 @@ class TrayApp:
 
     def _on_open_settings(self, icon: Any, item: Any) -> None:
         self._controller.open_settings_file()
+
+    def _on_open_log_folder(self, icon: Any, item: Any) -> None:
+        self._controller.open_log_folder()
 
     def _on_hotkey_settings(self, icon: Any, item: Any) -> None:
         self._controller.open_hotkey_settings()
@@ -317,8 +392,66 @@ class TrayApp:
     def _current_audio_input_device(self) -> int | None:
         return getattr(self._controller.settings, "audio_input_device", None)
 
+    def _saved_microphone_name(self) -> str | None:
+        return getattr(self._controller.settings, "audio_input_device_name", None)
+
+    def _saved_microphone_host_api(self) -> str | None:
+        return getattr(self._controller.settings, "audio_input_device_host_api", None)
+
+    def _system_default_selected(self) -> bool:
+        return (
+            self._saved_microphone_name() is None
+            and self._current_audio_input_device() is None
+        )
+
+    def _device_matches_saved(self, device: AudioInputDevice) -> bool:
+        saved_name = self._saved_microphone_name()
+        if saved_name is not None:
+            return (
+                device.name == saved_name
+                and device.host_api == (self._saved_microphone_host_api() or "")
+            )
+        selected = self._current_audio_input_device()
+        return selected is not None and device.index == selected
+
+    def _device_checked(self, device: AudioInputDevice) -> Callable[[Any], bool]:
+        def checked(item: Any) -> bool:
+            return self._device_matches_saved(device)
+
+        return checked
+
+    def _saved_microphone_missing(self, devices: tuple[AudioInputDevice, ...]) -> bool:
+        saved_name = self._saved_microphone_name()
+        if saved_name is not None:
+            host_api = self._saved_microphone_host_api() or ""
+            return not any(
+                device.name == saved_name and device.host_api == host_api
+                for device in devices
+            )
+        selected = self._current_audio_input_device()
+        if selected is None:
+            return False
+        return not any(device.index == selected for device in devices)
+
+    def _unavailable_microphone_label(
+        self, devices: tuple[AudioInputDevice, ...]
+    ) -> str:
+        saved_name = self._saved_microphone_name()
+        selected = self._current_audio_input_device()
+        if saved_name is not None:
+            if selected is not None:
+                return f"{saved_name} [{selected}]"
+            return saved_name
+        return audio_input_device_label(selected, devices)
+
     def _tooltip(self) -> str:
-        return f"{APP_NAME} - {self._status}"
+        parts = [APP_NAME, self._status, self._microphone_label]
+        if self._status == "Idle":
+            parts.append(self._toggle_hotkey_display())
+        tooltip = " - ".join(parts)
+        if len(tooltip) <= _TOOLTIP_MAX_LENGTH:
+            return tooltip
+        return tooltip[: _TOOLTIP_MAX_LENGTH - 3] + "..."
 
     def _make_icon_image(self) -> Any:
         from PIL import Image, ImageDraw
