@@ -8,7 +8,13 @@ from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 
-from .audio_inputs import normalize_audio_input_device
+from .audio_inputs import (
+    ResolvedInputDevice,
+    input_stream_extra_settings,
+    list_audio_input_devices,
+    normalize_audio_input_device,
+    resolve_input_device,
+)
 from .branding import APP_NAME
 from .logger import get_logger
 
@@ -24,7 +30,9 @@ MAX_RECORDING_SAMPLES = SAMPLE_RATE * MAX_RECORDING_SECONDS
 
 
 class RecorderError(RuntimeError):
-    pass
+    def __init__(self, message: str, details: str = "") -> None:
+        super().__init__(message)
+        self.details = details
 
 
 class Recorder:
@@ -44,6 +52,9 @@ class Recorder:
         self._max_duration_reached = False
         self._on_max_duration = on_max_duration
         self._audio_input_device = normalize_audio_input_device(audio_input_device)
+        self._audio_input_device_name: str | None = None
+        self._audio_input_device_host_api: str | None = None
+        self.last_resolution: ResolvedInputDevice | None = None
 
     def start_recording(self) -> None:
         if self.is_recording():
@@ -61,7 +72,14 @@ class Recorder:
             self._level = 0.0
             self._sample_count = 0
             self._max_duration_reached = False
-            audio_input_device = self._audio_input_device
+            name = self._audio_input_device_name
+            host_api = self._audio_input_device_host_api
+            index_hint = self._audio_input_device
+
+        devices = list_audio_input_devices()
+        resolved = resolve_input_device(name, host_api, index_hint, devices)
+        self.last_resolution = resolved
+        extras = _extras_for_resolved_index(resolved.index, devices)
 
         def callback(indata: Any, frames: int, time: Any, status: Any) -> None:
             if status:
@@ -70,7 +88,7 @@ class Recorder:
 
         stream: Any | None = None
         try:
-            stream = _input_stream(sd, callback, audio_input_device)
+            stream = _input_stream(sd, callback, resolved.index, extras)
             stream.start()
         except Exception as exc:
             if stream is not None:
@@ -82,7 +100,7 @@ class Recorder:
                 self._blocks = []
                 self._sample_count = 0
             message = "Could not start microphone recording"
-            if audio_input_device is not None:
+            if resolved.index is not None or name is not None:
                 message += (
                     ". The selected microphone may be unavailable. Open the "
                     "Microphone menu and choose System Default or another device"
@@ -92,7 +110,13 @@ class Recorder:
                     ". Check microphone permissions or choose another device in "
                     "the Microphone menu"
                 )
-            raise RecorderError(f"{message} ({exc.__class__.__name__}).") from exc
+            raise RecorderError(
+                f"{message} ({exc.__class__.__name__}).",
+                details=(
+                    f"{exc.__class__.__name__}: {exc}; "
+                    f"device={resolved.index}; label={resolved.label}"
+                ),
+            ) from exc
 
         with self._lock:
             self._stream = stream
@@ -216,6 +240,22 @@ class Recorder:
                 raise RecorderError("Stop dictation before changing the microphone.")
             self._audio_input_device = selected_device
 
+    def set_audio_input_selection(
+        self,
+        name: str | None,
+        host_api: str | None,
+        index_hint: object,
+    ) -> None:
+        selected_device = normalize_audio_input_device(index_hint)
+        normalized_name = _normalize_identity_text(name)
+        normalized_host_api = _normalize_identity_text(host_api)
+        with self._lock:
+            if self._stream is not None:
+                raise RecorderError("Stop dictation before changing the microphone.")
+            self._audio_input_device_name = normalized_name
+            self._audio_input_device_host_api = normalized_host_api
+            self._audio_input_device = selected_device
+
     def _record_block(self, indata: Any) -> None:
         block = indata.copy()
         level = _audio_level_from_block(block)
@@ -249,11 +289,14 @@ class MicrophoneTest:
 
     def __init__(self, audio_input_device: int | None = None) -> None:
         self._audio_input_device = normalize_audio_input_device(audio_input_device)
+        self._audio_input_device_name: str | None = None
+        self._audio_input_device_host_api: str | None = None
         self._stream: Any | None = None
         self._lock = threading.Lock()
         self._logger = get_logger(__name__)
         self._level = 0.0
         self._peak_level = 0.0
+        self.last_resolution: ResolvedInputDevice | None = None
 
     def start(self) -> None:
         with self._lock:
@@ -261,6 +304,9 @@ class MicrophoneTest:
                 return
             self._level = 0.0
             self._peak_level = 0.0
+            name = self._audio_input_device_name
+            host_api = self._audio_input_device_host_api
+            index_hint = self._audio_input_device
 
         try:
             import sounddevice as sd
@@ -268,6 +314,11 @@ class MicrophoneTest:
             raise RecorderError(
                 "sounddevice is not installed; microphone testing is unavailable."
             ) from exc
+
+        devices = list_audio_input_devices()
+        resolved = resolve_input_device(name, host_api, index_hint, devices)
+        self.last_resolution = resolved
+        extras = _extras_for_resolved_index(resolved.index, devices)
 
         def callback(indata: Any, frames: int, time: Any, status: Any) -> None:
             if status:
@@ -279,7 +330,7 @@ class MicrophoneTest:
 
         stream: Any | None = None
         try:
-            stream = _input_stream(sd, callback, self._audio_input_device)
+            stream = _input_stream(sd, callback, resolved.index, extras)
             stream.start()
         except Exception as exc:
             if stream is not None:
@@ -288,7 +339,7 @@ class MicrophoneTest:
                 except Exception:
                     pass
             message = "Could not start microphone test"
-            if self._audio_input_device is not None:
+            if resolved.index is not None or name is not None:
                 message += (
                     ". The selected microphone may be unavailable. Open the "
                     "Microphone menu and choose System Default or another device"
@@ -298,7 +349,13 @@ class MicrophoneTest:
                     ". Check microphone permissions or choose another device in "
                     "the Microphone menu"
                 )
-            raise RecorderError(f"{message} ({exc.__class__.__name__}).") from exc
+            raise RecorderError(
+                f"{message} ({exc.__class__.__name__}).",
+                details=(
+                    f"{exc.__class__.__name__}: {exc}; "
+                    f"device={resolved.index}; label={resolved.label}"
+                ),
+            ) from exc
 
         with self._lock:
             self._stream = stream
@@ -342,11 +399,35 @@ class MicrophoneTest:
         with self._lock:
             return self._level
 
+    def set_audio_input_device(self, value: object) -> None:
+        selected_device = normalize_audio_input_device(value)
+        with self._lock:
+            if self._stream is not None:
+                raise RecorderError("Stop the microphone test before changing the microphone.")
+            self._audio_input_device = selected_device
+
+    def set_audio_input_selection(
+        self,
+        name: str | None,
+        host_api: str | None,
+        index_hint: object,
+    ) -> None:
+        selected_device = normalize_audio_input_device(index_hint)
+        normalized_name = _normalize_identity_text(name)
+        normalized_host_api = _normalize_identity_text(host_api)
+        with self._lock:
+            if self._stream is not None:
+                raise RecorderError("Stop the microphone test before changing the microphone.")
+            self._audio_input_device_name = normalized_name
+            self._audio_input_device_host_api = normalized_host_api
+            self._audio_input_device = selected_device
+
 
 def _input_stream(
     sounddevice: Any,
     callback: Callable[[Any, int, Any, Any], None],
     audio_input_device: int | None,
+    extra_options: dict[str, Any] | None = None,
 ) -> Any:
     options: dict[str, Any] = {
         "samplerate": SAMPLE_RATE,
@@ -356,7 +437,28 @@ def _input_stream(
     }
     if audio_input_device is not None:
         options["device"] = audio_input_device
+    if extra_options:
+        options.update(extra_options)
     return sounddevice.InputStream(**options)
+
+
+def _extras_for_resolved_index(
+    index: int | None,
+    devices: tuple[Any, ...],
+) -> dict[str, Any]:
+    if index is None:
+        return {}
+    for device in devices:
+        if getattr(device, "index", None) == index:
+            return input_stream_extra_settings(getattr(device, "host_api", None))
+    return {}
+
+
+def _normalize_identity_text(value: str | None) -> str | None:
+    if value is None:
+        return None
+    stripped = str(value).strip()
+    return stripped or None
 
 
 def _audio_level_from_block(block: Any) -> float:

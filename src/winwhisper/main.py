@@ -13,7 +13,11 @@ from pathlib import Path, PurePosixPath
 from typing import Any, Callable, Literal
 
 from . import __version__
-from .audio_inputs import normalize_audio_input_device
+from .audio_inputs import (
+    SYSTEM_DEFAULT_INPUT_LABEL,
+    list_audio_input_devices,
+    normalize_audio_input_device,
+)
 from .branding import APP_NAME
 from .config import Settings, app_data_dir, load_settings, save_settings
 from .diagnostics import run_diagnostics as run_diagnostics_report
@@ -100,6 +104,29 @@ def _hard_exit(exit_code: int) -> None:
     os._exit(exit_code)
 
 
+def _adopt_audio_input_identity(settings: Settings, logger: logging.Logger) -> None:
+    """Fill name/host_api from the live table when only an index hint is saved."""
+    if settings.audio_input_device is None or settings.audio_input_device_name:
+        return
+    try:
+        for device in list_audio_input_devices():
+            if device.index != settings.audio_input_device:
+                continue
+            settings.audio_input_device_name = device.name
+            settings.audio_input_device_host_api = device.host_api
+            save_settings(settings)
+            logger.info(
+                "Adopted microphone identity name=%r host_api=%r for index %s.",
+                device.name,
+                device.host_api,
+                device.index,
+            )
+            return
+    except Exception:
+        logger.exception("Could not adopt microphone identity from the live device table.")
+
+
+
 class AppController:
     def __init__(self, settings: Settings) -> None:
         self.settings = settings
@@ -111,8 +138,17 @@ class AppController:
             on_max_duration=self._on_max_recording_duration,
             audio_input_device=settings.audio_input_device,
         )
+        set_selection = getattr(self.recorder, "set_audio_input_selection", None)
+        if callable(set_selection):
+            set_selection(
+                settings.audio_input_device_name,
+                settings.audio_input_device_host_api,
+                settings.audio_input_device,
+            )
+        self._previous_mic_resolution_fallback = False
         self.transcriber = Transcriber(settings, self._on_device_fallback)
         self.tray = TrayApp(self)
+        self._sync_microphone_label()
         self.recording_overlay = RecordingOverlay(
             self.stop_from_overlay,
             self._current_microphone_level,
@@ -301,7 +337,7 @@ class AppController:
 
     def toggle(self, language_override: LanguageMode | None = None) -> None:
         beep: tuple[int, int] | None = None
-        start_error: str | None = None
+        start_error: BaseException | str | None = None
 
         if self._stop_microphone_test():
             return
@@ -330,7 +366,7 @@ class AppController:
                         self._paste_target_window = None
                         self._paste_target_process_name = None
                         self._overlay_anchor = None
-                        start_error = str(exc) or "Recording failed to start."
+                        start_error = exc
                     else:
                         self._recording_language_mode = language_mode
                         self.logger.info(
@@ -341,9 +377,22 @@ class AppController:
                         self.recording_overlay.show(self._overlay_anchor)
                         self.set_status(STATUS_RECORDING)
                         beep = (880, 120)
+                        self._maybe_toast_microphone_fallback()
 
         if start_error is not None:
-            self._handle_error(start_error)
+            if isinstance(start_error, BaseException):
+                message = str(start_error) or "Recording failed to start."
+                self.logger.error(
+                    "%s %s",
+                    message,
+                    getattr(start_error, "details", ""),
+                    exc_info=start_error,
+                )
+                self._beep(220, 350)
+                self.set_status(STATUS_ERROR)
+                self.notify(APP_NAME, message)
+            else:
+                self._handle_error(start_error)
             return
         if beep is not None:
             self._beep(*beep)
@@ -416,6 +465,13 @@ class AppController:
             source = WakeWordAudioSource(
                 audio_input_device=self.settings.audio_input_device
             )
+            set_selection = getattr(source, "set_audio_input_selection", None)
+            if callable(set_selection):
+                set_selection(
+                    self.settings.audio_input_device_name,
+                    self.settings.audio_input_device_host_api,
+                    self.settings.audio_input_device,
+                )
             listener = WakeWordListener(
                 source,
                 self.settings.wake_phrases,
@@ -509,22 +565,64 @@ class AppController:
 
     def set_audio_input_device(self, value: object) -> None:
         selected_device = normalize_audio_input_device(value)
+        device_name: str | None = None
+        device_host_api: str | None = None
+        if selected_device is not None:
+            try:
+                for device in list_audio_input_devices():
+                    if device.index == selected_device:
+                        device_name = device.name
+                        device_host_api = device.host_api
+                        break
+            except Exception:
+                self.logger.exception(
+                    "Could not resolve microphone identity for index %s.",
+                    selected_device,
+                )
+
         with self._lock:
             if self._processing or self.recorder.is_recording() or self._microphone_test:
                 raise RuntimeError("Stop microphone capture before changing the microphone.")
 
             previous_device = self.settings.audio_input_device
-            self.recorder.set_audio_input_device(selected_device)
+            previous_name = self.settings.audio_input_device_name
+            previous_host_api = self.settings.audio_input_device_host_api
+            wake_was_running = self._wake_listener is not None
+
+            set_selection = getattr(self.recorder, "set_audio_input_selection", None)
+            if callable(set_selection):
+                set_selection(device_name, device_host_api, selected_device)
+            else:
+                self.recorder.set_audio_input_device(selected_device)
             self.settings.audio_input_device = selected_device
+            self.settings.audio_input_device_name = device_name
+            self.settings.audio_input_device_host_api = device_host_api
             try:
                 save_settings(self.settings)
             except Exception:
                 self.settings.audio_input_device = previous_device
-                self.recorder.set_audio_input_device(previous_device)
+                self.settings.audio_input_device_name = previous_name
+                self.settings.audio_input_device_host_api = previous_host_api
+                if callable(set_selection):
+                    set_selection(previous_name, previous_host_api, previous_device)
+                else:
+                    self.recorder.set_audio_input_device(previous_device)
                 raise
 
+            if wake_was_running:
+                self._stop_wake_listener()
+
+        if wake_was_running and self.settings.wake_word_enabled:
+            self._start_wake_listener()
+
+        self._sync_microphone_label()
         self.tray.refresh_menu()
-        self.logger.info("Audio input device set to %s.", selected_device)
+        self.logger.info(
+            "Audio input device set to %s (name=%r, host_api=%r).",
+            selected_device,
+            device_name,
+            device_host_api,
+        )
 
     def start_microphone_test(self) -> None:
         microphone_error = self._microphone_readiness_error()
@@ -539,6 +637,13 @@ class AppController:
                 raise RuntimeError("A microphone test is already running.")
 
             microphone_test = MicrophoneTest(self.settings.audio_input_device)
+            set_selection = getattr(microphone_test, "set_audio_input_selection", None)
+            if callable(set_selection):
+                set_selection(
+                    self.settings.audio_input_device_name,
+                    self.settings.audio_input_device_host_api,
+                    self.settings.audio_input_device,
+                )
             microphone_test.start()
             cancel = threading.Event()
             self._microphone_test = microphone_test
@@ -1161,6 +1266,37 @@ class AppController:
         self.set_status(STATUS_ERROR)
         self.notify(APP_NAME, message)
 
+    def _sync_microphone_label(self) -> None:
+        label = SYSTEM_DEFAULT_INPUT_LABEL
+        name = self.settings.audio_input_device_name
+        index = self.settings.audio_input_device
+        if name is not None:
+            label = f"{name} [{index}]" if index is not None else name
+        elif index is not None:
+            label = f"Unavailable microphone [{index}]"
+        set_label = getattr(self.tray, "set_microphone_label", None)
+        if callable(set_label):
+            set_label(label)
+
+    def _maybe_toast_microphone_fallback(self) -> None:
+        resolution = getattr(self.recorder, "last_resolution", None)
+        if resolution is None:
+            return
+        fallback = bool(getattr(resolution, "fallback", False))
+        previous = self._previous_mic_resolution_fallback
+        self._previous_mic_resolution_fallback = fallback
+        if not fallback or previous:
+            return
+        saved_name = self.settings.audio_input_device_name
+        if saved_name is None:
+            reason = (
+                f"the saved microphone [{self.settings.audio_input_device}] "
+                "is unavailable"
+            )
+        else:
+            reason = f"{saved_name} is unavailable"
+        self.notify(APP_NAME, f"Using System Default because {reason}")
+
     def _beep(self, frequency: int, duration_ms: int) -> None:
         if sys.platform == "win32":
             try:
@@ -1231,8 +1367,8 @@ def main(argv: list[str] | None = None) -> int:
         app_data_dir() / "settings.json",
     )
 
-
     settings = load_settings()
+    _adopt_audio_input_identity(settings, logger)
     logger.info(
         "Settings loaded: model_size=%s; device=%s; compute_type=%s; "
         "language_mode=%s; cleanup_mode=%s; paste_mode=%s; "

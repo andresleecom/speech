@@ -502,6 +502,10 @@ class FakeRecorder:
     def __init__(self, *args, **kwargs) -> None:
         self.recording = False
         self.recent_audio_capture = False
+        self.audio_input_device = kwargs.get("audio_input_device")
+        self.audio_input_device_name = None
+        self.audio_input_device_host_api = None
+        self.last_resolution = None
 
     def start_recording(self) -> None:
         self.recording = True
@@ -523,6 +527,14 @@ class FakeRecorder:
 
     def set_recent_audio_capture(self, enabled: bool) -> None:
         self.recent_audio_capture = bool(enabled)
+
+    def set_audio_input_device(self, value) -> None:
+        self.audio_input_device = value
+
+    def set_audio_input_selection(self, name, host_api, index_hint) -> None:
+        self.audio_input_device_name = name
+        self.audio_input_device_host_api = host_api
+        self.audio_input_device = index_hint
 
 
 class FakeTranscriber:
@@ -553,6 +565,7 @@ class FakeTray:
         self.controller = controller
         self.notifications: list[tuple[str, str]] = []
         self.refresh_count = 0
+        self.microphone_label = None
 
     def run(self) -> None:
         return None
@@ -562,6 +575,9 @@ class FakeTray:
 
     def set_status(self, status) -> None:
         return None
+
+    def set_microphone_label(self, label) -> None:
+        self.microphone_label = label
 
     def notify(self, title, message) -> None:
         self.notifications.append((title, message))
@@ -656,14 +672,24 @@ class FakeWakeAudioSource:
     would otherwise run synchronously and hang the test.
     """
 
+    instances: list["FakeWakeAudioSource"] = []
+
     def __init__(self, audio_input_device=None) -> None:
-        pass
+        self.audio_input_device = audio_input_device
+        self.audio_input_device_name = None
+        self.audio_input_device_host_api = None
+        self.instances.append(self)
 
     def start(self, on_block) -> None:
         pass
 
     def stop(self) -> None:
         pass
+
+    def set_audio_input_selection(self, name, host_api, index_hint) -> None:
+        self.audio_input_device_name = name
+        self.audio_input_device_host_api = host_api
+        self.audio_input_device = index_hint
 
 
 class ImmediateThread:
@@ -684,6 +710,7 @@ def make_controller(
 ):
     FakeListener.instances.clear()
     FakeMonitor.instances.clear()
+    FakeWakeAudioSource.instances.clear()
     FakeTranscriber.text = transcription_text
     monkeypatch.setattr(sys, "platform", "win32")
     monkeypatch.setenv("WINWHISPER_APPDATA_DIR", str(tmp_path))
@@ -725,6 +752,28 @@ def test_run_starts_listener_only_when_wake_word_enabled(monkeypatch, tmp_path):
 
     assert len(FakeListener.instances) == 1
     assert FakeListener.instances[0].started is True
+
+
+def test_set_audio_input_device_restarts_wake_listener(monkeypatch, tmp_path):
+    from winwhisper.audio_inputs import AudioInputDevice
+
+    devices = (
+        AudioInputDevice(
+            index=5, name="USB Mic", input_channels=1, host_api="MME"
+        ),
+    )
+    monkeypatch.setattr(main_module, "list_audio_input_devices", lambda: devices)
+    controller = make_controller(monkeypatch, tmp_path, [], wake_word_enabled=True)
+    controller._start_wake_listener()
+    first_listener = FakeListener.instances[0]
+
+    controller.set_audio_input_device(5)
+
+    assert first_listener.stopped is True
+    assert len(FakeListener.instances) == 2
+    assert FakeListener.instances[1].started is True
+    assert controller.settings.audio_input_device_name == "USB Mic"
+    assert FakeWakeAudioSource.instances[-1].audio_input_device_name == "USB Mic"
 
 
 def test_run_without_wake_word_starts_no_listener(monkeypatch, tmp_path):

@@ -35,6 +35,9 @@ class FakeRecorder:
     def __init__(self, *args, **kwargs) -> None:
         self.recording = False
         self.audio_input_device = kwargs.get("audio_input_device")
+        self.audio_input_device_name = None
+        self.audio_input_device_host_api = None
+        self.last_resolution = None
 
     def start_recording(self) -> None:
         self.recording = True
@@ -56,12 +59,21 @@ class FakeRecorder:
             raise RuntimeError("Stop dictation before changing the microphone.")
         self.audio_input_device = value
 
+    def set_audio_input_selection(self, name, host_api, index_hint) -> None:
+        if self.recording:
+            raise RuntimeError("Stop dictation before changing the microphone.")
+        self.audio_input_device_name = name
+        self.audio_input_device_host_api = host_api
+        self.audio_input_device = index_hint
+
 
 class FakeMicrophoneTest:
     instances: list["FakeMicrophoneTest"] = []
 
     def __init__(self, audio_input_device) -> None:
         self.audio_input_device = audio_input_device
+        self.audio_input_device_name = None
+        self.audio_input_device_host_api = None
         self.started = False
         self.stopped = False
         self.peak_level = 0.0
@@ -76,6 +88,11 @@ class FakeMicrophoneTest:
 
     def current_level(self) -> float:
         return self.peak_level
+
+    def set_audio_input_selection(self, name, host_api, index_hint) -> None:
+        self.audio_input_device_name = name
+        self.audio_input_device_host_api = host_api
+        self.audio_input_device = index_hint
 
 
 class FakeTranscriber:
@@ -113,6 +130,7 @@ class FakeTray:
         self.controller = controller
         self.statuses: list[str] = []
         self.notifications: list[tuple[str, str]] = []
+        self.microphone_label = None
 
     def run(self) -> None:
         return None
@@ -122,6 +140,9 @@ class FakeTray:
 
     def set_status(self, status: str) -> None:
         self.statuses.append(status)
+
+    def set_microphone_label(self, label: str) -> None:
+        self.microphone_label = label
 
     def notify(self, title: str, message: str) -> None:
         self.notifications.append((title, message))
@@ -710,6 +731,14 @@ def test_controller_persists_favorites_and_routes_quick_language_actions(
 
 
 def test_controller_persists_input_device_and_runs_microphone_test(monkeypatch, tmp_path):
+    from winwhisper.audio_inputs import AudioInputDevice
+
+    devices = (
+        AudioInputDevice(
+            index=3, name="USB Mic", input_channels=1, host_api="MME"
+        ),
+    )
+    monkeypatch.setattr(main_module, "list_audio_input_devices", lambda: devices)
     controller = make_controller(monkeypatch, tmp_path, [], [])
 
     controller.set_audio_input_device(3)
@@ -719,8 +748,12 @@ def test_controller_persists_input_device_and_runs_microphone_test(monkeypatch, 
     controller.stop_from_overlay()
 
     assert controller.settings.audio_input_device == 3
+    assert controller.settings.audio_input_device_name == "USB Mic"
+    assert controller.settings.audio_input_device_host_api == "MME"
     assert controller.recorder.audio_input_device == 3
+    assert controller.recorder.audio_input_device_name == "USB Mic"
     assert load_settings().audio_input_device == 3
+    assert load_settings().audio_input_device_name == "USB Mic"
     assert microphone_test.started is True
     assert microphone_test.stopped is True
     assert FakeOverlay.instances[0].events[-2:] == [
@@ -728,6 +761,83 @@ def test_controller_persists_input_device_and_runs_microphone_test(monkeypatch, 
         "hide",
     ]
     assert controller.tray.notifications[-1][1] == "Microphone test complete. Signal detected."
+    assert controller.tray.microphone_label == "USB Mic [3]"
+
+
+def test_controller_toasts_microphone_fallback_once(monkeypatch, tmp_path):
+    from winwhisper.audio_inputs import ResolvedInputDevice
+
+    controller = make_controller(monkeypatch, tmp_path, [], [])
+    controller.settings.audio_input_device_name = "Missing Mic"
+    controller.recorder.last_resolution = ResolvedInputDevice(
+        index=None,
+        label="System Default",
+        fallback=True,
+        reason="Missing Mic is unavailable",
+    )
+
+    controller.toggle()
+    controller.recorder.recording = False
+    controller.toggle()
+
+    fallback_toasts = [
+        message
+        for _, message in controller.tray.notifications
+        if message.startswith("Using System Default because")
+    ]
+    assert fallback_toasts == [
+        "Using System Default because Missing Mic is unavailable"
+    ]
+    assert controller.settings.audio_input_device_name == "Missing Mic"
+    saved = load_settings()
+    assert saved.audio_input_device_name is None
+    assert saved.audio_input_device is None
+
+
+def test_controller_toasts_legacy_index_fallback(monkeypatch, tmp_path):
+    from winwhisper.audio_inputs import ResolvedInputDevice
+
+    controller = make_controller(monkeypatch, tmp_path, [], [])
+    controller.settings.audio_input_device = 3
+    controller.settings.audio_input_device_name = None
+    controller.recorder.last_resolution = ResolvedInputDevice(
+        index=None,
+        label="System Default",
+        fallback=True,
+        reason="Microphone [3] is unavailable",
+    )
+
+    controller.toggle()
+
+    fallback_toasts = [
+        message
+        for _, message in controller.tray.notifications
+        if message.startswith("Using System Default because")
+    ]
+    assert fallback_toasts == [
+        "Using System Default because the saved microphone [3] is unavailable"
+    ]
+
+
+def test_adopt_audio_input_identity_at_startup(monkeypatch, tmp_path):
+    from winwhisper.audio_inputs import AudioInputDevice
+    from winwhisper.main import _adopt_audio_input_identity
+
+    monkeypatch.setenv("WINWHISPER_APPDATA_DIR", str(tmp_path))
+    devices = (
+        AudioInputDevice(
+            index=2, name="PodMic", input_channels=1, host_api="MME"
+        ),
+    )
+    monkeypatch.setattr(main_module, "list_audio_input_devices", lambda: devices)
+    settings = Settings(audio_input_device=2)
+    assert settings.audio_input_device_name is None
+
+    _adopt_audio_input_identity(settings, main_module.get_logger(__name__))
+
+    assert settings.audio_input_device_name == "PodMic"
+    assert settings.audio_input_device_host_api == "MME"
+    assert load_settings().audio_input_device_name == "PodMic"
 
 
 def test_controller_cannot_change_microphone_during_microphone_test(monkeypatch, tmp_path):

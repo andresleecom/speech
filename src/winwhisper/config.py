@@ -35,6 +35,8 @@ class Settings(BaseModel):
     device: str = CPU_DEVICE
     compute_type: str = DEFAULT_COMPUTE_TYPE
     audio_input_device: int | None = None
+    audio_input_device_name: str | None = None
+    audio_input_device_host_api: str | None = None
     language_mode: str = AUTO_LANGUAGE_MODE
     language_favorites: list[str | None] = Field(
         default_factory=lambda: list(DEFAULT_LANGUAGE_FAVORITES)
@@ -84,6 +86,14 @@ class Settings(BaseModel):
     @classmethod
     def validate_audio_input_device(cls, value: object) -> int | None:
         return normalize_audio_input_device(value)
+
+    @field_validator("audio_input_device_name", "audio_input_device_host_api", mode="before")
+    @classmethod
+    def validate_optional_audio_identity(cls, value: object) -> str | None:
+        if value is None:
+            return None
+        stripped = str(value).strip()
+        return stripped or None
 
     @field_validator("language_favorites", mode="before")
     @classmethod

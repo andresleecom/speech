@@ -32,10 +32,13 @@ class FakeController:
                 "language_mode": "auto",
                 "language_favorites": ["en", "es", None],
                 "audio_input_device": None,
+                "audio_input_device_name": None,
+                "audio_input_device_host_api": None,
             },
         )()
         self.microphone_test_started = False
         self.notifications: list[tuple[str, str]] = []
+        self.microphone_label = None
 
     def open_hotkey_settings(self) -> None:
         self.hotkey_settings_opened = True
@@ -51,6 +54,15 @@ class FakeController:
 
     def set_audio_input_device(self, device: int | None) -> None:
         self.settings.audio_input_device = device
+        if device is None:
+            self.settings.audio_input_device_name = None
+            self.settings.audio_input_device_host_api = None
+            return
+        for candidate in getattr(self, "_devices", ()):
+            if candidate.index == device:
+                self.settings.audio_input_device_name = candidate.name
+                self.settings.audio_input_device_host_api = candidate.host_api
+                return
 
     def start_microphone_test(self) -> None:
         self.microphone_test_started = True
@@ -212,15 +224,17 @@ def test_tray_places_language_favorites_before_the_featured_languages():
 
 
 def test_tray_exposes_microphone_selection_and_test(monkeypatch):
-    monkeypatch.setattr(
-        tray_module,
-        "list_audio_input_devices",
-        lambda: (
-            AudioInputDevice(index=2, name="Built-in Mic", input_channels=2),
-            AudioInputDevice(index=5, name="USB Mic", input_channels=1),
+    devices = (
+        AudioInputDevice(
+            index=2, name="Built-in Mic", input_channels=2, host_api="MME"
+        ),
+        AudioInputDevice(
+            index=5, name="USB Mic", input_channels=1, host_api="MME"
         ),
     )
+    monkeypatch.setattr(tray_module, "list_audio_input_devices", lambda: devices)
     controller = FakeController()
+    controller._devices = devices
     tray = TrayApp(controller)
 
     menu = tray._make_menu(FakeMenu, FakeMenuItem)
@@ -243,13 +257,48 @@ def test_tray_exposes_microphone_selection_and_test(monkeypatch):
         "Test Microphone",
     ]
     assert controller.settings.audio_input_device == 5
+    assert controller.settings.audio_input_device_name == "USB Mic"
+    assert controller.settings.audio_input_device_host_api == "MME"
     assert controller.microphone_test_started is True
+
+
+def test_tray_checks_microphone_by_identity_when_hint_is_stale(monkeypatch):
+    devices = (
+        AudioInputDevice(
+            index=2, name="PodMic", input_channels=1, host_api="MME"
+        ),
+    )
+    monkeypatch.setattr(tray_module, "list_audio_input_devices", lambda: devices)
+    controller = FakeController()
+    controller.settings.audio_input_device = 3
+    controller.settings.audio_input_device_name = "PodMic"
+    controller.settings.audio_input_device_host_api = "MME"
+    tray = TrayApp(controller)
+
+    menu = tray._make_menu(FakeMenu, FakeMenuItem)
+    microphone_item = next(item for item in menu.items if item.label == "Microphone")
+    podmic = next(
+        item for item in microphone_item.action.items if item.label == "PodMic [2]"
+    )
+    assert podmic.options["checked"](None) is True
+
+
+def test_tray_set_microphone_label_updates_tooltip():
+    tray = TrayApp(FakeController())
+    icon = FakeIcon()
+    tray._icon = icon
+    tray.set_status("Idle")
+    tray.set_microphone_label("PodMic [2]")
+
+    assert icon.title_updates[-1] == "Speech - Idle - PodMic [2]"
 
 
 def test_tray_shows_unavailable_saved_microphone(monkeypatch):
     monkeypatch.setattr(tray_module, "list_audio_input_devices", lambda: ())
     controller = FakeController()
     controller.settings.audio_input_device = 9
+    controller.settings.audio_input_device_name = "Missing Mic"
+    controller.settings.audio_input_device_host_api = "MME"
     tray = TrayApp(controller)
 
     menu = tray._make_menu(FakeMenu, FakeMenuItem)
@@ -257,7 +306,7 @@ def test_tray_shows_unavailable_saved_microphone(monkeypatch):
     unavailable = next(
         item
         for item in microphone_item.action.items
-        if item.label == "Unavailable microphone [9]"
+        if item.label == "Missing Mic [9]"
     )
 
     assert unavailable.options["enabled"] is False

@@ -6,6 +6,7 @@ from collections.abc import Callable
 from typing import Any
 
 from .audio_inputs import (
+    AudioInputDevice,
     AudioInputDeviceError,
     SYSTEM_DEFAULT_INPUT_LABEL,
     audio_input_device_label,
@@ -22,6 +23,7 @@ _STATUS_COLORS = {
     "Pasting": (37, 99, 235, 255),
     "Error": (127, 29, 29, 255),
 }
+_TOOLTIP_MAX_LENGTH = 120
 
 
 class TrayApp:
@@ -36,6 +38,7 @@ class TrayApp:
         self._controller = controller
         self._icon: Any | None = None
         self._status = "Idle"
+        self._microphone_label = SYSTEM_DEFAULT_INPUT_LABEL
         self._ui_lock = threading.RLock()
 
     def run(self) -> None:
@@ -75,6 +78,17 @@ class TrayApp:
                 icon.title = self._tooltip()
                 icon.icon = self._make_icon_image()
                 self._update_menu_unlocked()
+            except Exception:
+                pass
+
+    def set_microphone_label(self, label: str) -> None:
+        with self._ui_lock:
+            self._microphone_label = str(label).strip() or SYSTEM_DEFAULT_INPUT_LABEL
+            icon = self._icon
+            if icon is None:
+                return
+            try:
+                icon.title = self._tooltip()
             except Exception:
                 pass
 
@@ -176,14 +190,12 @@ class TrayApp:
         return menu_cls(*items)
 
     def _make_microphone_menu(self, menu_cls: Any, item_cls: Any) -> Any:
-        selected_device = self._current_audio_input_device()
         items = [
-            self._radio_item(
-                item_cls,
+            item_cls(
                 SYSTEM_DEFAULT_INPUT_LABEL,
-                None,
-                self._current_audio_input_device,
-                self._select_audio_input_device,
+                self._selection_action(None, self._select_audio_input_device),
+                checked=lambda item: self._system_default_selected(),
+                radio=True,
             )
         ]
         try:
@@ -194,12 +206,13 @@ class TrayApp:
         if devices:
             for device in devices:
                 items.append(
-                    self._radio_item(
-                        item_cls,
+                    item_cls(
                         device.choice_label,
-                        device.index,
-                        self._current_audio_input_device,
-                        self._select_audio_input_device,
+                        self._selection_action(
+                            device.index, self._select_audio_input_device
+                        ),
+                        checked=self._device_checked(device),
+                        radio=True,
                     )
                 )
         else:
@@ -207,12 +220,10 @@ class TrayApp:
                 item_cls("No microphone available", lambda icon, item: None, enabled=False)
             )
 
-        if selected_device is not None and not any(
-            device.index == selected_device for device in devices
-        ):
+        if self._saved_microphone_missing(devices):
             items.append(
                 item_cls(
-                    audio_input_device_label(selected_device, devices),
+                    self._unavailable_microphone_label(devices),
                     lambda icon, item: None,
                     enabled=False,
                 )
@@ -317,8 +328,63 @@ class TrayApp:
     def _current_audio_input_device(self) -> int | None:
         return getattr(self._controller.settings, "audio_input_device", None)
 
+    def _saved_microphone_name(self) -> str | None:
+        return getattr(self._controller.settings, "audio_input_device_name", None)
+
+    def _saved_microphone_host_api(self) -> str | None:
+        return getattr(self._controller.settings, "audio_input_device_host_api", None)
+
+    def _system_default_selected(self) -> bool:
+        return (
+            self._saved_microphone_name() is None
+            and self._current_audio_input_device() is None
+        )
+
+    def _device_matches_saved(self, device: AudioInputDevice) -> bool:
+        saved_name = self._saved_microphone_name()
+        if saved_name is not None:
+            return (
+                device.name == saved_name
+                and device.host_api == (self._saved_microphone_host_api() or "")
+            )
+        selected = self._current_audio_input_device()
+        return selected is not None and device.index == selected
+
+    def _device_checked(self, device: AudioInputDevice) -> Callable[[Any], bool]:
+        def checked(item: Any) -> bool:
+            return self._device_matches_saved(device)
+
+        return checked
+
+    def _saved_microphone_missing(self, devices: tuple[AudioInputDevice, ...]) -> bool:
+        saved_name = self._saved_microphone_name()
+        if saved_name is not None:
+            host_api = self._saved_microphone_host_api() or ""
+            return not any(
+                device.name == saved_name and device.host_api == host_api
+                for device in devices
+            )
+        selected = self._current_audio_input_device()
+        if selected is None:
+            return False
+        return not any(device.index == selected for device in devices)
+
+    def _unavailable_microphone_label(
+        self, devices: tuple[AudioInputDevice, ...]
+    ) -> str:
+        saved_name = self._saved_microphone_name()
+        selected = self._current_audio_input_device()
+        if saved_name is not None:
+            if selected is not None:
+                return f"{saved_name} [{selected}]"
+            return saved_name
+        return audio_input_device_label(selected, devices)
+
     def _tooltip(self) -> str:
-        return f"{APP_NAME} - {self._status}"
+        tooltip = f"{APP_NAME} - {self._status} - {self._microphone_label}"
+        if len(tooltip) <= _TOOLTIP_MAX_LENGTH:
+            return tooltip
+        return tooltip[: _TOOLTIP_MAX_LENGTH - 3] + "..."
 
     def _make_icon_image(self) -> Any:
         from PIL import Image, ImageDraw

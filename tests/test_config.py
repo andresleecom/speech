@@ -22,6 +22,8 @@ def test_defaults_when_no_file_exists(monkeypatch, tmp_path):
     assert settings.check_for_updates is True
     assert settings.last_update_check_at is None
     assert settings.audio_input_device is None
+    assert settings.audio_input_device_name is None
+    assert settings.audio_input_device_host_api is None
     assert settings.language_favorites == ["en", "es", None]
     assert settings.custom_vocabulary == []
     assert (tmp_path / "settings.json").exists()
@@ -54,6 +56,13 @@ def test_settings_normalize_audio_input_device_and_recover_invalid_saved_value(
 ):
     assert Settings(audio_input_device="4").audio_input_device == 4
     assert Settings(audio_input_device="System Default").audio_input_device is None
+    assert Settings(audio_input_device_name="  PodMic  ").audio_input_device_name == "PodMic"
+    assert Settings(audio_input_device_name="").audio_input_device_name is None
+    assert (
+        Settings(audio_input_device_host_api="  MME  ").audio_input_device_host_api
+        == "MME"
+    )
+    assert Settings(audio_input_device_host_api=" ").audio_input_device_host_api is None
 
     with pytest.raises(ValueError, match="Audio input device"):
         Settings(audio_input_device=-1)

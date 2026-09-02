@@ -1,5 +1,6 @@
 import pytest
 
+from winwhisper.audio_inputs import AudioInputDevice, ResolvedInputDevice
 from winwhisper.recorder import (
     MicrophoneTest,
     Recorder,
@@ -98,7 +99,22 @@ def test_recorder_caps_samples_at_max(monkeypatch):
 
 def test_recorder_uses_saved_audio_input_device(monkeypatch):
     install_fake_sounddevice(monkeypatch)
+    monkeypatch.setattr(
+        "winwhisper.recorder.list_audio_input_devices",
+        lambda: (
+            AudioInputDevice(
+                index=3, name="USB Mic", input_channels=1, host_api="MME"
+            ),
+        ),
+    )
+    monkeypatch.setattr(
+        "winwhisper.recorder.resolve_input_device",
+        lambda name, host_api, index_hint, devices=None: ResolvedInputDevice(
+            index=3, label="USB Mic [3]", fallback=False, reason=""
+        ),
+    )
     recorder = Recorder(audio_input_device=3)
+    recorder.set_audio_input_selection("USB Mic", "MME", 3)
 
     recorder.start_recording()
 
@@ -110,6 +126,99 @@ def test_recorder_uses_saved_audio_input_device(monkeypatch):
     assert stream.abort_ignore_errors is False
     assert stream.closed is True
     assert stream.close_ignore_errors is True
+    assert recorder.last_resolution is not None
+    assert recorder.last_resolution.index == 3
+
+
+def test_recorder_stale_hint_resolves_by_name(monkeypatch):
+    install_fake_sounddevice(monkeypatch)
+    devices = (
+        AudioInputDevice(
+            index=2, name="PodMic", input_channels=1, host_api="MME"
+        ),
+    )
+    monkeypatch.setattr("winwhisper.recorder.list_audio_input_devices", lambda: devices)
+    monkeypatch.setattr(
+        "winwhisper.recorder.resolve_input_device",
+        lambda name, host_api, index_hint, devices=None: ResolvedInputDevice(
+            index=2, label="PodMic [2]", fallback=False, reason=""
+        ),
+    )
+    recorder = Recorder(audio_input_device=3)
+    recorder.set_audio_input_selection("PodMic", "MME", 3)
+    recorder.start_recording()
+    assert FakeInputStream.instances[-1].kwargs["device"] == 2
+    recorder.stop_recording().unlink()
+
+
+def test_recorder_passes_wasapi_extra_settings(monkeypatch):
+    class WasapiSettings:
+        def __init__(self, auto_convert=False) -> None:
+            self.auto_convert = auto_convert
+
+    install_fake_sounddevice(monkeypatch)
+    import sys
+
+    sounddevice = sys.modules["sounddevice"]
+    sounddevice.WasapiSettings = WasapiSettings
+    devices = (
+        AudioInputDevice(
+            index=27, name="PodMic", input_channels=1, host_api="Windows WASAPI"
+        ),
+    )
+    monkeypatch.setattr("winwhisper.recorder.list_audio_input_devices", lambda: devices)
+    monkeypatch.setattr(
+        "winwhisper.recorder.resolve_input_device",
+        lambda name, host_api, index_hint, devices=None: ResolvedInputDevice(
+            index=27, label="PodMic [27]", fallback=False, reason=""
+        ),
+    )
+    monkeypatch.setattr(
+        "winwhisper.recorder.input_stream_extra_settings",
+        lambda host_api: {"extra_settings": WasapiSettings(auto_convert=True)}
+        if host_api == "Windows WASAPI"
+        else {},
+    )
+    recorder = Recorder()
+    recorder.set_audio_input_selection("PodMic", "Windows WASAPI", 27)
+    recorder.start_recording()
+    extras = FakeInputStream.instances[-1].kwargs.get("extra_settings")
+    assert extras is not None
+    assert extras.auto_convert is True
+    recorder.stop_recording().unlink()
+
+
+def test_recorder_error_includes_portaudio_details(monkeypatch):
+    class FailingInputStream:
+        def __init__(self, **kwargs) -> None:
+            raise OSError("Invalid device [3]")
+
+    import sys
+    import types
+
+    monkeypatch.setitem(
+        sys.modules,
+        "sounddevice",
+        types.SimpleNamespace(InputStream=FailingInputStream),
+    )
+    monkeypatch.setattr("winwhisper.recorder.list_audio_input_devices", lambda: ())
+    monkeypatch.setattr(
+        "winwhisper.recorder.resolve_input_device",
+        lambda name, host_api, index_hint, devices=None: ResolvedInputDevice(
+            index=3, label="USB Mic [3]", fallback=False, reason=""
+        ),
+    )
+    recorder = Recorder()
+    recorder.set_audio_input_selection("USB Mic", "MME", 3)
+
+    with pytest.raises(RecorderError) as caught:
+        recorder.start_recording()
+    error = caught.value
+    assert str(error).endswith("(OSError).")
+    assert "Invalid device [3]" not in str(error)
+    assert error.details == (
+        "OSError: Invalid device [3]; device=3; label=USB Mic [3]"
+    )
 
 
 def test_recorder_abort_error_still_closes_stream(monkeypatch):
@@ -127,6 +236,13 @@ def test_recorder_abort_error_still_closes_stream(monkeypatch):
         "sounddevice",
         types.SimpleNamespace(InputStream=AbortFailingInputStream),
     )
+    monkeypatch.setattr("winwhisper.recorder.list_audio_input_devices", lambda: ())
+    monkeypatch.setattr(
+        "winwhisper.recorder.resolve_input_device",
+        lambda name, host_api, index_hint, devices=None: ResolvedInputDevice(
+            index=None, label="System Default", fallback=False, reason=""
+        ),
+    )
     recorder = Recorder()
     recorder.start_recording()
     stream = FakeInputStream.instances[-1]
@@ -142,6 +258,13 @@ def test_recorder_abort_error_still_closes_stream(monkeypatch):
 
 def test_recorder_omits_device_for_system_default(monkeypatch):
     install_fake_sounddevice(monkeypatch)
+    monkeypatch.setattr("winwhisper.recorder.list_audio_input_devices", lambda: ())
+    monkeypatch.setattr(
+        "winwhisper.recorder.resolve_input_device",
+        lambda name, host_api, index_hint, devices=None: ResolvedInputDevice(
+            index=None, label="System Default", fallback=False, reason=""
+        ),
+    )
     recorder = Recorder()
 
     recorder.start_recording()
@@ -152,6 +275,13 @@ def test_recorder_omits_device_for_system_default(monkeypatch):
 
 def test_recorder_cannot_change_input_while_recording(monkeypatch):
     install_fake_sounddevice(monkeypatch)
+    monkeypatch.setattr("winwhisper.recorder.list_audio_input_devices", lambda: ())
+    monkeypatch.setattr(
+        "winwhisper.recorder.resolve_input_device",
+        lambda name, host_api, index_hint, devices=None: ResolvedInputDevice(
+            index=None, label="System Default", fallback=False, reason=""
+        ),
+    )
     recorder = Recorder()
     recorder.start_recording()
 
@@ -174,6 +304,13 @@ def test_recorder_reports_actionable_recovery_when_default_input_cannot_open(mon
         "sounddevice",
         types.SimpleNamespace(InputStream=FailingInputStream),
     )
+    monkeypatch.setattr("winwhisper.recorder.list_audio_input_devices", lambda: ())
+    monkeypatch.setattr(
+        "winwhisper.recorder.resolve_input_device",
+        lambda name, host_api, index_hint, devices=None: ResolvedInputDevice(
+            index=None, label="System Default", fallback=False, reason=""
+        ),
+    )
     recorder = Recorder()
 
     with pytest.raises(RecorderError, match="Check microphone permissions"):
@@ -184,7 +321,15 @@ def test_microphone_test_reports_live_level_without_writing_audio(monkeypatch):
     import numpy as np
 
     install_fake_sounddevice(monkeypatch)
+    monkeypatch.setattr("winwhisper.recorder.list_audio_input_devices", lambda: ())
+    monkeypatch.setattr(
+        "winwhisper.recorder.resolve_input_device",
+        lambda name, host_api, index_hint, devices=None: ResolvedInputDevice(
+            index=2, label="USB Mic [2]", fallback=False, reason=""
+        ),
+    )
     microphone_test = MicrophoneTest(audio_input_device=2)
+    microphone_test.set_audio_input_selection("USB Mic", "MME", 2)
 
     microphone_test.start()
     stream = FakeInputStream.instances[-1]
@@ -218,6 +363,13 @@ def test_microphone_test_abort_error_still_closes_stream(monkeypatch):
         sys.modules,
         "sounddevice",
         types.SimpleNamespace(InputStream=AbortFailingInputStream),
+    )
+    monkeypatch.setattr("winwhisper.recorder.list_audio_input_devices", lambda: ())
+    monkeypatch.setattr(
+        "winwhisper.recorder.resolve_input_device",
+        lambda name, host_api, index_hint, devices=None: ResolvedInputDevice(
+            index=None, label="System Default", fallback=False, reason=""
+        ),
     )
     microphone_test = MicrophoneTest()
     microphone_test.start()
