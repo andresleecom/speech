@@ -1073,6 +1073,11 @@ class AppController:
         audio_path: Path | None = None
         failed = False
         progress_cancel = threading.Event()
+        stats: Any = None
+        stop_ms = 0
+        transcribe_ms = 0
+        clean_ms = 0
+        paste_ms = 0
 
         try:
             self.logger.info("Stopping microphone capture...")
@@ -1082,6 +1087,8 @@ class AppController:
             finally:
                 stop_complete.set()
             stop_elapsed = time.perf_counter() - stop_started
+            stop_ms = int(stop_elapsed * 1000)
+            stats = getattr(self.recorder, "last_take_stats", lambda: None)()
             if audio_path is None:
                 self.logger.info("Recording already stopped; skipping dictation.")
                 return
@@ -1094,19 +1101,39 @@ class AppController:
                 audio_size,
             )
 
+            if stats is not None and stats.frames == 0:
+                label = stats.device_label
+                self.logger.info("Nothing was captured from %s", label)
+                self.notify(
+                    APP_NAME,
+                    f"Nothing was captured from {label}. Open Microphone and "
+                    "pick System Default or another device.",
+                )
+                try:
+                    audio_path.unlink(missing_ok=True)
+                except Exception:
+                    self.logger.warning("Temporary audio file could not be deleted.")
+                audio_path = None
+                return
+
             self.set_status(STATUS_TRANSCRIBING)
             self._start_slow_transcription_watcher(progress_cancel)
 
+            transcribe_started = time.perf_counter()
             result = self.transcriber.transcribe(audio_path, language_mode)
+            transcribe_ms = int((time.perf_counter() - transcribe_started) * 1000)
             self._delete_audio(audio_path)
             audio_path = None
 
             if not result.text.strip():
-                self.logger.info("No speech detected; transcription text was empty.")
-                self.notify(APP_NAME, "No speech detected")
+                self._notify_empty_transcription(
+                    stats,
+                    "No speech detected; transcription text was empty.",
+                )
                 return
 
             self.logger.info("Cleaning transcription text (mode=%s)...", self.settings.cleanup_mode)
+            clean_started = time.perf_counter()
             cleaned = clean_text(
                 result.text,
                 self.settings.cleanup_mode,
@@ -1116,13 +1143,17 @@ class AppController:
                 trim_phrase = self._pending_trim_phrase
             if trim_phrase:
                 cleaned = trim_trailing_phrase(cleaned, trim_phrase)
+            clean_ms = int((time.perf_counter() - clean_started) * 1000)
             if not cleaned.strip():
-                self.logger.info("No speech detected; cleaned transcription text was empty.")
-                self.notify(APP_NAME, "No speech detected")
+                self._notify_empty_transcription(
+                    stats,
+                    "No speech detected; cleaned transcription text was empty.",
+                )
                 return
 
             self.set_status(STATUS_PASTING)
             self.logger.info("Restoring focus and pasting transcription...")
+            paste_started = time.perf_counter()
             restored_target = self._restore_paste_target()
             if sys.platform.startswith("linux") and not restored_target:
                 shortcut = self._paste_shortcut()
@@ -1137,6 +1168,7 @@ class AppController:
                         "Automatic paste failed, and the transcription could not "
                         "be copied.",
                     )
+                paste_ms = int((time.perf_counter() - paste_started) * 1000)
                 return
             shortcut = self._paste_shortcut()
             if insert_text(cleaned, shortcut=shortcut):
@@ -1150,10 +1182,18 @@ class AppController:
                     APP_NAME,
                     f"Automatic paste failed. Try {_shortcut_label(shortcut)}.",
                 )
+            paste_ms = int((time.perf_counter() - paste_started) * 1000)
         except Exception:
             failed = True
             self._handle_error("Dictation failed.")
         finally:
+            self._log_take_timing(
+                stats=stats,
+                stop_ms=stop_ms,
+                transcribe_ms=transcribe_ms,
+                clean_ms=clean_ms,
+                paste_ms=paste_ms,
+            )
             progress_cancel.set()
             if audio_path is not None:
                 self._delete_audio(audio_path)
@@ -1259,6 +1299,62 @@ class AppController:
             audio_path.unlink(missing_ok=True)
         except Exception:
             self.logger.warning("Temporary audio file could not be deleted.")
+
+    def _notify_empty_transcription(self, stats: Any, empty_log: str) -> None:
+        if stats is not None and stats.peak == 0.0:
+            label = stats.device_label
+            self.logger.info("%s delivered silence.", label)
+            self.notify(
+                APP_NAME,
+                f"{label} delivered silence. Check the microphone or pick another one.",
+            )
+            return
+        self.logger.info(empty_log)
+        self.notify(APP_NAME, "No speech detected")
+
+    def _log_take_timing(
+        self,
+        *,
+        stats: Any,
+        stop_ms: int,
+        transcribe_ms: int,
+        clean_ms: int,
+        paste_ms: int,
+    ) -> None:
+        to_stream_ms = int(
+            getattr(self.recorder, "last_to_stream_ms", lambda: 0)()
+        )
+        if stats is None:
+            first_block_display: int | None = None
+            record_s = 0.0
+            frames = 0
+            peak = 0.0
+            device = "unknown"
+        else:
+            first_block_display = (
+                int(stats.first_block_ms)
+                if stats.first_block_ms is not None
+                else None
+            )
+            record_s = float(stats.seconds)
+            frames = int(stats.frames)
+            peak = float(stats.peak)
+            device = str(stats.device_label)
+        self.logger.info(
+            "Take timing: to_stream_ms=%d first_block_ms=%s record_s=%.1f "
+            "stop_ms=%d transcribe_ms=%d clean_ms=%d paste_ms=%d "
+            "frames=%d peak=%.3f device=%s",
+            to_stream_ms,
+            first_block_display,
+            record_s,
+            stop_ms,
+            transcribe_ms,
+            clean_ms,
+            paste_ms,
+            frames,
+            peak,
+            device,
+        )
 
     def _handle_error(self, message: str) -> None:
         self.logger.exception(message)

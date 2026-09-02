@@ -5,6 +5,7 @@ from winwhisper.recorder import (
     MicrophoneTest,
     Recorder,
     RecorderError,
+    TakeStats,
     _audio_level_from_block,
 )
 
@@ -315,6 +316,110 @@ def test_recorder_reports_actionable_recovery_when_default_input_cannot_open(mon
 
     with pytest.raises(RecorderError, match="Check microphone permissions"):
         recorder.start_recording()
+
+
+def test_take_stats_peak_and_frames_survive_stop_recording(monkeypatch):
+    import numpy as np
+
+    install_fake_sounddevice(monkeypatch)
+    monkeypatch.setattr("winwhisper.recorder.list_audio_input_devices", lambda: ())
+    monkeypatch.setattr(
+        "winwhisper.recorder.resolve_input_device",
+        lambda name, host_api, index_hint, devices=None: ResolvedInputDevice(
+            index=None, label="System Default", fallback=False, reason=""
+        ),
+    )
+    recorder = Recorder()
+    recorder.start_recording()
+    stream = FakeInputStream.instances[-1]
+    stream.kwargs["callback"](
+        np.array([[16384], [-16384]], dtype="int16"),
+        2,
+        None,
+        None,
+    )
+    stream.kwargs["callback"](
+        np.zeros((2, 1), dtype="int16"),
+        2,
+        None,
+        None,
+    )
+
+    path = recorder.stop_recording()
+    assert path is not None
+    path.unlink()
+
+    stats = recorder.last_take_stats()
+    assert stats is not None
+    assert stats.frames == 4
+    assert stats.peak == pytest.approx(0.5, abs=0.01)
+    assert stats.device_label == "System Default"
+    assert stats.first_block_ms is not None
+    assert stats.first_block_ms >= 0.0
+    assert recorder.current_level() == 0.0
+
+
+def test_take_stats_reports_zero_frames_when_no_blocks(monkeypatch):
+    install_fake_sounddevice(monkeypatch)
+    monkeypatch.setattr("winwhisper.recorder.list_audio_input_devices", lambda: ())
+    monkeypatch.setattr(
+        "winwhisper.recorder.resolve_input_device",
+        lambda name, host_api, index_hint, devices=None: ResolvedInputDevice(
+            index=3, label="USB Mic [3]", fallback=False, reason=""
+        ),
+    )
+    recorder = Recorder()
+    recorder.start_recording()
+
+    path = recorder.stop_recording()
+    assert path is not None
+    assert path.stat().st_size == 44
+    path.unlink()
+
+    stats = recorder.last_take_stats()
+    assert stats is not None
+    assert isinstance(stats, TakeStats)
+    assert stats.frames == 0
+    assert stats.peak == 0.0
+    assert stats.first_block_ms is None
+    assert stats.device_label == "USB Mic [3]"
+
+
+def test_first_block_warning_when_no_audio_arrives(monkeypatch, caplog):
+    import logging
+
+    install_fake_sounddevice(monkeypatch)
+    monkeypatch.setattr("winwhisper.recorder.list_audio_input_devices", lambda: ())
+    monkeypatch.setattr(
+        "winwhisper.recorder.resolve_input_device",
+        lambda name, host_api, index_hint, devices=None: ResolvedInputDevice(
+            index=2, label="PodMic [2]", fallback=False, reason=""
+        ),
+    )
+    monkeypatch.setattr(
+        "winwhisper.recorder.FIRST_BLOCK_WARN_SECONDS",
+        0.01,
+    )
+
+    recorder = Recorder()
+    with caplog.at_level(logging.WARNING, logger="winwhisper.recorder"):
+        recorder.start_recording()
+        # Let the first-block timer fire before stopping.
+        import time as time_module
+
+        time_module.sleep(0.05)
+        path = recorder.stop_recording()
+        assert path is not None
+        path.unlink()
+
+    assert any(
+        "No audio blocks received within 500ms from PodMic [2]" in record.getMessage()
+        for record in caplog.records
+    )
+    stats = recorder.last_take_stats()
+    assert stats is not None
+    assert stats.frames == 0
+    assert stats.first_block_ms is None
 
 
 def test_microphone_test_reports_live_level_without_writing_audio(monkeypatch):

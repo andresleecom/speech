@@ -28,6 +28,7 @@ from winwhisper.overlay import (
     _tk_monitor_work_area,
     _tk_virtual_screen_bounds,
 )
+from winwhisper.recorder import TakeStats
 from winwhisper.transcriber import TranscriptionResult
 
 
@@ -1073,6 +1074,89 @@ def test_failed_windows_focus_restore_still_attempts_paste(monkeypatch, tmp_path
 def test_empty_transcription_notifies_without_pasting(monkeypatch, tmp_path):
     inserted: list[str] = []
     controller = make_controller(monkeypatch, tmp_path, [], inserted, transcription_text="")
+
+    controller.toggle()
+    controller.toggle()
+
+    assert inserted == []
+    assert controller.tray.notifications == [("Speech", "No speech detected")]
+    assert not hasattr(controller.recorder, "last_take_stats")
+
+
+def test_zero_frames_skips_transcription_and_toasts_capture_failure(
+    monkeypatch, tmp_path
+):
+    inserted: list[str] = []
+    controller = make_controller(monkeypatch, tmp_path, [], inserted)
+    transcribe_calls: list[Path] = []
+    original_transcribe = controller.transcriber.transcribe
+
+    def tracking_transcribe(audio_path, language_mode):
+        transcribe_calls.append(audio_path)
+        return original_transcribe(audio_path, language_mode)
+
+    monkeypatch.setattr(controller.transcriber, "transcribe", tracking_transcribe)
+    controller.recorder.last_take_stats = lambda: TakeStats(
+        frames=0,
+        peak=0.0,
+        seconds=1.2,
+        first_block_ms=None,
+        device_label="USB Mic [3]",
+    )
+
+    controller.toggle()
+    controller.toggle()
+
+    assert inserted == []
+    assert transcribe_calls == []
+    assert controller.tray.notifications == [
+        (
+            "Speech",
+            "Nothing was captured from USB Mic [3]. Open Microphone and "
+            "pick System Default or another device.",
+        )
+    ]
+
+
+def test_empty_transcription_with_peak_zero_toasts_delivered_silence(
+    monkeypatch, tmp_path
+):
+    inserted: list[str] = []
+    controller = make_controller(
+        monkeypatch, tmp_path, [], inserted, transcription_text=""
+    )
+    controller.recorder.last_take_stats = lambda: TakeStats(
+        frames=16000,
+        peak=0.0,
+        seconds=1.0,
+        first_block_ms=12.0,
+        device_label="PodMic [2]",
+    )
+
+    controller.toggle()
+    controller.toggle()
+
+    assert inserted == []
+    assert controller.tray.notifications == [
+        (
+            "Speech",
+            "PodMic [2] delivered silence. Check the microphone or pick another one.",
+        )
+    ]
+
+
+def test_empty_transcription_with_peak_keeps_no_speech_toast(monkeypatch, tmp_path):
+    inserted: list[str] = []
+    controller = make_controller(
+        monkeypatch, tmp_path, [], inserted, transcription_text=""
+    )
+    controller.recorder.last_take_stats = lambda: TakeStats(
+        frames=16000,
+        peak=0.25,
+        seconds=1.0,
+        first_block_ms=8.0,
+        device_label="PodMic [2]",
+    )
 
     controller.toggle()
     controller.toggle()
