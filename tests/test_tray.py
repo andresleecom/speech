@@ -7,6 +7,7 @@ import winwhisper.startup as startup_module
 import winwhisper.tray as tray_module
 from winwhisper.audio_inputs import AudioInputDevice
 from winwhisper.branding import APP_NAME
+from winwhisper.hotkey_settings import display_hotkey
 from winwhisper.tray import TrayApp
 
 
@@ -354,7 +355,8 @@ def test_tray_set_microphone_label_updates_tooltip():
     tray.set_status("Idle")
     tray.set_microphone_label("PodMic [2]")
 
-    assert icon.title_updates[-1] == "Speech - Idle - PodMic [2] - Ctrl + Alt + Space"
+    expected_hotkey = display_hotkey("<ctrl>+<alt>+<space>")
+    assert icon.title_updates[-1] == f"Speech - Idle - PodMic [2] - {expected_hotkey}"
 
 
 def test_tray_toggle_label_includes_display_hotkey(monkeypatch):
