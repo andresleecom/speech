@@ -6,3 +6,4 @@
 | 02 | Stable microphone identity with System Default fallback | 0 | pass (spec follow-up r2: legacy hint fallback, short toasts) | 765b8c4 |
 | 03 | Silent and dead take diagnosis with per-take stats and timing line | 0 | pass | 6d51f46 |
 | 04 | Notification queue, Open Log Folder, version item, drop-only-bad-keys settings recovery | 0 | pass | 3a2fdee |
+| 05 | First run: hotkey in tray, model download toast, offline message, lenient model_size, Windows start at login, version bump | 0 | pass (spec follow-up r2: frozen-only Start at login) | deee250 |
