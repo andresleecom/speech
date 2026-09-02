@@ -124,9 +124,10 @@ Use product names, people's names, company terminology, and technical terms. A f
 
 ## Model and performance
 
-- `small` with CPU and `int8` is the default balance.
-- `medium` improves accuracy at the cost of speed and memory.
-- `large-v3` offers the highest accuracy and needs the most resources.
+- `small` (~464 MB) with CPU and `int8` is the default balance.
+- `medium` (~1530 MB) improves accuracy at the cost of speed and memory.
+- `large-v3` (~3090 MB) offers the highest accuracy and needs the most resources.
+- `large-v3-turbo` (~1620 MB) is a faster large model with a smaller download.
 - Supported NVIDIA GPUs can use CUDA with `float16` or `int8_float16`, once the CUDA math libraries are installed separately.
 
 The selected model downloads from Hugging Face on first use. CUDA does not apply to normal macOS builds.

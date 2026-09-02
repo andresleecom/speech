@@ -58,7 +58,12 @@ if sys.platform == "darwin":
 else:
     from .recorder import MicrophoneTest, Recorder
     from .wake_word_source import SounddeviceSource as WakeWordAudioSource
-from .transcriber import Transcriber
+from .transcriber import (
+    MODEL_DOWNLOAD_SIZES_MB,
+    ModelDownloadError,
+    Transcriber,
+    is_model_cached,
+)
 from .tray import TrayApp
 from .update_controller import UpdateCoordinator
 from .wake_word import (
@@ -76,6 +81,7 @@ Status = Literal[
     "Transcribing",
     "Pasting",
     "Error",
+    "Downloading model...",
 ]
 
 STATUS_IDLE: Status = "Idle"
@@ -84,6 +90,7 @@ STATUS_TESTING_MICROPHONE: Status = "Testing microphone"
 STATUS_TRANSCRIBING: Status = "Transcribing"
 STATUS_PASTING: Status = "Pasting"
 STATUS_ERROR: Status = "Error"
+STATUS_DOWNLOADING_MODEL: Status = "Downloading model..."
 
 _SINGLE_INSTANCE_MUTEX_NAME = "Local\\SpeechSingleInstanceMutex"
 _SINGLE_INSTANCE_LOCK_FILE_NAME = "single-instance.lock"
@@ -194,6 +201,17 @@ class AppController:
         )
 
     def run(self) -> None:
+        if self.first_run:
+            size = str(self.settings.model_size)
+            mb = MODEL_DOWNLOAD_SIZES_MB.get(size, MODEL_DOWNLOAD_SIZES_MB["small"])
+            hotkey = display_hotkey(
+                self.settings.hotkeys.get("toggle_recording")
+            )
+            self.notify(
+                APP_NAME,
+                f"Press {hotkey} to dictate. The speech model ({size}, {mb} MB) "
+                "downloads once. Microphone > Test Microphone checks your mic.",
+            )
         for notice in self._settings_notices:
             self.notify(APP_NAME, notice)
         self._settings_notices.clear()
@@ -707,6 +725,9 @@ class AppController:
                 "The hotkey settings could not be saved."
             ) from exc
 
+        self.tray.refresh_menu()
+        self.set_status(self._status)
+
         if self._try_schedule_macos_hotkey_relaunch():
             self.logger.info(
                 "Hotkey settings saved; restarting %s to apply them.",
@@ -802,6 +823,8 @@ class AppController:
                 ) from update_error
             raise
         self.hotkeys = replacement
+        self.tray.refresh_menu()
+        self.set_status(self._status)
         self.logger.info("Hotkey settings updated and applied without restart.")
 
     def open_hotkey_settings(self) -> None:
@@ -1069,7 +1092,21 @@ class AppController:
         thread.start()
 
     def _warm_model_worker(self) -> None:
+        downloading = False
         try:
+            size = str(self.settings.model_size)
+            cached = is_model_cached(size)
+            if cached is False:
+                downloading = True
+                mb = MODEL_DOWNLOAD_SIZES_MB.get(
+                    size, MODEL_DOWNLOAD_SIZES_MB["small"]
+                )
+                self.notify(
+                    APP_NAME,
+                    f"Downloading speech model {size} ({mb} MB). "
+                    "The first dictation may take a minute.",
+                )
+                self.set_status(STATUS_DOWNLOADING_MODEL)
             self.logger.info(
                 "Preloading speech model in background (model_size=%s; device=%s).",
                 self.settings.model_size,
@@ -1081,6 +1118,9 @@ class AppController:
             self.logger.exception(
                 "Speech model preload failed; first dictation will retry the load."
             )
+        finally:
+            if downloading and self._status == STATUS_DOWNLOADING_MODEL:
+                self.set_status(STATUS_IDLE)
 
     def _stop_and_process(
         self,
@@ -1200,6 +1240,9 @@ class AppController:
                     f"Automatic paste failed. Try {_shortcut_label(shortcut)}.",
                 )
             paste_ms = int((time.perf_counter() - paste_started) * 1000)
+        except ModelDownloadError as exc:
+            failed = True
+            self._handle_error(str(exc))
         except Exception:
             failed = True
             self._handle_error("Dictation failed.")

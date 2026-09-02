@@ -900,6 +900,76 @@ def test_startup_notifies_settings_load_notices(monkeypatch, tmp_path):
     ) in controller.tray.notifications
 
 
+def test_first_run_toast_only_when_first_run(monkeypatch, tmp_path):
+    controller = make_controller(monkeypatch, tmp_path, [], [])
+    controller.first_run = True
+
+    controller.run()
+
+    assert any(
+        "Press" in message and "downloads once" in message
+        for _title, message in controller.tray.notifications
+    )
+
+    controller = make_controller(monkeypatch, tmp_path, [], [])
+    controller.first_run = False
+    controller.run()
+
+    assert not any(
+        "downloads once" in message
+        for _title, message in controller.tray.notifications
+    )
+
+
+def test_download_toast_only_when_model_not_cached(monkeypatch, tmp_path):
+    controller = make_controller(monkeypatch, tmp_path, [], [])
+    controller.first_run = False
+    monkeypatch.setattr(main_module, "is_model_cached", lambda size: False)
+
+    controller._warm_model_worker()
+
+    assert any(
+        "Downloading speech model" in message
+        for _title, message in controller.tray.notifications
+    )
+    assert "Downloading model..." in controller.tray.statuses
+
+    controller = make_controller(monkeypatch, tmp_path, [], [])
+    controller.first_run = False
+    monkeypatch.setattr(main_module, "is_model_cached", lambda size: True)
+
+    controller._warm_model_worker()
+
+    assert not any(
+        "Downloading speech model" in message
+        for _title, message in controller.tray.notifications
+    )
+
+
+def test_model_download_error_maps_to_its_message(monkeypatch, tmp_path):
+    from winwhisper.transcriber import ModelDownloadError
+
+    controller = make_controller(monkeypatch, tmp_path, [], [])
+    message = (
+        "The speech model small needs a one-time download (464 MB). "
+        "Connect to the internet and try again."
+    )
+
+    def fail_transcribe(audio_path, language_mode):
+        raise ModelDownloadError(message)
+
+    controller.transcriber.transcribe = fail_transcribe
+    controller.recorder.start_recording()
+    stop_complete = __import__("threading").Event()
+    controller._stop_and_process("es", stop_complete)
+
+    assert ("Speech", message) in controller.tray.notifications
+    assert not any(
+        message_text == "Dictation failed."
+        for _title, message_text in controller.tray.notifications
+    )
+
+
 def test_startup_surfaces_saved_hotkey_registration_conflict(monkeypatch, tmp_path):
     controller = make_controller(monkeypatch, tmp_path, [], [])
     monkeypatch.setattr(sys, "platform", "darwin")

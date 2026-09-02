@@ -122,6 +122,14 @@ class Settings(BaseModel):
             raise ValueError(f"Phrase must contain at least one word: {value!r}")
         return normalized
 
+    @field_validator("model_size", mode="before")
+    @classmethod
+    def validate_model_size(cls, value: object) -> str:
+        size = str(value).strip() if value is not None else ""
+        if not size:
+            return "small"
+        return size
+
     @field_validator("wake_model_size", mode="before")
     @classmethod
     def validate_wake_model_size(cls, value: object) -> str:
@@ -208,12 +216,25 @@ def load_settings_report() -> SettingsLoadReport:
             first_run=False,
         )
 
-    _migrate_language_mode(data)
-    _migrate_language_favorites(data)
-    _migrate_audio_input_device(data)
-    _migrate_device(data)
-    _migrate_compute_type(data)
-    _migrate_wake_phrase(data)
+    try:
+        _migrate_language_mode(data)
+        _migrate_language_favorites(data)
+        _migrate_audio_input_device(data)
+        _migrate_device(data)
+        _migrate_compute_type(data)
+        _migrate_wake_phrase(data)
+        _migrate_model_size(data)
+    except (ValueError, TypeError) as exc:
+        _log_warning(
+            "Settings migration failed; using defaults (%s).",
+            exc.__class__.__name__,
+        )
+        _quarantine_corrupt_settings(settings_path)
+        return SettingsLoadReport(
+            settings=Settings(),
+            notices=[_CORRUPT_SETTINGS_NOTICE],
+            first_run=False,
+        )
 
     dropped: list[str] = []
     for _round in range(_MAX_SETTINGS_DROP_ROUNDS + 1):
@@ -375,6 +396,22 @@ def _migrate_device(data: dict[str, object]) -> None:
             data["device"],
         )
         data["device"] = CPU_DEVICE
+
+
+def _migrate_model_size(data: dict[str, object]) -> None:
+    """Keep unknown model sizes; warn so hand-edits stay visible."""
+    if "model_size" not in data:
+        return
+    raw = data["model_size"]
+    size = str(raw).strip() if raw is not None else ""
+    if not size:
+        data["model_size"] = "small"
+        return
+    data["model_size"] = size
+    from .transcriber import MODEL_DOWNLOAD_SIZES_MB
+
+    if size not in MODEL_DOWNLOAD_SIZES_MB:
+        _log_warning("Unknown model size %r; keeping it.", size)
 
 
 def _migrate_compute_type(data: dict[str, object]) -> None:

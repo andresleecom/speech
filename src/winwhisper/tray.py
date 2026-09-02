@@ -6,6 +6,7 @@ from collections.abc import Callable
 from typing import Any
 
 from . import __version__
+from . import startup as startup_module
 from .audio_inputs import (
     AudioInputDevice,
     AudioInputDeviceError,
@@ -14,6 +15,7 @@ from .audio_inputs import (
     list_audio_input_devices,
 )
 from .branding import APP_NAME
+from .hotkey_settings import display_hotkey
 from .languages import language_name, tray_language_modes
 
 _STATUS_COLORS = {
@@ -23,6 +25,7 @@ _STATUS_COLORS = {
     "Transcribing": (245, 158, 11, 255),
     "Pasting": (37, 99, 235, 255),
     "Error": (127, 29, 29, 255),
+    "Downloading model...": (14, 116, 144, 255),
 }
 _TOOLTIP_MAX_LENGTH = 120
 _MAX_PENDING_NOTIFICATIONS = 20
@@ -127,7 +130,7 @@ class TrayApp:
                 lambda icon, item: None,
                 enabled=False,
             ),
-            item_cls("Start/Stop Recording", self._on_toggle),
+            item_cls(self._toggle_recording_label, self._on_toggle),
             item_cls(
                 self._wake_word_label(),
                 self._on_toggle_wake_word,
@@ -181,6 +184,12 @@ class TrayApp:
                 visible=sys.platform == "win32",
             ),
             item_cls("Diagnostics", self._on_diagnostics),
+            item_cls(
+                "Start at login",
+                self._on_toggle_startup,
+                checked=lambda item: self._startup_is_enabled(),
+                visible=sys.platform == "win32",
+            ),
             item_cls("Exit", self._on_exit),
         )
 
@@ -281,6 +290,37 @@ class TrayApp:
 
     def _on_toggle(self, icon: Any, item: Any) -> None:
         self._controller.toggle()
+
+    def _toggle_recording_label(self, item: Any | None = None) -> str:
+        return f"Start/Stop Recording ({self._toggle_hotkey_display()})"
+
+    def _toggle_hotkey_display(self) -> str:
+        hotkeys = getattr(self._controller.settings, "hotkeys", None) or {}
+        combo = hotkeys.get("toggle_recording")
+        return display_hotkey(combo)
+
+    def _startup_is_enabled(self) -> bool:
+        return startup_module.is_enabled()
+
+    def _on_toggle_startup(self, icon: Any, item: Any) -> None:
+        try:
+            if startup_module.is_enabled():
+                startup_module.disable()
+            else:
+                exe = startup_module.installed_executable()
+                if exe is None:
+                    self._controller.notify(
+                        APP_NAME,
+                        "Start at login is available in the installed Speech app.",
+                    )
+                    return
+                startup_module.enable(exe)
+        except Exception as exc:
+            self._controller.notify(
+                APP_NAME,
+                str(exc) or "Start at login could not be updated.",
+            )
+        self._update_menu()
 
     def _on_toggle_wake_word(self, icon: Any, item: Any) -> None:
         self._controller.set_wake_word_enabled(not self._current_wake_word_enabled())
@@ -405,7 +445,10 @@ class TrayApp:
         return audio_input_device_label(selected, devices)
 
     def _tooltip(self) -> str:
-        tooltip = f"{APP_NAME} - {self._status} - {self._microphone_label}"
+        parts = [APP_NAME, self._status, self._microphone_label]
+        if self._status == "Idle":
+            parts.append(self._toggle_hotkey_display())
+        tooltip = " - ".join(parts)
         if len(tooltip) <= _TOOLTIP_MAX_LENGTH:
             return tooltip
         return tooltip[: _TOOLTIP_MAX_LENGTH - 3] + "..."

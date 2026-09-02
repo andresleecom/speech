@@ -3,8 +3,10 @@ import types
 
 import pytest
 
+import winwhisper.startup as startup_module
 import winwhisper.tray as tray_module
 from winwhisper.audio_inputs import AudioInputDevice
+from winwhisper.branding import APP_NAME
 from winwhisper.tray import TrayApp
 
 
@@ -35,6 +37,7 @@ class FakeController:
                 "audio_input_device": None,
                 "audio_input_device_name": None,
                 "audio_input_device_host_api": None,
+                "hotkeys": {"toggle_recording": "<ctrl>+<alt>+<space>"},
             },
         )()
         self.microphone_test_started = False
@@ -351,7 +354,113 @@ def test_tray_set_microphone_label_updates_tooltip():
     tray.set_status("Idle")
     tray.set_microphone_label("PodMic [2]")
 
-    assert icon.title_updates[-1] == "Speech - Idle - PodMic [2]"
+    assert icon.title_updates[-1] == "Speech - Idle - PodMic [2] - Ctrl + Alt + Space"
+
+
+def test_tray_toggle_label_includes_display_hotkey(monkeypatch):
+    monkeypatch.setattr(tray_module.sys, "platform", "win32")
+    controller = FakeController()
+    tray = TrayApp(controller)
+
+    menu = tray._make_menu(FakeMenu, FakeMenuItem)
+    toggle = menu.items[1]
+    label = toggle.label(None) if callable(toggle.label) else toggle.label
+
+    assert label == "Start/Stop Recording (Ctrl + Alt + Space)"
+
+
+def test_tray_start_at_login_only_on_windows(monkeypatch):
+    controller = FakeController()
+    tray = TrayApp(controller)
+
+    monkeypatch.setattr(tray_module.sys, "platform", "win32")
+    windows_menu = tray._make_menu(FakeMenu, FakeMenuItem)
+    windows_item = next(
+        item for item in windows_menu.items if item.label == "Start at login"
+    )
+
+    monkeypatch.setattr(tray_module.sys, "platform", "linux")
+    linux_menu = tray._make_menu(FakeMenu, FakeMenuItem)
+    linux_item = next(
+        item for item in linux_menu.items if item.label == "Start at login"
+    )
+
+    assert windows_item.options["visible"] is True
+    assert linux_item.options["visible"] is False
+
+
+def test_tray_enable_startup_from_source_notifies_and_writes_nothing(monkeypatch):
+    fake = types.SimpleNamespace(set_calls=[])
+
+    def fake_enable(exe_path: str) -> bool:
+        fake.set_calls.append(exe_path)
+        return True
+
+    monkeypatch.setattr(startup_module, "is_enabled", lambda: False)
+    monkeypatch.setattr(startup_module, "installed_executable", lambda: None)
+    monkeypatch.setattr(startup_module, "enable", fake_enable)
+
+    controller = FakeController()
+    tray = TrayApp(controller)
+    tray._icon = FakeIcon()
+    tray._on_toggle_startup(None, None)
+
+    assert fake.set_calls == []
+    assert controller.notifications == [
+        (APP_NAME, "Start at login is available in the installed Speech app.")
+    ]
+
+
+def test_tray_enable_startup_from_frozen_writes_quoted_path(monkeypatch):
+    class FakeWinreg:
+        HKEY_CURRENT_USER = object()
+        KEY_SET_VALUE = 2
+        REG_SZ = 1
+
+        def __init__(self) -> None:
+            self.values: dict[str, str] = {}
+            self.set_calls: list[tuple[str, str]] = []
+
+        def OpenKey(self, hive, subkey, reserved=0, access=0):
+            return self
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *args):
+            return False
+
+        def QueryValueEx(self, key, name):
+            if name not in self.values:
+                raise OSError(2, "not found")
+            return self.values[name], self.REG_SZ
+
+        def SetValueEx(self, key, name, reserved, value_type, value):
+            self.values[name] = value
+            self.set_calls.append((name, value))
+
+    fake = FakeWinreg()
+    module = types.ModuleType("winreg")
+    module.HKEY_CURRENT_USER = fake.HKEY_CURRENT_USER
+    module.KEY_SET_VALUE = fake.KEY_SET_VALUE
+    module.REG_SZ = fake.REG_SZ
+    module.OpenKey = fake.OpenKey
+    module.QueryValueEx = fake.QueryValueEx
+    module.SetValueEx = fake.SetValueEx
+    monkeypatch.setitem(sys.modules, "winreg", module)
+    monkeypatch.setattr(startup_module.sys, "platform", "win32")
+    monkeypatch.setattr(startup_module.sys, "frozen", True, raising=False)
+    monkeypatch.setattr(
+        startup_module.sys, "executable", r"C:\Programs\Speech\Speech.exe"
+    )
+
+    controller = FakeController()
+    tray = TrayApp(controller)
+    tray._icon = FakeIcon()
+    tray._on_toggle_startup(None, None)
+
+    assert fake.set_calls == [("Speech", r'"C:\Programs\Speech\Speech.exe"')]
+    assert controller.notifications == []
 
 
 def test_tray_shows_unavailable_saved_microphone(monkeypatch):

@@ -10,6 +10,77 @@ from .compute_devices import CPU_FALLBACK
 from .languages import AUTO_LANGUAGE_MODE, normalize_language_mode
 from .logger import get_logger
 
+MODEL_DOWNLOAD_SIZES_MB = {
+    "tiny": 75,
+    "base": 145,
+    "small": 464,
+    "medium": 1530,
+    "large-v3": 3090,
+    "large-v3-turbo": 1620,
+}
+
+
+class TranscriptionError(Exception):
+    """Base error for transcription failures."""
+
+
+class ModelDownloadError(TranscriptionError):
+    """Raised when the speech model is not cached and cannot be downloaded."""
+
+
+def is_model_cached(model_size: str) -> bool | None:
+    """Return whether ``model.bin`` for ``model_size`` is in the HF cache.
+
+    Returns ``None`` when the probe cannot run (imports missing or unknown size).
+    """
+    try:
+        from faster_whisper.utils import _MODELS
+        from huggingface_hub import try_to_load_from_cache
+    except ImportError:
+        return None
+
+    repo_id = _MODELS.get(model_size)
+    if not repo_id:
+        return None
+
+    try:
+        path = try_to_load_from_cache(repo_id, "model.bin")
+    except Exception:
+        return None
+
+    try:
+        from huggingface_hub import _CACHED_NO_EXIST
+    except ImportError:
+        _CACHED_NO_EXIST = object()
+
+    if path is None or path is _CACHED_NO_EXIST:
+        return False
+    return True
+
+
+def model_download_error_message(model_size: str) -> str:
+    mb = MODEL_DOWNLOAD_SIZES_MB.get(model_size, 0)
+    return (
+        f"The speech model {model_size} needs a one-time download ({mb} MB). "
+        "Connect to the internet and try again."
+    )
+
+
+def _is_offline_model_error(exc: BaseException) -> bool:
+    current: BaseException | None = exc
+    seen = 0
+    while current is not None and seen < 6:
+        name = current.__class__.__name__
+        if "LocalEntryNotFoundError" in name:
+            return True
+        if name in ("ConnectionError", "ConnectError"):
+            return True
+        if isinstance(current, ConnectionError):
+            return True
+        current = current.__cause__ or current.__context__
+        seen += 1
+    return False
+
 
 @dataclass
 class TranscriptionResult:
@@ -190,6 +261,10 @@ class Transcriber:
                     compute_type=self._compute_type,
                 )
             except Exception as exc:
+                if _is_offline_model_error(exc):
+                    raise ModelDownloadError(
+                        model_download_error_message(self._model_size)
+                    ) from exc
                 # Any device or compute type other than the universal CPU
                 # baseline can fail on a given machine: no NVIDIA GPU, missing
                 # CUDA libraries, or a quantization the hardware lacks. Retry on
@@ -208,11 +283,18 @@ class Transcriber:
                     CPU_FALLBACK[1],
                 )
                 self._device, self._compute_type = CPU_FALLBACK
-                self._model = WhisperModel(
-                    self._model_size,
-                    device=self._device,
-                    compute_type=self._compute_type,
-                )
+                try:
+                    self._model = WhisperModel(
+                        self._model_size,
+                        device=self._device,
+                        compute_type=self._compute_type,
+                    )
+                except Exception as fallback_exc:
+                    if _is_offline_model_error(fallback_exc):
+                        raise ModelDownloadError(
+                            model_download_error_message(self._model_size)
+                        ) from fallback_exc
+                    raise
 
             self._logger.info(
                 "Whisper model loaded in %.2fs (device=%s; compute_type=%s).",

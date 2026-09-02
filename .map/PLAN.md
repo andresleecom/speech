@@ -41,7 +41,7 @@
 | 02 | Stable microphone identity with fallback, WASAPI auto-convert, WDM-KS hidden, wake listener restart, real PortAudio error in log | src/winwhisper/audio_inputs.py, config.py, recorder.py, wake_word_source.py, main.py, tray.py, tests/test_audio_inputs.py, test_config.py, test_recorder.py, test_overlay_flow.py, test_tray.py, test_wake_word.py, docs/configuration.md | build+tests+flow | done |
 | 03 | Silent and dead take diagnosis with per-take stats and timing line | src/winwhisper/recorder.py, main.py, tests/test_recorder.py, test_overlay_flow.py | build+tests+flow | done |
 | 04 | Notification queue, Open Log Folder, version item, drop-only-bad-keys settings recovery | src/winwhisper/tray.py, main.py, config.py, tests/test_tray.py, test_config.py, test_main.py, test_overlay_flow.py | build+tests+flow | done |
-| 05 | First run: hotkey in tray, model download toast, offline message, lenient model_size, Windows start at login, version bump | src/winwhisper/main.py, tray.py, config.py, transcriber.py, hotkey_actions.py, installer/Speech.iss, pyproject.toml, README.md, docs/configuration.md, tests | build+tests+flow | pending |
+| 05 | First run: hotkey in tray, model download toast, offline message, lenient model_size, Windows start at login, version bump | src/winwhisper/main.py, tray.py, config.py, transcriber.py, hotkey_actions.py, installer/Speech.iss, pyproject.toml, README.md, docs/configuration.md, tests | build+tests+flow | done |
 
 Bar legend: build = diff review + import smoke · +tests = also the full pytest run · +flow = also drive the affected flow from source.
 

@@ -230,3 +230,19 @@ def test_posix_single_instance_setup_errors_fail_open(
 
     assert main_module._acquire_single_instance() is True
     assert main_module._single_instance_lock_handle is None
+
+
+def test_pyproject_version_is_0_1_19():
+    from pathlib import Path
+    import tomllib
+
+    data = tomllib.loads(
+        (Path(__file__).resolve().parents[1] / "pyproject.toml").read_text(
+            encoding="utf-8"
+        )
+    )
+    assert data["project"]["version"] == "0.1.19"
+
+
+def test_downloading_model_status_constant_exists():
+    assert main_module.STATUS_DOWNLOADING_MODEL == "Downloading model..."

@@ -43,7 +43,9 @@ Before your first dictation:
 - **macOS:** open the DMG, move Speech to Applications, and launch it normally. Then enable Microphone, Accessibility, and Input Monitoring permissions. Quit and reopen Speech after granting them.
 - **Linux:** use an X11 session and an AppIndicator-compatible tray. Wayland is not supported yet. AppImage users may need `fuse3` and `libfuse2`.
 
-The selected Whisper model downloads from Hugging Face on first use. Windows can check for updates inside the app; macOS and Linux updates are installed manually from Releases.
+The selected Whisper model downloads from Hugging Face on first use.
+The default small model is about 464 MB.
+Windows can check for updates inside the app; macOS and Linux updates are installed manually from Releases.
 
 ## How it works
 
@@ -78,7 +80,7 @@ Most settings are available from the tray or menu-bar icon and apply without a r
 | Cleanup | Keep raw transcription, apply local basic cleanup, or opt into LLM cleanup with your own OpenAI API key. |
 | Hotkeys | Choose suggested shortcuts or enter custom combinations with duplicate and conflict validation. |
 | Vocabulary | Bias transcription toward names, products, and technical terms you use often. |
-| Model | Trade speed for accuracy with `small`, `medium`, or `large-v3`; supported NVIDIA GPUs can use CUDA. |
+| Model | Trade speed for accuracy with `small` (~464 MB), `medium` (~1530 MB), `large-v3` (~3090 MB), or `large-v3-turbo` (~1620 MB); supported NVIDIA GPUs can use CUDA. |
 
 See [Configuration](docs/configuration.md) for settings paths, every key, hotkey syntax, model choices, and cleanup behavior.
 

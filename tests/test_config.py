@@ -350,3 +350,44 @@ def test_save_settings_is_atomic(monkeypatch, tmp_path):
     assert (tmp_path / "settings.json").exists()
     assert not (tmp_path / "settings.json.tmp").exists()
     assert load_settings().model_size == "medium"
+
+
+def test_model_size_is_lenient():
+    assert Settings(model_size="  ").model_size == "small"
+    assert Settings(model_size="").model_size == "small"
+    assert Settings(model_size="large-v3-turbo").model_size == "large-v3-turbo"
+    assert Settings(model_size="custom-distil").model_size == "custom-distil"
+
+
+def test_unknown_model_size_is_kept_on_load(monkeypatch, tmp_path):
+    monkeypatch.setenv("WINWHISPER_APPDATA_DIR", str(tmp_path))
+    (tmp_path / "settings.json").write_text(
+        json.dumps({"model_size": "distil-large-v3"}),
+        encoding="utf-8",
+    )
+
+    settings = load_settings()
+
+    assert settings.model_size == "distil-large-v3"
+
+
+def test_migrate_type_error_quarantines_settings(monkeypatch, tmp_path):
+    import winwhisper.config as config_module
+
+    monkeypatch.setenv("WINWHISPER_APPDATA_DIR", str(tmp_path))
+    (tmp_path / "settings.json").write_text(
+        json.dumps({"model_size": "small"}),
+        encoding="utf-8",
+    )
+
+    def boom(data):
+        raise TypeError("migration exploded")
+
+    monkeypatch.setattr(config_module, "_migrate_device", boom)
+
+    report = load_settings_report()
+
+    assert report.notices == [
+        "Settings could not be read; previous copy saved as settings.json.corrupt"
+    ]
+    assert (tmp_path / "settings.json.corrupt").exists()
