@@ -875,6 +875,31 @@ def test_opening_advanced_settings_does_not_overwrite_external_edit(
     assert load_settings().hotkeys == edited_hotkeys
 
 
+def test_open_log_folder_opens_logs_dir(monkeypatch, tmp_path):
+    controller = make_controller(monkeypatch, tmp_path, [], [])
+    opened = []
+    monkeypatch.setattr(main_module, "_open_path", opened.append)
+
+    controller.open_log_folder()
+
+    assert opened == [tmp_path / "logs"]
+
+
+def test_startup_notifies_settings_load_notices(monkeypatch, tmp_path):
+    controller = make_controller(monkeypatch, tmp_path, [], [])
+    controller._settings_notices = [
+        "Settings key(s) ignored: custom_vocabulary (restored defaults for them)"
+    ]
+    controller.first_run = False
+
+    controller.run()
+
+    assert (
+        "Speech",
+        "Settings key(s) ignored: custom_vocabulary (restored defaults for them)",
+    ) in controller.tray.notifications
+
+
 def test_startup_surfaces_saved_hotkey_registration_conflict(monkeypatch, tmp_path):
     controller = make_controller(monkeypatch, tmp_path, [], [])
     monkeypatch.setattr(sys, "platform", "darwin")

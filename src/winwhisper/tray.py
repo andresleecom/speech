@@ -5,6 +5,7 @@ import threading
 from collections.abc import Callable
 from typing import Any
 
+from . import __version__
 from .audio_inputs import (
     AudioInputDevice,
     AudioInputDeviceError,
@@ -24,6 +25,7 @@ _STATUS_COLORS = {
     "Error": (127, 29, 29, 255),
 }
 _TOOLTIP_MAX_LENGTH = 120
+_MAX_PENDING_NOTIFICATIONS = 20
 
 
 class TrayApp:
@@ -40,6 +42,7 @@ class TrayApp:
         self._status = "Idle"
         self._microphone_label = SYSTEM_DEFAULT_INPUT_LABEL
         self._ui_lock = threading.RLock()
+        self._pending_notifications: list[tuple[str, str]] = []
 
     def run(self) -> None:
         from pystray import Icon, Menu, MenuItem
@@ -55,7 +58,7 @@ class TrayApp:
                 self._make_menu(Menu, MenuItem),
             )
             icon = self._icon
-        icon.run()
+        icon.run(setup=self._on_icon_ready)
 
     def stop(self) -> None:
         with self._ui_lock:
@@ -96,6 +99,8 @@ class TrayApp:
         with self._ui_lock:
             icon = self._icon
             if icon is None:
+                if len(self._pending_notifications) < _MAX_PENDING_NOTIFICATIONS:
+                    self._pending_notifications.append((title, message))
                 return
             try:
                 icon.notify(message, title)
@@ -105,8 +110,23 @@ class TrayApp:
     def refresh_menu(self) -> None:
         self._update_menu()
 
+    def _on_icon_ready(self, icon: Any) -> None:
+        # Win32 balloons need a visible icon; pystray's default setup only
+        # sets visible when no custom setup is provided.
+        icon.visible = True
+        with self._ui_lock:
+            pending = list(self._pending_notifications)
+            self._pending_notifications.clear()
+        for title, message in pending:
+            self.notify(title, message)
+
     def _make_menu(self, menu_cls: Any, item_cls: Any) -> Any:
         return menu_cls(
+            item_cls(
+                f"Speech {__version__}",
+                lambda icon, item: None,
+                enabled=False,
+            ),
             item_cls("Start/Stop Recording", self._on_toggle),
             item_cls(
                 self._wake_word_label(),
@@ -154,6 +174,7 @@ class TrayApp:
                 visible=sys.platform == "darwin",
             ),
             item_cls("Open Settings File", self._on_open_settings),
+            item_cls("Open Log Folder", self._on_open_log_folder),
             item_cls(
                 "Check for Updates",
                 self._on_check_updates,
@@ -276,6 +297,9 @@ class TrayApp:
 
     def _on_open_settings(self, icon: Any, item: Any) -> None:
         self._controller.open_settings_file()
+
+    def _on_open_log_folder(self, icon: Any, item: Any) -> None:
+        self._controller.open_log_folder()
 
     def _on_hotkey_settings(self, icon: Any, item: Any) -> None:
         self._controller.open_hotkey_settings()

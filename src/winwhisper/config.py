@@ -4,6 +4,7 @@ import json
 import os
 import sys
 import threading
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Literal
 
@@ -163,7 +164,24 @@ def _default_app_data_dir(name: str) -> Path:
     return base / name.lower()
 
 
+@dataclass
+class SettingsLoadReport:
+    settings: Settings
+    notices: list[str] = field(default_factory=list)
+    first_run: bool = False
+
+
+_CORRUPT_SETTINGS_NOTICE = (
+    "Settings could not be read; previous copy saved as settings.json.corrupt"
+)
+_MAX_SETTINGS_DROP_ROUNDS = 3
+
+
 def load_settings() -> Settings:
+    return load_settings_report().settings
+
+
+def load_settings_report() -> SettingsLoadReport:
     _load_dotenv()
     settings_path = _settings_path()
     _migrate_legacy_settings(settings_path)
@@ -172,26 +190,83 @@ def load_settings() -> Settings:
     if not settings_path.exists():
         settings = Settings()
         save_settings(settings)
-        return settings
+        return SettingsLoadReport(settings=settings, notices=[], first_run=True)
 
     try:
         data = json.loads(settings_path.read_text(encoding="utf-8"))
         if not isinstance(data, dict):
             raise ValueError("settings file must contain a JSON object")
-        _migrate_language_mode(data)
-        _migrate_language_favorites(data)
-        _migrate_audio_input_device(data)
-        _migrate_device(data)
-        _migrate_compute_type(data)
-        _migrate_wake_phrase(data)
-        return Settings(**data)
-    except (OSError, ValueError, json.JSONDecodeError, ValidationError) as exc:
+    except (OSError, ValueError, json.JSONDecodeError) as exc:
         _log_warning(
             "Settings file is corrupt or invalid; using defaults (%s).",
             exc.__class__.__name__,
         )
         _quarantine_corrupt_settings(settings_path)
-        return Settings()
+        return SettingsLoadReport(
+            settings=Settings(),
+            notices=[_CORRUPT_SETTINGS_NOTICE],
+            first_run=False,
+        )
+
+    _migrate_language_mode(data)
+    _migrate_language_favorites(data)
+    _migrate_audio_input_device(data)
+    _migrate_device(data)
+    _migrate_compute_type(data)
+    _migrate_wake_phrase(data)
+
+    dropped: list[str] = []
+    for _round in range(_MAX_SETTINGS_DROP_ROUNDS + 1):
+        try:
+            settings = Settings(**data)
+            notices: list[str] = []
+            if dropped:
+                keys = ", ".join(sorted(dropped))
+                notices.append(
+                    f"Settings key(s) ignored: {keys} (restored defaults for them)"
+                )
+                try:
+                    save_settings(settings)
+                except OSError:
+                    pass
+            return SettingsLoadReport(
+                settings=settings,
+                notices=notices,
+                first_run=False,
+            )
+        except ValidationError as exc:
+            if _round >= _MAX_SETTINGS_DROP_ROUNDS:
+                break
+            bad_keys = _validation_error_top_level_keys(exc)
+            newly_dropped = [key for key in bad_keys if key in data]
+            if not newly_dropped:
+                break
+            for key in newly_dropped:
+                del data[key]
+                if key not in dropped:
+                    dropped.append(key)
+
+    _log_warning(
+        "Settings file is corrupt or invalid; using defaults (ValidationError)."
+    )
+    _quarantine_corrupt_settings(settings_path)
+    return SettingsLoadReport(
+        settings=Settings(),
+        notices=[_CORRUPT_SETTINGS_NOTICE],
+        first_run=False,
+    )
+
+
+def _validation_error_top_level_keys(exc: ValidationError) -> list[str]:
+    keys: list[str] = []
+    for error in exc.errors():
+        loc = error.get("loc") or ()
+        if not loc:
+            continue
+        key = loc[0]
+        if isinstance(key, str) and key not in keys:
+            keys.append(key)
+    return keys
 
 
 def save_settings(settings: Settings) -> None:

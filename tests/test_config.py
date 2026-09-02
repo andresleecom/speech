@@ -8,6 +8,7 @@ from winwhisper.config import (
     app_data_dir,
     legacy_app_data_dir,
     load_settings,
+    load_settings_report,
     save_settings,
 )
 
@@ -265,6 +266,77 @@ def test_corrupt_json_falls_back_to_defaults(monkeypatch, tmp_path):
     (tmp_path / "settings.json").write_text("{not json", encoding="utf-8")
 
     assert load_settings() == Settings()
+    assert not (tmp_path / "settings.json").exists()
+    assert (tmp_path / "settings.json.corrupt").exists()
+
+
+def test_load_settings_report_first_run_when_file_absent(monkeypatch, tmp_path):
+    monkeypatch.setenv("WINWHISPER_APPDATA_DIR", str(tmp_path))
+
+    report = load_settings_report()
+
+    assert report.first_run is True
+    assert report.notices == []
+    assert report.settings == Settings()
+    assert (tmp_path / "settings.json").exists()
+
+
+def test_load_settings_report_first_run_false_when_file_exists(monkeypatch, tmp_path):
+    monkeypatch.setenv("WINWHISPER_APPDATA_DIR", str(tmp_path))
+    save_settings(Settings(model_size="medium"))
+
+    report = load_settings_report()
+
+    assert report.first_run is False
+    assert report.notices == []
+    assert report.settings.model_size == "medium"
+
+
+def test_load_settings_report_drops_only_bad_keys(monkeypatch, tmp_path):
+    monkeypatch.setenv("WINWHISPER_APPDATA_DIR", str(tmp_path))
+    hotkeys = {"toggle_recording": "ctrl+alt+x"}
+    (tmp_path / "settings.json").write_text(
+        json.dumps(
+            {
+                "custom_vocabulary": 5,
+                "hotkeys": hotkeys,
+                "audio_input_device": 3,
+                "audio_input_device_name": "USB Mic",
+                "model_size": "medium",
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    report = load_settings_report()
+
+    assert report.first_run is False
+    assert report.settings.custom_vocabulary == []
+    assert report.settings.hotkeys == hotkeys
+    assert report.settings.audio_input_device == 3
+    assert report.settings.audio_input_device_name == "USB Mic"
+    assert report.settings.model_size == "medium"
+    assert report.notices == [
+        "Settings key(s) ignored: custom_vocabulary (restored defaults for them)"
+    ]
+    assert not (tmp_path / "settings.json.corrupt").exists()
+    saved = json.loads((tmp_path / "settings.json").read_text(encoding="utf-8"))
+    assert "custom_vocabulary" in saved
+    assert saved["custom_vocabulary"] == []
+    assert saved["hotkeys"] == hotkeys
+
+
+def test_load_settings_report_unparsable_json_quarantines(monkeypatch, tmp_path):
+    monkeypatch.setenv("WINWHISPER_APPDATA_DIR", str(tmp_path))
+    (tmp_path / "settings.json").write_text("{not json", encoding="utf-8")
+
+    report = load_settings_report()
+
+    assert report.first_run is False
+    assert report.settings == Settings()
+    assert report.notices == [
+        "Settings could not be read; previous copy saved as settings.json.corrupt"
+    ]
     assert not (tmp_path / "settings.json").exists()
     assert (tmp_path / "settings.json.corrupt").exists()
 

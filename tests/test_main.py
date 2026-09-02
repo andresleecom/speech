@@ -112,6 +112,20 @@ def test_open_path_uses_platform_opener(monkeypatch, tmp_path):
     assert calls[-1] == ["xdg-open", str(target)]
 
 
+def test_open_log_folder_opens_logs_dir(monkeypatch, tmp_path):
+    opened: list[object] = []
+    monkeypatch.setattr(main_module, "app_data_dir", lambda: tmp_path)
+    monkeypatch.setattr(main_module, "_open_path", lambda path: opened.append(path))
+
+    class StubController:
+        def _handle_error(self, message: str) -> None:
+            raise AssertionError(message)
+
+    main_module.AppController.open_log_folder(StubController())  # type: ignore[arg-type]
+
+    assert opened == [tmp_path / "logs"]
+
+
 @pytest.mark.skipif(os.name == "nt", reason="fcntl is unavailable on Windows")
 def test_posix_single_instance_first_acquisition(
     monkeypatch, tmp_path, reset_posix_single_instance_lock

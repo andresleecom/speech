@@ -25,6 +25,7 @@ class FakeController:
         self.hotkey_settings_opened = False
         self.language_settings_opened = False
         self.permissions_opened = False
+        self.log_folder_opened = False
         self.settings = type(
             "Settings",
             (),
@@ -48,6 +49,9 @@ class FakeController:
 
     def open_permission_setup(self) -> None:
         self.permissions_opened = True
+
+    def open_log_folder(self) -> None:
+        self.log_folder_opened = True
 
     def set_language_mode(self, mode: str) -> None:
         self.settings.language_mode = mode
@@ -117,6 +121,63 @@ def test_stop_detaches_icon_before_later_worker_updates():
     assert icon.title_updates == []
     assert icon.icon_updates == 0
     assert icon.notifications == []
+
+
+def test_tray_delivers_notifications_queued_before_run(monkeypatch):
+    created = []
+
+    class FakeRunnableIcon:
+        HAS_MENU = True
+
+        def __init__(self, name, image, title, menu) -> None:
+            self.visible = False
+            self.notifications: list[tuple[str, str]] = []
+            created.append(self)
+
+        def run(self, setup=None) -> None:
+            if setup is not None:
+                setup(self)
+
+        def notify(self, message: str, title: str) -> None:
+            self.notifications.append((title, message))
+
+        def update_menu(self) -> None:
+            return None
+
+        def stop(self) -> None:
+            return None
+
+    pystray = types.ModuleType("pystray")
+    pystray.Icon = FakeRunnableIcon
+    pystray.Menu = FakeMenu
+    pystray.MenuItem = FakeMenuItem
+    monkeypatch.setitem(sys.modules, "pystray", pystray)
+
+    tray = TrayApp(FakeController())
+    tray._make_icon_image = lambda: "fake-image"
+    tray.notify("Speech", "First")
+    tray.notify("Speech", "Second")
+    tray.run()
+
+    assert len(created) == 1
+    assert created[0].visible is True
+    assert created[0].notifications == [("Speech", "First"), ("Speech", "Second")]
+
+
+def test_tray_menu_shows_version_and_opens_log_folder():
+    from winwhisper import __version__
+
+    controller = FakeController()
+    tray = TrayApp(controller)
+
+    menu = tray._make_menu(FakeMenu, FakeMenuItem)
+    version_item = menu.items[0]
+    log_item = next(item for item in menu.items if item.label == "Open Log Folder")
+    log_item.action(None, None)
+
+    assert version_item.label == f"Speech {__version__}"
+    assert version_item.options.get("enabled") is False
+    assert controller.log_folder_opened is True
 
 
 def test_tray_opens_in_app_hotkey_settings():

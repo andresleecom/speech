@@ -19,7 +19,7 @@ from .audio_inputs import (
     normalize_audio_input_device,
 )
 from .branding import APP_NAME
-from .config import Settings, app_data_dir, load_settings, save_settings
+from .config import Settings, app_data_dir, load_settings_report, save_settings
 from .diagnostics import run_diagnostics as run_diagnostics_report
 from .focus import (
     ScreenPoint,
@@ -128,8 +128,16 @@ def _adopt_audio_input_identity(settings: Settings, logger: logging.Logger) -> N
 
 
 class AppController:
-    def __init__(self, settings: Settings) -> None:
+    def __init__(
+        self,
+        settings: Settings,
+        *,
+        notices: list[str] | None = None,
+        first_run: bool = False,
+    ) -> None:
         self.settings = settings
+        self.first_run = first_run
+        self._settings_notices = list(notices or ())
         self.logger = get_logger(__name__)
         self._lock = threading.RLock()
         self._microphone_test: MicrophoneTest | None = None
@@ -186,6 +194,9 @@ class AppController:
         )
 
     def run(self) -> None:
+        for notice in self._settings_notices:
+            self.notify(APP_NAME, notice)
+        self._settings_notices.clear()
         self.set_status(STATUS_IDLE)
         start_hotkeys = True
         if sys.platform == "darwin":
@@ -842,6 +853,12 @@ class AppController:
         except Exception:
             self._handle_error("Settings file could not be opened.")
 
+    def open_log_folder(self) -> None:
+        try:
+            _open_path(app_data_dir() / "logs")
+        except Exception:
+            self._handle_error("Log folder could not be opened.")
+
     def run_diagnostics(self) -> None:
         thread = threading.Thread(
             target=self._run_diagnostics_worker,
@@ -1463,7 +1480,8 @@ def main(argv: list[str] | None = None) -> int:
         app_data_dir() / "settings.json",
     )
 
-    settings = load_settings()
+    report = load_settings_report()
+    settings = report.settings
     _adopt_audio_input_identity(settings, logger)
     logger.info(
         "Settings loaded: model_size=%s; device=%s; compute_type=%s; "
@@ -1478,7 +1496,11 @@ def main(argv: list[str] | None = None) -> int:
         settings.delete_audio_after_transcription,
     )
 
-    controller = AppController(settings)
+    controller = AppController(
+        settings,
+        notices=report.notices,
+        first_run=report.first_run,
+    )
     try:
         controller.run()
     except KeyboardInterrupt:
