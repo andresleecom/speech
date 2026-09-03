@@ -1,8 +1,10 @@
+import logging
 import sys
 import types
 
 import pytest
 
+import winwhisper.audio_inputs as audio_inputs
 import winwhisper.startup as startup_module
 import winwhisper.tray as tray_module
 from winwhisper.audio_inputs import AudioInputDevice
@@ -13,7 +15,13 @@ from winwhisper.tray import TrayApp
 
 class FakeMenu:
     def __init__(self, *items) -> None:
-        self.items = items
+        self._items = items
+
+    @property
+    def items(self):
+        if len(self._items) == 1 and callable(self._items[0]):
+            return tuple(self._items[0]())
+        return self._items
 
 
 class FakeMenuItem:
@@ -61,16 +69,27 @@ class FakeController:
         self.settings.language_mode = mode
 
     def set_audio_input_device(self, device: int | None) -> None:
-        self.settings.audio_input_device = device
         if device is None:
-            self.settings.audio_input_device_name = None
-            self.settings.audio_input_device_host_api = None
+            self.set_audio_input_selection(None, None)
             return
         for candidate in getattr(self, "_devices", ()):
             if candidate.index == device:
-                self.settings.audio_input_device_name = candidate.name
-                self.settings.audio_input_device_host_api = candidate.host_api
+                self.set_audio_input_selection(candidate.name, candidate.host_api)
                 return
+
+    def set_audio_input_selection(
+        self, name: str | None, host_api: str | None
+    ) -> None:
+        self.settings.audio_input_device_name = name
+        self.settings.audio_input_device_host_api = host_api
+        self.settings.audio_input_device = next(
+            (
+                candidate.index
+                for candidate in getattr(self, "_devices", ())
+                if candidate.name == name and candidate.host_api == (host_api or "")
+            ),
+            None,
+        )
 
     def start_microphone_test(self) -> None:
         self.microphone_test_started = True
@@ -84,6 +103,7 @@ class FakeIcon:
         self.stopped = False
         self.title_updates: list[str] = []
         self.icon_updates = 0
+        self.menu_updates = 0
         self.notifications: list[tuple[str, str]] = []
 
     @property
@@ -107,6 +127,39 @@ class FakeIcon:
 
     def notify(self, message: str, title: str) -> None:
         self.notifications.append((title, message))
+
+    def update_menu(self) -> None:
+        self.menu_updates += 1
+
+
+class FakeTimer:
+    created = []
+
+    def __init__(self, interval, callback) -> None:
+        self.interval = interval
+        self.callback = callback
+        self.daemon = False
+        self.started = False
+        self.cancelled = False
+        self.created.append(self)
+
+    def start(self) -> None:
+        self.started = True
+
+    def cancel(self) -> None:
+        self.cancelled = True
+
+    def fire(self) -> None:
+        assert self.started is True
+        assert self.cancelled is False
+        self.callback()
+
+
+@pytest.fixture(autouse=True)
+def avoid_live_audio_device_access(monkeypatch):
+    monkeypatch.setattr(tray_module, "refresh_audio_device_table", lambda: None)
+    monkeypatch.setattr(tray_module, "input_device_signature", lambda: None)
+    monkeypatch.setattr(audio_inputs, "_device_supports_capture", lambda row: True)
 
     def update_menu(self) -> None:
         return None
@@ -166,6 +219,69 @@ def test_tray_delivers_notifications_queued_before_run(monkeypatch):
     assert len(created) == 1
     assert created[0].visible is True
     assert created[0].notifications == [("Speech", "First"), ("Speech", "Second")]
+
+
+def test_tray_refreshes_menu_only_when_input_signature_changes(monkeypatch, caplog):
+    signatures = iter(
+        [
+            ("Built-in Mic",),
+            ("Built-in Mic",),
+            ("Built-in Mic", "USB Mic"),
+        ]
+    )
+    refreshes: list[str] = []
+    FakeTimer.created.clear()
+    monkeypatch.setattr(tray_module, "input_device_signature", lambda: next(signatures))
+    monkeypatch.setattr(
+        tray_module,
+        "refresh_audio_device_table",
+        lambda: refreshes.append("refresh"),
+    )
+    monkeypatch.setattr(tray_module.threading, "Timer", FakeTimer)
+    tray = TrayApp(FakeController())
+    icon = FakeIcon()
+    tray._icon = icon
+
+    with caplog.at_level(logging.INFO, logger="winwhisper.tray"):
+        tray._on_icon_ready(icon)
+        first_timer = FakeTimer.created[0]
+        first_timer.fire()
+        assert icon.menu_updates == 0
+        assert refreshes == []
+
+        second_timer = FakeTimer.created[1]
+        second_timer.fire()
+
+    assert icon.menu_updates == 1
+    assert refreshes == ["refresh"]
+    assert len(FakeTimer.created) == 3
+    assert all(timer.interval == 2.0 for timer in FakeTimer.created)
+    assert all(timer.daemon is True for timer in FakeTimer.created)
+    assert "Input devices changed; microphone menu refreshed." in caplog.messages
+    tray.stop()
+
+
+def test_tray_stops_input_device_polling(monkeypatch):
+    FakeTimer.created.clear()
+    monkeypatch.setattr(
+        tray_module,
+        "input_device_signature",
+        lambda: ("Built-in Mic",),
+    )
+    monkeypatch.setattr(tray_module.threading, "Timer", FakeTimer)
+    tray = TrayApp(FakeController())
+    icon = FakeIcon()
+    tray._icon = icon
+
+    tray._on_icon_ready(icon)
+    timer = FakeTimer.created[0]
+    tray.stop()
+    timer.callback()
+
+    assert timer.cancelled is True
+    assert len(FakeTimer.created) == 1
+    assert icon.menu_updates == 0
+    assert icon.stopped is True
 
 
 def test_tray_menu_shows_version_and_opens_log_folder():
@@ -306,7 +422,7 @@ def test_tray_exposes_microphone_selection_and_test(monkeypatch):
     microphone_item = next(item for item in menu.items if item.label == "Microphone")
     labels = [item.label for item in microphone_item.action.items]
     usb_item = next(
-        item for item in microphone_item.action.items if item.label == "USB Mic [5]"
+        item for item in microphone_item.action.items if item.label == "USB Mic"
     )
     test_item = next(
         item for item in microphone_item.action.items if item.label == "Test Microphone"
@@ -317,8 +433,8 @@ def test_tray_exposes_microphone_selection_and_test(monkeypatch):
 
     assert labels == [
         "System Default",
-        "Built-in Mic [2]",
-        "USB Mic [5]",
+        "Built-in Mic",
+        "USB Mic",
         "Test Microphone",
     ]
     assert controller.settings.audio_input_device == 5
@@ -343,8 +459,62 @@ def test_tray_checks_microphone_by_identity_when_hint_is_stale(monkeypatch):
     menu = tray._make_menu(FakeMenu, FakeMenuItem)
     microphone_item = next(item for item in menu.items if item.label == "Microphone")
     podmic = next(
-        item for item in microphone_item.action.items if item.label == "PodMic [2]"
+        item for item in microphone_item.action.items if item.label == "PodMic"
     )
+    assert podmic.options["checked"](None) is True
+
+
+def test_tray_microphone_menu_lists_devices_without_refreshing(monkeypatch):
+    devices = [
+        AudioInputDevice(
+            index=2, name="Built-in Mic", input_channels=2, host_api="MME"
+        )
+    ]
+    refreshes: list[str] = []
+    monkeypatch.setattr(tray_module, "list_audio_input_devices", lambda: tuple(devices))
+    monkeypatch.setattr(
+        tray_module,
+        "refresh_audio_device_table",
+        lambda: refreshes.append("refresh"),
+    )
+    tray = TrayApp(FakeController())
+
+    menu = tray._make_menu(FakeMenu, FakeMenuItem)
+    microphone_item = next(item for item in menu.items if item.label == "Microphone")
+    first_labels = [item.label for item in microphone_item.action.items]
+    devices.append(
+        AudioInputDevice(
+            index=8, name="Headset Mic", input_channels=1, host_api="MME"
+        )
+    )
+    second_labels = [item.label for item in microphone_item.action.items]
+
+    assert "Headset Mic" not in first_labels
+    assert "Headset Mic" in second_labels
+    assert refreshes == []
+
+
+def test_tray_checks_saved_name_when_host_api_row_is_missing(monkeypatch):
+    devices = (
+        AudioInputDevice(
+            index=22,
+            name="PodMic",
+            input_channels=1,
+            host_api="Windows WASAPI",
+        ),
+    )
+    monkeypatch.setattr(tray_module, "list_audio_input_devices", lambda: devices)
+    controller = FakeController()
+    controller.settings.audio_input_device_name = "PodMic"
+    controller.settings.audio_input_device_host_api = "MME"
+    tray = TrayApp(controller)
+
+    menu = tray._make_menu(FakeMenu, FakeMenuItem)
+    microphone_item = next(item for item in menu.items if item.label == "Microphone")
+    podmic = next(
+        item for item in microphone_item.action.items if item.label == "PodMic"
+    )
+
     assert podmic.options["checked"](None) is True
 
 
@@ -478,7 +648,7 @@ def test_tray_shows_unavailable_saved_microphone(monkeypatch):
     unavailable = next(
         item
         for item in microphone_item.action.items
-        if item.label == "Missing Mic [9]"
+        if item.label == "Missing Mic (unavailable)"
     )
 
     assert unavailable.options["enabled"] is False

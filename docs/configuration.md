@@ -25,6 +25,7 @@ You can also set `language_mode` to `auto` or a supported code such as `en`, `es
 ## Microphone
 
 Choose **Microphone > System Default** to follow the operating-system selection, or choose a specific input device.
+The menu shows one entry per physical microphone and updates within a couple of seconds when a microphone is connected or disconnected, and always when the menu is rebuilt.
 
 Speech identifies a saved microphone by `audio_input_device_name` plus `audio_input_device_host_api`, and keeps `audio_input_device` only as an index hint.
 
@@ -32,9 +33,11 @@ Every recording or wake-word open re-resolves that identity against the live dev
 
 If the saved device is missing, Speech falls back to System Default for that open, shows one toast for the change, and never writes the fallback into settings.
 
-**Test Microphone** opens the recording orb for five seconds and shows the live input level. The test does not write audio to disk or transcribe it.
+**Test Microphone** opens the recording orb for five seconds and shows the live input level.
+The test does not write audio to disk or transcribe it.
 
-If a selected device is disconnected, Speech keeps it visible as unavailable. Select System Default or another device, and confirm that the operating system has granted microphone access.
+If a selected device is disconnected, Speech keeps it visible as unavailable.
+Select System Default or another device, and confirm that the operating system has granted microphone access.
 
 ## Text cleanup
 

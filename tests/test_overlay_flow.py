@@ -742,7 +742,7 @@ def test_controller_persists_input_device_and_runs_microphone_test(monkeypatch, 
     monkeypatch.setattr(main_module, "list_audio_input_devices", lambda: devices)
     controller = make_controller(monkeypatch, tmp_path, [], [])
 
-    controller.set_audio_input_device(3)
+    controller.set_audio_input_selection("USB Mic", "MME")
     controller.start_microphone_test()
     microphone_test = FakeMicrophoneTest.instances[-1]
     microphone_test.peak_level = 0.4
@@ -762,7 +762,7 @@ def test_controller_persists_input_device_and_runs_microphone_test(monkeypatch, 
         "hide",
     ]
     assert controller.tray.notifications[-1][1] == "Microphone test complete. Signal detected."
-    assert controller.tray.microphone_label == "USB Mic [3]"
+    assert controller.tray.microphone_label == "USB Mic"
 
 
 def test_controller_toasts_microphone_fallback_once(monkeypatch, tmp_path):

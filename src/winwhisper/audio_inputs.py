@@ -15,7 +15,15 @@ _SYSTEM_DEFAULT_ALIASES: Final = frozenset(
     {"", "default", "systemdefault", "system", "none", "auto"}
 )
 _SKIPPED_HOST_APIS: Final = frozenset({"Windows WDM-KS"})
+_PSEUDO_INPUT_NAMES: Final = frozenset(
+    {"Microsoft Sound Mapper - Input", "Primary Sound Capture Driver"}
+)
 _WASAPI_HOST_API: Final = "Windows WASAPI"
+_HOST_API_PREFERENCE: Final = {
+    "MME": 0,
+    _WASAPI_HOST_API: 1,
+    "Windows DirectSound": 2,
+}
 _CAPTURE_SAMPLE_RATE: Final = 16_000
 _CAPTURE_CHANNELS: Final = 1
 _CAPTURE_DTYPE: Final = "int16"
@@ -73,6 +81,54 @@ def refresh_audio_device_table() -> float | None:
             return None
 
 
+def input_device_signature() -> tuple[str, ...] | None:
+    """Return the current Windows MME input-device names, when available."""
+    if not sys.platform.startswith("win"):
+        return None
+
+    try:
+        import ctypes
+        from ctypes import wintypes
+
+        class WAVEINCAPSW(ctypes.Structure):
+            _fields_ = [
+                ("wMid", wintypes.WORD),
+                ("wPid", wintypes.WORD),
+                ("vDriverVersion", wintypes.UINT),
+                ("szPname", wintypes.WCHAR * 32),
+                ("dwFormats", wintypes.DWORD),
+                ("wChannels", wintypes.WORD),
+                ("wReserved1", wintypes.WORD),
+            ]
+
+        # Keep a private handle so configuring these functions cannot mutate
+        # ctypes.windll's process-wide cached function objects.
+        winmm = ctypes.WinDLL("winmm")
+        winmm.waveInGetNumDevs.argtypes = []
+        winmm.waveInGetNumDevs.restype = wintypes.UINT
+        winmm.waveInGetDevCapsW.argtypes = [
+            wintypes.UINT,
+            ctypes.POINTER(WAVEINCAPSW),
+            wintypes.UINT,
+        ]
+        winmm.waveInGetDevCapsW.restype = wintypes.UINT
+
+        names: list[str] = []
+        for index in range(winmm.waveInGetNumDevs()):
+            capabilities = WAVEINCAPSW()
+            result = winmm.waveInGetDevCapsW(
+                index,
+                ctypes.byref(capabilities),
+                ctypes.sizeof(capabilities),
+            )
+            if result != 0:
+                return None
+            names.append(capabilities.szPname)
+        return tuple(names)
+    except Exception:
+        return None
+
+
 class AudioInputDeviceError(RuntimeError):
     """Raised when available microphone devices cannot be inspected."""
 
@@ -87,6 +143,13 @@ class AudioInputDevice:
     @property
     def choice_label(self) -> str:
         return f"{self.name} [{self.index}]"
+
+
+@dataclass(frozen=True, slots=True)
+class PhysicalInputDevice:
+    label: str
+    rows: tuple[AudioInputDevice, ...]
+    preferred: AudioInputDevice
 
 
 @dataclass(frozen=True, slots=True)
@@ -153,6 +216,48 @@ def list_audio_input_devices() -> tuple[AudioInputDevice, ...]:
             )
         )
     return tuple(devices)
+
+
+def group_physical_input_devices(
+    devices: tuple[AudioInputDevice, ...],
+) -> tuple[PhysicalInputDevice, ...]:
+    """Collapse host-API rows that represent the same physical microphone."""
+    devices = tuple(
+        device for device in devices if device.name not in _PSEUDO_INPUT_NAMES
+    )
+    if _use_native_macos_audio():
+        return tuple(
+            PhysicalInputDevice(label=device.name, rows=(device,), preferred=device)
+            for device in devices
+        )
+
+    grouped_rows: list[list[AudioInputDevice]] = []
+    for device in devices:
+        for rows in grouped_rows:
+            if any(_same_physical_input_name(device.name, row.name) for row in rows):
+                rows.append(device)
+                break
+        else:
+            grouped_rows.append([device])
+
+    groups: list[PhysicalInputDevice] = []
+    for rows in grouped_rows:
+        ranked_rows = sorted(
+            rows,
+            key=lambda row: _HOST_API_PREFERENCE.get(row.host_api, 3),
+        )
+        preferred = next(
+            (row for row in ranked_rows if _device_supports_capture(row)),
+            ranked_rows[0],
+        )
+        groups.append(
+            PhysicalInputDevice(
+                label=max((row.name for row in rows), key=len),
+                rows=tuple(rows),
+                preferred=preferred,
+            )
+        )
+    return tuple(groups)
 
 
 def default_audio_input_device() -> int | None:
@@ -393,6 +498,14 @@ def _sounddevice_host_api_name(sounddevice: Any, device: Any) -> str:
         return str(name).strip() or "Unknown"
     except Exception:
         return "Unknown"
+
+
+def _same_physical_input_name(first: str, second: str) -> bool:
+    if first == second:
+        return True
+    return (len(first) == 31 and second.startswith(first)) or (
+        len(second) == 31 and first.startswith(second)
+    )
 
 
 def _device_supports_capture(device: AudioInputDevice) -> bool:

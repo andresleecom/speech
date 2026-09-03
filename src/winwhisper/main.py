@@ -15,6 +15,7 @@ from typing import Any, Callable, Literal
 from . import __version__
 from .audio_inputs import (
     SYSTEM_DEFAULT_INPUT_LABEL,
+    group_physical_input_devices,
     list_audio_input_devices,
     normalize_audio_input_device,
 )
@@ -615,19 +616,51 @@ class AppController:
 
     def set_audio_input_device(self, value: object) -> None:
         selected_device = normalize_audio_input_device(value)
-        device_name: str | None = None
-        device_host_api: str | None = None
-        if selected_device is not None:
+        if selected_device is None:
+            self.set_audio_input_selection(None, None)
+            return
+
+        try:
+            for device in list_audio_input_devices():
+                if device.index == selected_device:
+                    self.set_audio_input_selection(device.name, device.host_api)
+                    return
+        except Exception:
+            self.logger.exception(
+                "Could not resolve microphone identity for index %s.",
+                selected_device,
+            )
+        self.set_audio_input_selection(None, None)
+
+    def set_audio_input_selection(
+        self, name: str | None, host_api: str | None
+    ) -> None:
+        selected_device: int | None = None
+        microphone_label = SYSTEM_DEFAULT_INPUT_LABEL
+        if name is not None:
+            microphone_label = name
             try:
-                for device in list_audio_input_devices():
-                    if device.index == selected_device:
-                        device_name = device.name
-                        device_host_api = device.host_api
-                        break
+                devices = list_audio_input_devices()
+                selected_row = next(
+                    (
+                        device
+                        for device in devices
+                        if device.name == name
+                        and device.host_api == (host_api or "")
+                    ),
+                    None,
+                )
+                if selected_row is not None:
+                    selected_device = selected_row.index
+                    for group in group_physical_input_devices(devices):
+                        if selected_row in group.rows:
+                            microphone_label = group.label
+                            break
             except Exception:
                 self.logger.exception(
-                    "Could not resolve microphone identity for index %s.",
-                    selected_device,
+                    "Could not resolve microphone identity name=%r host_api=%r.",
+                    name,
+                    host_api,
                 )
 
         with self._lock:
@@ -641,12 +674,12 @@ class AppController:
 
             set_selection = getattr(self.recorder, "set_audio_input_selection", None)
             if callable(set_selection):
-                set_selection(device_name, device_host_api, selected_device)
+                set_selection(name, host_api, selected_device)
             else:
                 self.recorder.set_audio_input_device(selected_device)
             self.settings.audio_input_device = selected_device
-            self.settings.audio_input_device_name = device_name
-            self.settings.audio_input_device_host_api = device_host_api
+            self.settings.audio_input_device_name = name
+            self.settings.audio_input_device_host_api = host_api
             try:
                 save_settings(self.settings)
             except Exception:
@@ -665,13 +698,13 @@ class AppController:
         if wake_was_running and self.settings.wake_word_enabled:
             self._start_wake_listener()
 
-        self._sync_microphone_label()
+        self.tray.set_microphone_label(microphone_label)
         self.tray.refresh_menu()
         self.logger.info(
-            "Audio input device set to %s (name=%r, host_api=%r).",
+            "Audio input selection set to %s (name=%r, host_api=%r).",
             selected_device,
-            device_name,
-            device_host_api,
+            name,
+            host_api,
         )
 
     def start_microphone_test(self) -> None:
@@ -1458,7 +1491,20 @@ class AppController:
         name = self.settings.audio_input_device_name
         index = self.settings.audio_input_device
         if name is not None:
-            label = f"{name} [{index}]" if index is not None else name
+            label = name
+            try:
+                devices = list_audio_input_devices()
+                for group in group_physical_input_devices(devices):
+                    if any(
+                        row.name == name
+                        and row.host_api
+                        == (self.settings.audio_input_device_host_api or "")
+                        for row in group.rows
+                    ):
+                        label = group.label
+                        break
+            except Exception:
+                self.logger.exception("Could not resolve the microphone tooltip label.")
         elif index is not None:
             label = f"Unavailable microphone [{index}]"
         set_label = getattr(self.tray, "set_microphone_label", None)
