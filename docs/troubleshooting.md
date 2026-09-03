@@ -101,6 +101,14 @@ If the key is unavailable, OpenAI returns an error, or the request times out, Sp
 
 Only transcript text is sent for LLM cleanup. Recorded audio never leaves the computer.
 
+## Update downloaded but nothing happened
+
+After you confirm an update, Speech downloads the installer, starts a hidden hand-off, then exits so the installer can replace the binaries.
+If Speech never reopens and no install UI appears, check the hand-off trail under `%APPDATA%\Speech\updates\handoff.log`.
+That file records waiting, launching, the installer exit code, and relaunching.
+Also check `%APPDATA%\Speech\updates\install.log` for Inno Setup's own silent-install log.
+If both logs are missing, the hand-off process did not run; download the latest `Speech-Setup-*.exe` from the [GitHub Releases](https://github.com/andresleecom/speech/releases) page and run it manually.
+
 ## Windows model download fails
 
 Some antivirus products intercept TLS during the first model download. They can set `SSLKEYLOGFILE` to an invalid device path or replace HTTPS certificates with a locally trusted certificate.

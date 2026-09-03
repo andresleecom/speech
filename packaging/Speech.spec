@@ -65,6 +65,12 @@ datas = (
     + copy_metadata("faster-whisper")
     + copy_metadata("ctranslate2")
     + copy_metadata("speech")
+    + [
+        (
+            str(SRC / "winwhisper" / "assets" / "app-icon-256.png"),
+            "winwhisper/assets",
+        )
+    ]
 )
 
 binaries = collect_dynamic_libs("ctranslate2")
@@ -92,6 +98,12 @@ ENTITLEMENTS_FILE = (
     else None
 )
 
+EXE_ICON = (
+    str(ROOT / "packaging" / "windows" / "speech.ico")
+    if sys.platform == "win32"
+    else None
+)
+
 exe = EXE(
     pyz,
     a.scripts,
@@ -106,6 +118,7 @@ exe = EXE(
     disable_windowed_traceback=False,
     codesign_identity=CODESIGN_IDENTITY,
     entitlements_file=ENTITLEMENTS_FILE,
+    icon=EXE_ICON,
 )
 
 coll = COLLECT(
@@ -122,7 +135,7 @@ if sys.platform == "darwin":
     app = BUNDLE(
         coll,
         name="Speech.app",
-        icon=None,
+        icon=str(ROOT / "packaging" / "macos" / "speech.icns"),
         bundle_identifier="com.andreslee.speech",
         version=APP_VERSION,
         info_plist={

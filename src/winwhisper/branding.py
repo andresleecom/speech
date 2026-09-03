@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from pathlib import Path
 from typing import Any
 
 APP_NAME = "Speech"
@@ -12,17 +13,38 @@ PACKAGE_DISTRIBUTION = "speech"
 IDLE_ICON_COLOR = (128, 128, 128, 255)
 _ICON_OUTLINE_COLOR = (255, 255, 255, 255)
 
+_ASSET_NAME = "app-icon-256.png"
+
+
+def _asset_icon_path() -> Path | None:
+    """Return the packaged PNG path when the file is present on disk."""
+    candidate = Path(__file__).resolve().parent / "assets" / _ASSET_NAME
+    if candidate.is_file():
+        return candidate
+    return None
+
 
 def app_icon_image(
     size: int = 64,
     *,
     color: tuple[int, int, int, int] | None = None,
 ) -> Any:
-    """Draw the app mark as a Pillow image.
+    """Return the app mark as a Pillow image.
 
-    The tray passes its per-status color; everything else gets the idle circle.
+    The tray passes its per-status color and always gets the drawn status disc.
+    Everything else prefers the packaged PNG when present, then falls back to
+    the idle circle.
     """
     from PIL import Image, ImageDraw
+
+    if color is None:
+        asset = _asset_icon_path()
+        if asset is not None:
+            with Image.open(asset) as opened:
+                image = opened.convert("RGBA")
+            if image.size != (size, size):
+                image = image.resize((size, size), Image.Resampling.LANCZOS)
+            return image
 
     fill = color if color is not None else IDLE_ICON_COLOR
     image = Image.new("RGBA", (size, size), (0, 0, 0, 0))

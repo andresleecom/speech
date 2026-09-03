@@ -78,6 +78,11 @@ def test_install_stays_per_user(script):
     assert "DefaultDirName={localappdata}\\Programs\\{#MyAppName}" in script
 
 
+def test_setup_and_uninstall_use_the_speech_icon(script):
+    assert r"SetupIconFile=..\packaging\windows\speech.ico" in script
+    assert r"UninstallDisplayIcon={app}\{#MyAppExeName}" in script
+
+
 def test_startup_task_and_run_registry_value(script):
     assert "[Tasks]" in script
     assert re.search(
