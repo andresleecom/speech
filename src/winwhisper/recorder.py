@@ -15,7 +15,10 @@ from .audio_inputs import (
     input_stream_extra_settings,
     list_audio_input_devices,
     normalize_audio_input_device,
+    refresh_audio_device_table,
+    register_open_stream,
     resolve_input_device,
+    unregister_open_stream,
 )
 from .branding import APP_NAME
 from .logger import get_logger
@@ -45,6 +48,8 @@ class TakeStats:
     seconds: float
     first_block_ms: float | None
     device_label: str
+    refresh_ms: float | None
+    host_api: str
 
 
 class Recorder:
@@ -73,8 +78,11 @@ class Recorder:
         self._first_block_timer: threading.Timer | None = None
         self._first_block_warned = False
         self._device_label = "System Default"
+        self._take_host_api = "default"
+        self._last_refresh_ms: float | None = None
         self._last_take_stats: TakeStats | None = None
         self._last_to_stream_ms = 0
+        self._stream_registered = False
 
     def start_recording(self) -> None:
         if self.is_recording():
@@ -98,14 +106,18 @@ class Recorder:
             self._stream_started_at = None
             self._first_block_at = None
             self._first_block_warned = False
+            self._stream_registered = False
             name = self._audio_input_device_name
             host_api = self._audio_input_device_host_api
             index_hint = self._audio_input_device
 
+        refresh_ms = refresh_audio_device_table()
+        self._last_refresh_ms = refresh_ms
         devices = list_audio_input_devices()
         resolved = resolve_input_device(name, host_api, index_hint, devices)
         self.last_resolution = resolved
         self._device_label = resolved.label
+        self._take_host_api = _host_api_for_resolved_index(resolved.index, devices)
         extras = _extras_for_resolved_index(resolved.index, devices)
 
         def callback(indata: Any, frames: int, time_info: Any, status: Any) -> None:
@@ -114,19 +126,25 @@ class Recorder:
             self._record_block(indata)
 
         stream: Any | None = None
+        registered = False
         try:
             stream = _input_stream(sd, callback, resolved.index, extras)
             stream.start()
+            register_open_stream()
+            registered = True
         except Exception as exc:
             if stream is not None:
                 try:
                     stream.close()
                 except Exception:
                     pass
+            if registered:
+                unregister_open_stream()
             with self._lock:
                 self._blocks = []
                 self._sample_count = 0
                 self._peak_level = 0.0
+                self._stream_registered = False
             message = "Could not start microphone recording"
             if resolved.index is not None or name is not None:
                 message += (
@@ -152,6 +170,7 @@ class Recorder:
             self._stream = stream
             self._stream_started_at = stream_started
             self._last_to_stream_ms = to_stream_ms
+            self._stream_registered = True
 
         timer = threading.Timer(
             FIRST_BLOCK_WARN_SECONDS,
@@ -166,6 +185,8 @@ class Recorder:
         with self._lock:
             stream = self._stream
             self._stream = None
+            was_registered = self._stream_registered
+            self._stream_registered = False
 
         if stream is None:
             # Idempotent: concurrent stop (worker + shutdown) is non-fatal.
@@ -184,6 +205,8 @@ class Recorder:
                 stream.close(ignore_errors=True)
             except Exception as exc:
                 close_error = exc
+            if was_registered:
+                unregister_open_stream()
 
         if abort_error is not None:
             raise RecorderError(
@@ -209,6 +232,8 @@ class Recorder:
             stream_started = self._stream_started_at
             first_block = self._first_block_at
             device_label = self._device_label
+            refresh_ms = self._last_refresh_ms
+            host_api = self._take_host_api
             self._blocks = []
             self._level = 0.0
             self._peak_level = 0.0
@@ -233,6 +258,8 @@ class Recorder:
             seconds=seconds,
             first_block_ms=first_block_ms,
             device_label=device_label,
+            refresh_ms=refresh_ms,
+            host_api=host_api,
         )
 
         if blocks:
@@ -395,6 +422,7 @@ class MicrophoneTest:
         self._level = 0.0
         self._peak_level = 0.0
         self.last_resolution: ResolvedInputDevice | None = None
+        self._stream_registered = False
 
     def start(self) -> None:
         with self._lock:
@@ -402,6 +430,7 @@ class MicrophoneTest:
                 return
             self._level = 0.0
             self._peak_level = 0.0
+            self._stream_registered = False
             name = self._audio_input_device_name
             host_api = self._audio_input_device_host_api
             index_hint = self._audio_input_device
@@ -413,6 +442,7 @@ class MicrophoneTest:
                 "sounddevice is not installed; microphone testing is unavailable."
             ) from exc
 
+        refresh_audio_device_table()
         devices = list_audio_input_devices()
         resolved = resolve_input_device(name, host_api, index_hint, devices)
         self.last_resolution = resolved
@@ -427,15 +457,22 @@ class MicrophoneTest:
                 self._peak_level = max(self._peak_level, level)
 
         stream: Any | None = None
+        registered = False
         try:
             stream = _input_stream(sd, callback, resolved.index, extras)
             stream.start()
+            register_open_stream()
+            registered = True
         except Exception as exc:
             if stream is not None:
                 try:
                     stream.close()
                 except Exception:
                     pass
+            if registered:
+                unregister_open_stream()
+            with self._lock:
+                self._stream_registered = False
             message = "Could not start microphone test"
             if resolved.index is not None or name is not None:
                 message += (
@@ -457,11 +494,14 @@ class MicrophoneTest:
 
         with self._lock:
             self._stream = stream
+            self._stream_registered = True
 
     def stop(self) -> float:
         with self._lock:
             stream = self._stream
             self._stream = None
+            was_registered = self._stream_registered
+            self._stream_registered = False
             peak_level = self._peak_level
             self._level = 0.0
 
@@ -478,6 +518,8 @@ class MicrophoneTest:
                 stream.close(ignore_errors=True)
             except Exception as exc:
                 close_error = exc
+            if was_registered:
+                unregister_open_stream()
 
         if abort_error is not None:
             raise RecorderError(
@@ -550,6 +592,19 @@ def _extras_for_resolved_index(
         if getattr(device, "index", None) == index:
             return input_stream_extra_settings(getattr(device, "host_api", None))
     return {}
+
+
+def _host_api_for_resolved_index(
+    index: int | None,
+    devices: tuple[Any, ...],
+) -> str:
+    if index is None:
+        return "default"
+    for device in devices:
+        if getattr(device, "index", None) == index:
+            host_api = str(getattr(device, "host_api", "") or "").strip()
+            return host_api or "default"
+    return "default"
 
 
 def _normalize_identity_text(value: str | None) -> str | None:

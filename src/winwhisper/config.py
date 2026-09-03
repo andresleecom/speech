@@ -43,6 +43,8 @@ class Settings(BaseModel):
         default_factory=lambda: list(DEFAULT_LANGUAGE_FAVORITES)
     )
     cleanup_mode: Literal["none", "basic", "llm"] = "basic"
+    append_trailing_space: bool = True
+    newline_commands: bool = False
     paste_mode: PasteMode = "auto"
     delete_audio_after_transcription: bool = True
     check_for_updates: bool = True

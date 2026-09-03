@@ -11,7 +11,10 @@ from .audio_inputs import (
     input_stream_extra_settings,
     list_audio_input_devices,
     normalize_audio_input_device,
+    refresh_audio_device_table,
+    register_open_stream,
     resolve_input_device,
+    unregister_open_stream,
 )
 from .logger import get_logger
 from .recorder import CHANNELS, DTYPE, SAMPLE_RATE, RecorderError
@@ -33,11 +36,13 @@ class SounddeviceSource:
         self._lock = threading.Lock()
         self._logger = get_logger(__name__)
         self.last_resolution: ResolvedInputDevice | None = None
+        self._stream_registered = False
 
     def start(self, on_block: Callable[[Any], None]) -> None:
         with self._lock:
             if self._stream is not None:
                 return
+            self._stream_registered = False
             name = self._audio_input_device_name
             host_api = self._audio_input_device_host_api
             index_hint = self._audio_input_device
@@ -49,6 +54,7 @@ class SounddeviceSource:
                 "sounddevice is not installed; wake-word listening is unavailable."
             ) from exc
 
+        refresh_audio_device_table()
         devices = list_audio_input_devices()
         resolved = resolve_input_device(name, host_api, index_hint, devices)
         self.last_resolution = resolved
@@ -75,15 +81,22 @@ class SounddeviceSource:
         options.update(extras)
 
         stream: Any | None = None
+        registered = False
         try:
             stream = sd.InputStream(**options)
             stream.start()
+            register_open_stream()
+            registered = True
         except Exception as exc:
             if stream is not None:
                 try:
                     stream.close()
                 except Exception:
                     pass
+            if registered:
+                unregister_open_stream()
+            with self._lock:
+                self._stream_registered = False
             raise RecorderError(
                 "Could not start wake-word microphone listening "
                 f"({exc.__class__.__name__}). "
@@ -96,11 +109,14 @@ class SounddeviceSource:
 
         with self._lock:
             self._stream = stream
+            self._stream_registered = True
 
     def stop(self) -> None:
         with self._lock:
             stream = self._stream
             self._stream = None
+            was_registered = self._stream_registered
+            self._stream_registered = False
         if stream is None:
             return
         try:
@@ -111,6 +127,8 @@ class SounddeviceSource:
             stream.close(ignore_errors=True)
         except Exception:
             self._logger.exception("Could not close wake-word microphone stream.")
+        if was_registered:
+            unregister_open_stream()
 
     def is_running(self) -> bool:
         with self._lock:

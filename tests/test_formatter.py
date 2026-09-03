@@ -48,3 +48,72 @@ def test_space_before_punctuation_removal():
 
 def test_spanish_inverted_question_mark_stays_before_capitalized_letter():
     assert clean_text("¿qué hora es?", "basic") == "¿Qué hora es?"
+
+
+def test_leading_digit_does_not_capitalize_later_letter():
+    assert clean_text("3 apples", "basic") == "3 apples"
+
+
+def test_abbreviation_and_shell_command_are_not_mid_capitalized():
+    # Leading letter at index 0 still gets sentence-start capitalization.
+    # Letters after the abbreviation or first word must not be forced uppercase.
+    assert clean_text("e.g. foo", "basic") == "E.g. foo"
+    assert clean_text("git status", "basic") == "Git status"
+    assert clean_text("e.g. foo", "basic") != "e.G. Foo"
+    assert clean_text("git status", "basic") != "Git Status"
+
+
+def test_hola_capitalizes_first_letter():
+    assert clean_text("hola", "basic") == "Hola"
+
+
+def test_trailing_space_appended_after_sentence_punctuation():
+    assert clean_text("Hello world.", "basic", append_trailing_space=True) == "Hello world. "
+    assert clean_text("Hello world!", "basic", append_trailing_space=True) == "Hello world! "
+    assert clean_text("Hello world?", "basic", append_trailing_space=True) == "Hello world? "
+    assert clean_text("Hello world…", "basic", append_trailing_space=True) == "Hello world… "
+
+
+def test_trailing_space_off_by_default_and_when_disabled():
+    assert clean_text("Hello world.", "basic") == "Hello world."
+    assert (
+        clean_text("Hello world.", "basic", append_trailing_space=False) == "Hello world."
+    )
+
+
+def test_trailing_space_never_in_none_mode():
+    assert clean_text("Hello world.", "none", append_trailing_space=True) == "Hello world."
+
+
+def test_newline_commands_off_by_default():
+    assert clean_text("hello new line world", "basic") == "Hello new line world"
+
+
+def test_newline_commands_english():
+    assert (
+        clean_text("hello new line world", "basic", newline_commands=True)
+        == "Hello\nworld"
+    )
+    assert (
+        clean_text("hello new paragraph world", "basic", newline_commands=True)
+        == "Hello\n\nworld"
+    )
+
+
+def test_newline_commands_spanish():
+    assert (
+        clean_text("hola nueva línea mundo", "basic", newline_commands=True)
+        == "Hola\nmundo"
+    )
+    assert (
+        clean_text("hola punto y aparte mundo", "basic", newline_commands=True)
+        == "Hola\n\nmundo"
+    )
+
+
+def test_newline_commands_tolerate_surrounding_punctuation():
+    assert clean_text("new line.", "basic", newline_commands=True) == "\n"
+    assert (
+        clean_text("hello new line. world", "basic", newline_commands=True)
+        == "Hello\nworld"
+    )

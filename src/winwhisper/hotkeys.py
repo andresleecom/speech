@@ -8,7 +8,12 @@ from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from typing import Any
 
-from .hotkey_actions import HOTKEY_ACTIONS, is_macos_supported_trigger
+from .hotkey_actions import (
+    HOTKEY_ACTIONS,
+    TOGGLE_ACTION,
+    TOGGLE_RELEASE_ACTION,
+    is_macos_supported_trigger,
+)
 from .logger import get_logger
 from .mouse_buttons import is_mouse_trigger, mouse_button_name
 
@@ -100,6 +105,8 @@ _NAMED_TRIGGER_VK = {
 
 _WM_HOTKEY = 0x0312
 _WM_QUIT = 0x0012
+PUSH_TO_TALK_HOLD_SECONDS = 0.5
+_PUSH_TO_TALK_POLL_SECONDS = 0.015
 
 # Kept for backwards compatibility with the paste path. The native RegisterHotKey
 # engine never sees synthetic keystrokes as hotkeys, so suppression is a no-op,
@@ -169,7 +176,147 @@ def trigger_to_vk(trigger: str) -> int:
         number = int(name[1:])
         if 1 <= number <= 24:
             return 0x70 + (number - 1)  # VK_F1 == 0x70
+    # Single characters outside the name table (OEM punctuation, ñ, º, …)
+    # resolve through the active keyboard layout.
+    if len(trigger) == 1:
+        vk = _vk_from_layout_character(trigger)
+        if vk is not None:
+            return vk
     raise ValueError(f"Unsupported hotkey trigger key: {trigger!r}")
+
+
+def _installed_layouts() -> tuple[int, ...]:
+    """Return installed keyboard layouts, current thread layout first.
+
+    ``GetKeyboardLayoutList`` lists every HKL the user has installed; the
+    active per-window layout can still be a different one. OEM characters and
+    AltGr collisions must be resolved against the full set so a chord saved as
+    ``<`` always binds the physical ISO key even when en-US is current.
+    """
+    if os.name != "nt":
+        return ()
+
+    import ctypes
+    from ctypes import wintypes
+
+    user32 = ctypes.WinDLL("user32", use_last_error=True)
+    current = int(user32.GetKeyboardLayout(0))
+    count = int(user32.GetKeyboardLayoutList(0, None))
+    if count <= 0:
+        return (current,)
+    array = (wintypes.HKL * count)()
+    filled = int(user32.GetKeyboardLayoutList(count, array))
+    layouts = [current]
+    seen = {current}
+    for index in range(max(filled, 0)):
+        layout = int(array[index])
+        if layout not in seen:
+            layouts.append(layout)
+            seen.add(layout)
+    return tuple(layouts)
+
+
+def _vk_from_layout_character(character: str) -> int | None:
+    """Map one character to a VK via VkKeyScanExW across installed layouts.
+
+    Prefers a layout where the character is unshifted (high byte 0), otherwise
+    the first layout that maps it at all.
+    """
+    if os.name != "nt":
+        return None
+
+    import ctypes
+
+    user32 = ctypes.WinDLL("user32", use_last_error=True)
+    first_mapped: int | None = None
+    for layout in _installed_layouts():
+        result = int(user32.VkKeyScanExW(ord(character), layout))
+        if result in (-1, 0xFFFF):
+            continue
+        vk = result & 0xFF
+        shift_state = (result >> 8) & 0xFF
+        if shift_state == 0:
+            return vk
+        if first_mapped is None:
+            first_mapped = vk
+    return first_mapped
+
+
+def altgr_produces_character(vk: int) -> str | None:
+    """Return the character AltGr (Ctrl+Alt) types for ``vk``, if any.
+
+    Checks every installed layout (current first). Used to reject
+    Ctrl+Alt+printable chords that any installed layout already claims for
+    typing (for example AltGr+E → € on es-ES even while en-US is active).
+    """
+    if os.name != "nt":
+        return None
+
+    import ctypes
+
+    user32 = ctypes.WinDLL("user32", use_last_error=True)
+    keystate = (ctypes.c_ubyte * 256)()
+    keystate[0x11] = 0x80  # VK_CONTROL
+    keystate[0x12] = 0x80  # VK_MENU (Alt)
+    keystate[0xA2] = 0x80  # VK_LCONTROL
+    keystate[0xA5] = 0x80  # VK_RMENU (right Alt / AltGr)
+    for layout in _installed_layouts():
+        buf = ctypes.create_unicode_buffer(8)
+        scancode = int(user32.MapVirtualKeyExW(vk, 0, layout))
+        produced = int(
+            user32.ToUnicodeEx(vk, scancode, keystate, buf, len(buf), 0, layout)
+        )
+        character = buf.value if produced > 0 else ""
+        # Clear any dead-key state ToUnicodeEx may have left behind.
+        clear_state = (ctypes.c_ubyte * 256)()
+        clear_buf = ctypes.create_unicode_buffer(8)
+        user32.ToUnicodeEx(
+            vk, scancode, clear_state, clear_buf, len(clear_buf), 0, layout
+        )
+        if produced > 0 and character:
+            return character[0]
+    return None
+
+
+def character_for_virtual_key(vk: int) -> str | None:
+    """Return the unshifted character a VK types on an installed layout.
+
+    For each layout (current first), read the unshifted glyph with
+    ``ToUnicodeEx`` and accept it only when ``VkKeyScanExW`` round-trips to
+    the same VK. That rejects cases like en-US mapping OEM_102 to a glyph
+    whose real key is a different VK (e.g. ``\\`` on 0xDC).
+    """
+    if os.name != "nt":
+        return None
+
+    import ctypes
+
+    user32 = ctypes.WinDLL("user32", use_last_error=True)
+    empty_state = (ctypes.c_ubyte * 256)()
+    for layout in _installed_layouts():
+        buf = ctypes.create_unicode_buffer(8)
+        scancode = int(user32.MapVirtualKeyExW(vk, 0, layout))
+        produced = int(
+            user32.ToUnicodeEx(
+                vk, scancode, empty_state, buf, len(buf), 0, layout
+            )
+        )
+        # Clear any dead-key state ToUnicodeEx may have left behind.
+        clear_buf = ctypes.create_unicode_buffer(8)
+        user32.ToUnicodeEx(
+            vk, scancode, empty_state, clear_buf, len(clear_buf), 0, layout
+        )
+        if produced <= 0 or not buf.value:
+            continue
+        character = buf.value[0]
+        if character.isspace() or not character.isprintable():
+            continue
+        scan = int(user32.VkKeyScanExW(ord(character), layout))
+        if scan in (-1, 0xFFFF):
+            continue
+        if (scan & 0xFF) == vk:
+            return character
+    return None
 
 
 def combo_to_hotkey(combo: str) -> tuple[int, int]:
@@ -190,6 +337,9 @@ def windows_modifier_state() -> set[str]:
     Windows has no keyboard listener here (RegisterHotKey handles keys), so the
     modifiers held at click time have to be queried directly.
     """
+    if os.name != "nt":
+        return set()
+
     import ctypes
 
     # Private handle: never mutate the process-wide ctypes.windll cache, whose
@@ -316,6 +466,9 @@ class HotkeyManager:
         self._thread_id: int | None = None
         self._started = threading.Event()
         self._stop_requested = False
+        self._push_to_talk_lock = threading.Lock()
+        self._push_to_talk_cancel: threading.Event | None = None
+        self._push_to_talk_thread: threading.Thread | None = None
         self._backend: _PynputHotkeyBackend | None = None
         self._mouse_backend: _MouseHotkeyBackend | None = None
         self.accessibility_missing = False
@@ -451,6 +604,9 @@ class HotkeyManager:
         return self._activation_result
 
     def stop(self) -> None:
+        self._stop_requested = True
+        self._cancel_push_to_talk_poll()
+
         mouse_backend = self._mouse_backend
         if mouse_backend is not None:
             self._mouse_backend = None
@@ -470,7 +626,6 @@ class HotkeyManager:
         thread = self._thread
         if thread is None:
             return
-        self._stop_requested = True
         self._started.wait(1.0)
         thread_id = self._thread_id
         if thread_id is not None:
@@ -545,14 +700,14 @@ class HotkeyManager:
 
         restarts = 0
         while True:
-            registered: list[tuple[int, str]] = []
+            registered: list[tuple[int, str, int]] = []
             active_combos: list[str] = []
             failed_combos = list(self._rejected_combos)
             for hotkey_id, fs_modifiers, vk, action, combo in self._bindings:
                 if user32.RegisterHotKey(
                     None, hotkey_id, fs_modifiers | _MOD_NOREPEAT, vk
                 ):
-                    registered.append((hotkey_id, action))
+                    registered.append((hotkey_id, action, vk))
                     active_combos.append(combo)
                     self._logger.info("Registered global hotkey %s.", combo)
                 else:
@@ -581,17 +736,19 @@ class HotkeyManager:
                         break
                     if message.message == _WM_HOTKEY:
                         fired_id = int(message.wParam)
-                        action = next(
-                            (a for i, a in registered if i == fired_id), None
+                        binding = next(
+                            ((a, vk) for i, a, vk in registered if i == fired_id),
+                            None,
                         )
-                        if action is not None:
-                            self._dispatch(action)
+                        if binding is not None:
+                            action, vk = binding
+                            self._handle_registered_hotkey(action, vk)
             except Exception:
                 self._logger.exception(
                     "Hotkey message loop crashed; re-registering hotkeys."
                 )
             finally:
-                for hotkey_id, _action in registered:
+                for hotkey_id, _action, _vk in registered:
                     try:
                         user32.UnregisterHotKey(None, hotkey_id)
                     except Exception:
@@ -607,6 +764,83 @@ class HotkeyManager:
                     "Hotkey message loop crashed %d times; giving up.", restarts
                 )
                 return
+
+    def _handle_registered_hotkey(self, action: str, vk: int) -> None:
+        self._dispatch(action)
+        if action == TOGGLE_ACTION:
+            self._start_push_to_talk_poll(vk)
+
+    def _start_push_to_talk_poll(self, vk: int) -> None:
+        cancel = threading.Event()
+        with self._push_to_talk_lock:
+            previous_cancel = self._push_to_talk_cancel
+            previous_thread = self._push_to_talk_thread
+            self._push_to_talk_cancel = None
+            self._push_to_talk_thread = None
+        if previous_cancel is not None:
+            previous_cancel.set()
+        if (
+            previous_thread is not None
+            and previous_thread is not threading.current_thread()
+        ):
+            previous_thread.join()
+
+        pressed_at = time.monotonic()
+        thread = threading.Thread(
+            target=self._poll_push_to_talk,
+            args=(vk, cancel, pressed_at),
+            name="winwhisper-push-to-talk",
+            daemon=True,
+        )
+        with self._push_to_talk_lock:
+            if self._stop_requested:
+                cancel.set()
+            self._push_to_talk_cancel = cancel
+            self._push_to_talk_thread = thread
+        thread.start()
+
+    def _cancel_push_to_talk_poll(self) -> None:
+        with self._push_to_talk_lock:
+            cancel = self._push_to_talk_cancel
+            thread = self._push_to_talk_thread
+            self._push_to_talk_cancel = None
+            self._push_to_talk_thread = None
+        if cancel is not None:
+            cancel.set()
+        if thread is not None and thread is not threading.current_thread():
+            thread.join()
+
+    def _poll_push_to_talk(
+        self,
+        vk: int,
+        cancel: threading.Event,
+        pressed_at: float,
+    ) -> None:
+        if os.name != "nt":
+            return
+
+        import ctypes
+
+        # Keep this handle private for the same reason as the message loop's
+        # user32 handle: shared ctypes function metadata can be clobbered.
+        user32 = ctypes.WinDLL("user32", use_last_error=True)
+        user32.GetAsyncKeyState.argtypes = [ctypes.c_int]
+        user32.GetAsyncKeyState.restype = ctypes.c_short
+        push_to_talk = False
+        try:
+            while not cancel.is_set():
+                if not bool(user32.GetAsyncKeyState(vk) & 0x8000):
+                    if push_to_talk and not cancel.is_set():
+                        self._dispatch(TOGGLE_RELEASE_ACTION)
+                    return
+                if time.monotonic() - pressed_at >= PUSH_TO_TALK_HOLD_SECONDS:
+                    push_to_talk = True
+                cancel.wait(_PUSH_TO_TALK_POLL_SECONDS)
+        finally:
+            with self._push_to_talk_lock:
+                if self._push_to_talk_cancel is cancel:
+                    self._push_to_talk_cancel = None
+                    self._push_to_talk_thread = None
 
     def _dispatch(self, action: str) -> None:
         self._logger.info("Hotkey matched action=%s.", action)

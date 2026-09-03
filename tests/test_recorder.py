@@ -43,9 +43,31 @@ def install_fake_sounddevice(monkeypatch):
     import sys
     import types
 
+    import winwhisper.audio_inputs as audio_inputs
+
     FakeInputStream.instances.clear()
-    sounddevice = types.SimpleNamespace(InputStream=FakeInputStream)
+    sounddevice = types.SimpleNamespace(
+        InputStream=FakeInputStream,
+        _terminate=lambda: None,
+        _initialize=lambda: None,
+        query_devices=lambda: [],
+        query_hostapis=lambda index: {"name": "MME"},
+    )
     monkeypatch.setitem(sys.modules, "sounddevice", sounddevice)
+    # Force the PortAudio refresh path so refresh_ms assertions work on macOS CI,
+    # where _use_native_macos_audio() would otherwise skip refresh by design.
+    monkeypatch.setattr(audio_inputs, "_use_native_macos_audio", lambda: False)
+
+
+@pytest.fixture(autouse=True)
+def reset_open_stream_counter():
+    import winwhisper.audio_inputs as audio_inputs
+
+    with audio_inputs._open_stream_lock:
+        audio_inputs._open_stream_count = 0
+    yield
+    with audio_inputs._open_stream_lock:
+        audio_inputs._open_stream_count = 0
 
 
 def test_audio_level_from_silent_block_is_zero():
@@ -235,7 +257,11 @@ def test_recorder_abort_error_still_closes_stream(monkeypatch):
     monkeypatch.setitem(
         sys.modules,
         "sounddevice",
-        types.SimpleNamespace(InputStream=AbortFailingInputStream),
+        types.SimpleNamespace(
+            InputStream=AbortFailingInputStream,
+            _terminate=lambda: None,
+            _initialize=lambda: None,
+        ),
     )
     monkeypatch.setattr("winwhisper.recorder.list_audio_input_devices", lambda: ())
     monkeypatch.setattr(
@@ -356,6 +382,8 @@ def test_take_stats_peak_and_frames_survive_stop_recording(monkeypatch):
     assert stats.device_label == "System Default"
     assert stats.first_block_ms is not None
     assert stats.first_block_ms >= 0.0
+    assert stats.refresh_ms is not None
+    assert stats.host_api == "default"
     assert recorder.current_level() == 0.0
 
 
@@ -383,6 +411,8 @@ def test_take_stats_reports_zero_frames_when_no_blocks(monkeypatch):
     assert stats.peak == 0.0
     assert stats.first_block_ms is None
     assert stats.device_label == "USB Mic [3]"
+    assert stats.refresh_ms is not None
+    assert stats.host_api == "default"
 
 
 def test_first_block_warning_when_no_audio_arrives(monkeypatch, caplog):
@@ -467,7 +497,11 @@ def test_microphone_test_abort_error_still_closes_stream(monkeypatch):
     monkeypatch.setitem(
         sys.modules,
         "sounddevice",
-        types.SimpleNamespace(InputStream=AbortFailingInputStream),
+        types.SimpleNamespace(
+            InputStream=AbortFailingInputStream,
+            _terminate=lambda: None,
+            _initialize=lambda: None,
+        ),
     )
     monkeypatch.setattr("winwhisper.recorder.list_audio_input_devices", lambda: ())
     monkeypatch.setattr(
@@ -487,3 +521,132 @@ def test_microphone_test_abort_error_still_closes_stream(monkeypatch):
     assert stream.abort_ignore_errors is False
     assert stream.closed is True
     assert stream.close_ignore_errors is True
+
+
+def test_recorder_refresh_resolves_saved_name_to_new_index(monkeypatch):
+    """After PortAudio re-init, a saved name must bind to the post-refresh index."""
+    import sys
+    import types
+
+    import winwhisper.audio_inputs as audio_inputs
+
+    FakeInputStream.instances.clear()
+    generation = {"value": 0}
+
+    def query_devices():
+        if generation["value"] == 0:
+            return [
+                {"name": "Other", "max_input_channels": 1, "hostapi": 0},
+                {
+                    "name": "Desktop Microphone (RØDE PodMic",
+                    "max_input_channels": 1,
+                    "hostapi": 0,
+                },
+            ]
+        return [
+            {
+                "name": "Desktop Microphone (RØDE PodMic",
+                "max_input_channels": 1,
+                "hostapi": 0,
+            },
+            {"name": "Beats Hands-Free", "max_input_channels": 1, "hostapi": 0},
+        ]
+
+    def terminate():
+        return None
+
+    def initialize():
+        generation["value"] += 1
+
+    sounddevice = types.SimpleNamespace(
+        InputStream=FakeInputStream,
+        _terminate=terminate,
+        _initialize=initialize,
+        query_devices=query_devices,
+        query_hostapis=lambda index: {"name": "MME"},
+        check_input_settings=lambda **kwargs: None,
+    )
+    monkeypatch.setitem(sys.modules, "sounddevice", sounddevice)
+    monkeypatch.setattr(audio_inputs, "_use_native_macos_audio", lambda: False)
+    monkeypatch.setattr(audio_inputs, "_device_supports_capture", lambda device: True)
+
+    recorder = Recorder()
+    recorder.set_audio_input_selection(
+        "Desktop Microphone (RØDE PodMic",
+        "MME",
+        1,
+    )
+    recorder.start_recording()
+
+    assert recorder.last_resolution is not None
+    assert recorder.last_resolution.index == 0
+    assert FakeInputStream.instances[-1].kwargs["device"] == 0
+    stats_path = recorder.stop_recording()
+    assert stats_path is not None
+    stats_path.unlink()
+    stats = recorder.last_take_stats()
+    assert stats is not None
+    assert stats.refresh_ms is not None
+    assert stats.host_api == "MME"
+
+
+def test_recorder_skips_refresh_while_another_stream_registered(monkeypatch):
+    import winwhisper.audio_inputs as audio_inputs
+    from winwhisper.audio_inputs import register_open_stream, unregister_open_stream
+
+    install_fake_sounddevice(monkeypatch)
+    refresh_calls: list[object] = []
+    original = audio_inputs.refresh_audio_device_table
+
+    def tracking_refresh():
+        result = original()
+        refresh_calls.append(result)
+        return result
+
+    monkeypatch.setattr(
+        "winwhisper.recorder.refresh_audio_device_table",
+        tracking_refresh,
+    )
+    monkeypatch.setattr("winwhisper.recorder.list_audio_input_devices", lambda: ())
+    monkeypatch.setattr(
+        "winwhisper.recorder.resolve_input_device",
+        lambda name, host_api, index_hint, devices=None: ResolvedInputDevice(
+            index=None, label="System Default", fallback=False, reason=""
+        ),
+    )
+
+    register_open_stream()
+    try:
+        recorder = Recorder()
+        recorder.start_recording()
+        assert refresh_calls == [None]
+        recorder.stop_recording().unlink()
+    finally:
+        unregister_open_stream()
+
+
+def test_microphone_test_refreshes_and_registers_stream(monkeypatch):
+    import winwhisper.audio_inputs as audio_inputs
+
+    install_fake_sounddevice(monkeypatch)
+    monkeypatch.setattr("winwhisper.recorder.list_audio_input_devices", lambda: ())
+    monkeypatch.setattr(
+        "winwhisper.recorder.resolve_input_device",
+        lambda name, host_api, index_hint, devices=None: ResolvedInputDevice(
+            index=None, label="System Default", fallback=False, reason=""
+        ),
+    )
+    refresh_calls: list[object] = []
+    monkeypatch.setattr(
+        "winwhisper.recorder.refresh_audio_device_table",
+        lambda: refresh_calls.append(1.0) or 1.0,
+    )
+
+    microphone_test = MicrophoneTest()
+    microphone_test.start()
+    assert refresh_calls == [1.0]
+    with audio_inputs._open_stream_lock:
+        assert audio_inputs._open_stream_count == 1
+    microphone_test.stop()
+    with audio_inputs._open_stream_lock:
+        assert audio_inputs._open_stream_count == 0

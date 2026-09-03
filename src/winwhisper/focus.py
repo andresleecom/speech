@@ -38,6 +38,42 @@ def get_foreground_window() -> WindowHandle | None:
     return int(hwnd) or None
 
 
+def foreground_matches(hwnd: WindowHandle | None) -> bool | None:
+    if os.name != "nt" or hwnd is None:
+        return None
+
+    try:
+        from ctypes import wintypes
+
+        user32 = ctypes.windll.user32
+        target_process_id = wintypes.DWORD()
+        user32.GetWindowThreadProcessId(hwnd, ctypes.byref(target_process_id))
+
+        for attempt in range(11):
+            foreground = int(user32.GetForegroundWindow() or 0)
+            if foreground == hwnd:
+                return True
+
+            if foreground and target_process_id.value:
+                foreground_process_id = wintypes.DWORD()
+                user32.GetWindowThreadProcessId(
+                    foreground,
+                    ctypes.byref(foreground_process_id),
+                )
+                if foreground_process_id.value == target_process_id.value:
+                    return True
+
+            if attempt < 10:
+                time.sleep(0.03)
+    except Exception as exc:
+        get_logger(__name__).warning(
+            "Could not confirm foreground window before paste: %s.",
+            exc.__class__.__name__,
+        )
+
+    return False
+
+
 def get_cursor_anchor(hwnd: WindowHandle | None = None) -> ScreenPoint | None:
     """Best-effort caret/mouse point for overlay placement.
 

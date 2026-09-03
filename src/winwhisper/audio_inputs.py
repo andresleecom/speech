@@ -1,8 +1,11 @@
 """Input-device discovery and settings normalization for microphone capture."""
 from __future__ import annotations
 
+import logging
 import re
 import sys
+import threading
+import time
 from dataclasses import dataclass
 from typing import Any, Final
 
@@ -12,10 +15,118 @@ _SYSTEM_DEFAULT_ALIASES: Final = frozenset(
     {"", "default", "systemdefault", "system", "none", "auto"}
 )
 _SKIPPED_HOST_APIS: Final = frozenset({"Windows WDM-KS"})
+_PSEUDO_INPUT_NAMES: Final = frozenset(
+    {"Microsoft Sound Mapper - Input", "Primary Sound Capture Driver"}
+)
 _WASAPI_HOST_API: Final = "Windows WASAPI"
+_HOST_API_PREFERENCE: Final = {
+    "MME": 0,
+    _WASAPI_HOST_API: 1,
+    "Windows DirectSound": 2,
+}
 _CAPTURE_SAMPLE_RATE: Final = 16_000
 _CAPTURE_CHANNELS: Final = 1
 _CAPTURE_DTYPE: Final = "int16"
+
+# Use stdlib logging here: importing winwhisper.logger pulls in config, which
+# imports this module, and a package-logger import would cycle at load time.
+_logger = logging.getLogger(__name__)
+_open_stream_lock = threading.Lock()
+_open_stream_count = 0
+
+
+def register_open_stream() -> None:
+    """Mark that this process holds an open PortAudio stream."""
+    global _open_stream_count
+    with _open_stream_lock:
+        _open_stream_count += 1
+
+
+def unregister_open_stream() -> None:
+    """Mark that a PortAudio stream in this process has been closed."""
+    global _open_stream_count
+    with _open_stream_lock:
+        if _open_stream_count > 0:
+            _open_stream_count -= 1
+
+
+def refresh_audio_device_table() -> float | None:
+    """Re-run PortAudio init so the device table matches current hardware.
+
+    Returns elapsed milliseconds on success, or ``None`` when skipped (macOS,
+    any open stream in-process) or when terminate/initialize raises.
+    Must never run while a PortAudio stream is open in this process.
+    """
+    if _use_native_macos_audio():
+        return None
+
+    with _open_stream_lock:
+        if _open_stream_count > 0:
+            _logger.debug(
+                "Skipping audio device table refresh; %s open stream(s) in process.",
+                _open_stream_count,
+            )
+            return None
+        try:
+            sounddevice = _sounddevice()
+            started = time.perf_counter()
+            sounddevice._terminate()
+            sounddevice._initialize()
+            return (time.perf_counter() - started) * 1000.0
+        except Exception:
+            _logger.warning(
+                "Could not refresh the PortAudio device table.",
+                exc_info=True,
+            )
+            return None
+
+
+def input_device_signature() -> tuple[str, ...] | None:
+    """Return the current Windows MME input-device names, when available."""
+    if not sys.platform.startswith("win"):
+        return None
+
+    try:
+        import ctypes
+        from ctypes import wintypes
+
+        class WAVEINCAPSW(ctypes.Structure):
+            _fields_ = [
+                ("wMid", wintypes.WORD),
+                ("wPid", wintypes.WORD),
+                ("vDriverVersion", wintypes.UINT),
+                ("szPname", wintypes.WCHAR * 32),
+                ("dwFormats", wintypes.DWORD),
+                ("wChannels", wintypes.WORD),
+                ("wReserved1", wintypes.WORD),
+            ]
+
+        # Keep a private handle so configuring these functions cannot mutate
+        # ctypes.windll's process-wide cached function objects.
+        winmm = ctypes.WinDLL("winmm")
+        winmm.waveInGetNumDevs.argtypes = []
+        winmm.waveInGetNumDevs.restype = wintypes.UINT
+        winmm.waveInGetDevCapsW.argtypes = [
+            wintypes.UINT,
+            ctypes.POINTER(WAVEINCAPSW),
+            wintypes.UINT,
+        ]
+        winmm.waveInGetDevCapsW.restype = wintypes.UINT
+
+        names: list[str] = []
+        for index in range(winmm.waveInGetNumDevs()):
+            capabilities = WAVEINCAPSW()
+            result = winmm.waveInGetDevCapsW(
+                index,
+                ctypes.byref(capabilities),
+                ctypes.sizeof(capabilities),
+            )
+            if result != 0:
+                return None
+            names.append(capabilities.szPname)
+        return tuple(names)
+    except Exception:
+        return None
 
 
 class AudioInputDeviceError(RuntimeError):
@@ -32,6 +143,13 @@ class AudioInputDevice:
     @property
     def choice_label(self) -> str:
         return f"{self.name} [{self.index}]"
+
+
+@dataclass(frozen=True, slots=True)
+class PhysicalInputDevice:
+    label: str
+    rows: tuple[AudioInputDevice, ...]
+    preferred: AudioInputDevice
 
 
 @dataclass(frozen=True, slots=True)
@@ -98,6 +216,48 @@ def list_audio_input_devices() -> tuple[AudioInputDevice, ...]:
             )
         )
     return tuple(devices)
+
+
+def group_physical_input_devices(
+    devices: tuple[AudioInputDevice, ...],
+) -> tuple[PhysicalInputDevice, ...]:
+    """Collapse host-API rows that represent the same physical microphone."""
+    devices = tuple(
+        device for device in devices if device.name not in _PSEUDO_INPUT_NAMES
+    )
+    if _use_native_macos_audio():
+        return tuple(
+            PhysicalInputDevice(label=device.name, rows=(device,), preferred=device)
+            for device in devices
+        )
+
+    grouped_rows: list[list[AudioInputDevice]] = []
+    for device in devices:
+        for rows in grouped_rows:
+            if any(_same_physical_input_name(device.name, row.name) for row in rows):
+                rows.append(device)
+                break
+        else:
+            grouped_rows.append([device])
+
+    groups: list[PhysicalInputDevice] = []
+    for rows in grouped_rows:
+        ranked_rows = sorted(
+            rows,
+            key=lambda row: _HOST_API_PREFERENCE.get(row.host_api, 3),
+        )
+        preferred = next(
+            (row for row in ranked_rows if _device_supports_capture(row)),
+            ranked_rows[0],
+        )
+        groups.append(
+            PhysicalInputDevice(
+                label=max((row.name for row in rows), key=len),
+                rows=tuple(rows),
+                preferred=preferred,
+            )
+        )
+    return tuple(groups)
 
 
 def default_audio_input_device() -> int | None:
@@ -338,6 +498,14 @@ def _sounddevice_host_api_name(sounddevice: Any, device: Any) -> str:
         return str(name).strip() or "Unknown"
     except Exception:
         return "Unknown"
+
+
+def _same_physical_input_name(first: str, second: str) -> bool:
+    if first == second:
+        return True
+    return (len(first) == 31 and second.startswith(first)) or (
+        len(second) == 31 and first.startswith(second)
+    )
 
 
 def _device_supports_capture(device: AudioInputDevice) -> bool:

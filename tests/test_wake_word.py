@@ -804,11 +804,51 @@ def test_wake_word_ignored_while_recording(monkeypatch, tmp_path):
     listener = FakeListener.instances[0]
     controller.toggle()
     assert controller.recorder.is_recording() is True
+    # Hotkey take pauses the wake listener so PortAudio can refresh.
+    assert listener.paused is True
 
     controller._on_wake_word()
 
-    assert listener.paused is False
+    assert listener.paused is True
     assert FakeMonitor.instances == []
+
+
+def test_hotkey_take_pauses_wake_listener_and_resumes_after(monkeypatch, tmp_path):
+    inserted: list[tuple[str, str]] = []
+    controller = make_controller(
+        monkeypatch,
+        tmp_path,
+        inserted,
+        wake_word_enabled=True,
+        transcription_text="hola mundo",
+    )
+    controller._start_wake_listener()
+    listener = FakeListener.instances[0]
+
+    controller.toggle()
+    assert listener.paused is True
+    assert controller.recorder.is_recording() is True
+
+    controller.toggle()
+
+    assert inserted == [("Hola mundo", "ctrl_v")]
+    assert listener.paused is False
+
+
+def test_hotkey_take_resumes_wake_listener_after_failed_start(monkeypatch, tmp_path):
+    class FailingRecorder(FakeRecorder):
+        def start_recording(self) -> None:
+            raise RuntimeError("mic unavailable")
+
+    controller = make_controller(monkeypatch, tmp_path, [], wake_word_enabled=True)
+    controller.recorder = FailingRecorder()
+    controller._start_wake_listener()
+    listener = FakeListener.instances[0]
+
+    controller.toggle()
+
+    assert controller.recorder.is_recording() is False
+    assert listener.paused is False
 
 
 def test_voice_stop_with_phrase_trims_stop_word_and_pastes(monkeypatch, tmp_path):
@@ -875,3 +915,64 @@ def test_set_wake_word_enabled_toggles_listener_and_persists(monkeypatch, tmp_pa
 
     assert load_settings().wake_word_enabled is False
     assert FakeListener.instances[0].stopped is True
+
+
+def test_sounddevice_source_refreshes_and_registers_stream(monkeypatch):
+    import types
+
+    import winwhisper.audio_inputs as audio_inputs
+    from winwhisper.audio_inputs import ResolvedInputDevice
+    from winwhisper.wake_word_source import SounddeviceSource
+
+    with audio_inputs._open_stream_lock:
+        audio_inputs._open_stream_count = 0
+
+    class FakeInputStream:
+        instances: list = []
+
+        def __init__(self, **kwargs) -> None:
+            self.kwargs = kwargs
+            FakeInputStream.instances.append(self)
+
+        def start(self) -> None:
+            return None
+
+        def abort(self, ignore_errors=True) -> None:
+            return None
+
+        def close(self, ignore_errors=True) -> None:
+            return None
+
+    refresh_calls: list[object] = []
+    sounddevice = types.SimpleNamespace(
+        InputStream=FakeInputStream,
+        _terminate=lambda: None,
+        _initialize=lambda: None,
+        query_devices=lambda: [],
+        query_hostapis=lambda index: {"name": "MME"},
+    )
+    monkeypatch.setitem(sys.modules, "sounddevice", sounddevice)
+    monkeypatch.setattr(audio_inputs, "_use_native_macos_audio", lambda: False)
+    monkeypatch.setattr(
+        "winwhisper.wake_word_source.refresh_audio_device_table",
+        lambda: refresh_calls.append(5.0) or 5.0,
+    )
+    monkeypatch.setattr(
+        "winwhisper.wake_word_source.list_audio_input_devices",
+        lambda: (),
+    )
+    monkeypatch.setattr(
+        "winwhisper.wake_word_source.resolve_input_device",
+        lambda name, host_api, index_hint, devices=None: ResolvedInputDevice(
+            index=None, label="System Default", fallback=False, reason=""
+        ),
+    )
+
+    source = SounddeviceSource()
+    source.start(lambda block: None)
+    assert refresh_calls == [5.0]
+    with audio_inputs._open_stream_lock:
+        assert audio_inputs._open_stream_count == 1
+    source.stop()
+    with audio_inputs._open_stream_lock:
+        assert audio_inputs._open_stream_count == 0

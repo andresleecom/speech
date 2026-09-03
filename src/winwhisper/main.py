@@ -5,9 +5,11 @@ import ctypes
 import io
 import logging
 import os
+import re
 import sys
 import threading
 import time
+import unicodedata
 from contextlib import redirect_stdout
 from pathlib import Path, PurePosixPath
 from typing import Any, Callable, Literal
@@ -15,6 +17,7 @@ from typing import Any, Callable, Literal
 from . import __version__
 from .audio_inputs import (
     SYSTEM_DEFAULT_INPUT_LABEL,
+    group_physical_input_devices,
     list_audio_input_devices,
     normalize_audio_input_device,
 )
@@ -23,19 +26,21 @@ from .config import Settings, app_data_dir, load_settings_report, save_settings
 from .diagnostics import run_diagnostics as run_diagnostics_report
 from .focus import (
     ScreenPoint,
+    foreground_matches,
     get_cursor_anchor,
     get_foreground_window,
     get_window_process_name,
     restore_foreground_window,
 )
-from .formatter import clean_text
+from .formatter import append_trailing_space_if_needed, clean_text
 from .hotkey_settings import (
     HotkeyConfigurationError,
     display_hotkey,
     normalize_hotkey_profile,
 )
 from .hotkey_settings_window import HotkeySettingsWindow
-from .hotkeys import HotkeyManager
+from .hotkey_actions import TOGGLE_ACTION, TOGGLE_RELEASE_ACTION
+from .hotkeys import HotkeyManager, windows_modifier_state
 from .inserter import (
     PasteShortcut,
     copy_text_to_clipboard,
@@ -349,8 +354,19 @@ class AppController:
             recording,
             processing,
         )
-        if action == "toggle":
+        if action == TOGGLE_ACTION:
             self.toggle()
+            return
+        if action == TOGGLE_RELEASE_ACTION:
+            if recording and not processing:
+                self.logger.info("Stopping dictation action=push_to_talk_release.")
+                self._request_stop()
+            else:
+                self.logger.info(
+                    "Ignoring push_to_talk_release while recording=%s processing=%s.",
+                    recording,
+                    processing,
+                )
             return
         if action == "force_en":
             self._toggle_favorite_language(0)
@@ -389,6 +405,14 @@ class AppController:
                         self._paste_target_window
                     )
                     self._overlay_anchor = get_cursor_anchor(self._paste_target_window)
+                    wake_listener = self._wake_listener
+                    if wake_listener is not None:
+                        try:
+                            wake_listener.pause()
+                        except Exception:
+                            self.logger.exception(
+                                "Wake-word listener failed to pause before recording."
+                            )
                     try:
                         self.recorder.start_recording()
                     except Exception as exc:
@@ -422,6 +446,7 @@ class AppController:
                 self.notify(APP_NAME, message)
             else:
                 self._handle_error(start_error)
+            self._resume_wake_listener_if_enabled()
             return
         if beep is not None:
             self._beep(*beep)
@@ -530,6 +555,18 @@ class AppController:
         except Exception:
             self.logger.exception("Wake-word listener failed to stop cleanly.")
 
+    def _resume_wake_listener_if_enabled(self) -> None:
+        with self._lock:
+            listener = self._wake_listener
+            enabled = self.settings.wake_word_enabled
+            shutdown = self._shutdown
+        if listener is None or not enabled or shutdown:
+            return
+        try:
+            listener.resume()
+        except Exception:
+            self.logger.exception("Wake-word listener failed to resume.")
+
     def _on_wake_word(self) -> None:
         with self._lock:
             if self._shutdown or self._processing or self.recorder.is_recording():
@@ -594,19 +631,51 @@ class AppController:
 
     def set_audio_input_device(self, value: object) -> None:
         selected_device = normalize_audio_input_device(value)
-        device_name: str | None = None
-        device_host_api: str | None = None
-        if selected_device is not None:
+        if selected_device is None:
+            self.set_audio_input_selection(None, None)
+            return
+
+        try:
+            for device in list_audio_input_devices():
+                if device.index == selected_device:
+                    self.set_audio_input_selection(device.name, device.host_api)
+                    return
+        except Exception:
+            self.logger.exception(
+                "Could not resolve microphone identity for index %s.",
+                selected_device,
+            )
+        self.set_audio_input_selection(None, None)
+
+    def set_audio_input_selection(
+        self, name: str | None, host_api: str | None
+    ) -> None:
+        selected_device: int | None = None
+        microphone_label = SYSTEM_DEFAULT_INPUT_LABEL
+        if name is not None:
+            microphone_label = name
             try:
-                for device in list_audio_input_devices():
-                    if device.index == selected_device:
-                        device_name = device.name
-                        device_host_api = device.host_api
-                        break
+                devices = list_audio_input_devices()
+                selected_row = next(
+                    (
+                        device
+                        for device in devices
+                        if device.name == name
+                        and device.host_api == (host_api or "")
+                    ),
+                    None,
+                )
+                if selected_row is not None:
+                    selected_device = selected_row.index
+                    for group in group_physical_input_devices(devices):
+                        if selected_row in group.rows:
+                            microphone_label = group.label
+                            break
             except Exception:
                 self.logger.exception(
-                    "Could not resolve microphone identity for index %s.",
-                    selected_device,
+                    "Could not resolve microphone identity name=%r host_api=%r.",
+                    name,
+                    host_api,
                 )
 
         with self._lock:
@@ -620,12 +689,12 @@ class AppController:
 
             set_selection = getattr(self.recorder, "set_audio_input_selection", None)
             if callable(set_selection):
-                set_selection(device_name, device_host_api, selected_device)
+                set_selection(name, host_api, selected_device)
             else:
                 self.recorder.set_audio_input_device(selected_device)
             self.settings.audio_input_device = selected_device
-            self.settings.audio_input_device_name = device_name
-            self.settings.audio_input_device_host_api = device_host_api
+            self.settings.audio_input_device_name = name
+            self.settings.audio_input_device_host_api = host_api
             try:
                 save_settings(self.settings)
             except Exception:
@@ -644,13 +713,13 @@ class AppController:
         if wake_was_running and self.settings.wake_word_enabled:
             self._start_wake_listener()
 
-        self._sync_microphone_label()
+        self.tray.set_microphone_label(microphone_label)
         self.tray.refresh_menu()
         self.logger.info(
-            "Audio input device set to %s (name=%r, host_api=%r).",
+            "Audio input selection set to %s (name=%r, host_api=%r).",
             selected_device,
-            device_name,
-            device_host_api,
+            name,
+            host_api,
         )
 
     def start_microphone_test(self) -> None:
@@ -828,10 +897,36 @@ class AppController:
         self.logger.info("Hotkey settings updated and applied without restart.")
 
     def open_hotkey_settings(self) -> None:
+        def on_capture_begin() -> None:
+            # RegisterHotKey consumes chords before Tk can see them, so the live
+            # manager must be stopped for the whole dialog lifetime.
+            self.logger.info("Stopping hotkeys while the settings dialog is open.")
+            self.hotkeys.stop()
+
+        def on_capture_end() -> None:
+            self.logger.info("Restarting hotkeys after the settings dialog closed.")
+            try:
+                activation = self.hotkeys.start()
+            except Exception:
+                self.logger.exception(
+                    "Hotkeys could not be restarted after the settings dialog."
+                )
+                return
+            if not activation.successful:
+                failed = ", ".join(
+                    display_hotkey(combo) for combo in activation.failed
+                )
+                self.logger.error(
+                    "Hotkeys restarted with failures after settings dialog: %s.",
+                    failed,
+                )
+
         self.hotkey_settings_window.show(
             self.settings.hotkeys,
             self.set_hotkeys,
             self.settings.language_favorites,
+            on_capture_begin=on_capture_begin,
+            on_capture_end=on_capture_end,
         )
 
     def open_language_settings(self) -> None:
@@ -1195,6 +1290,8 @@ class AppController:
                 result.text,
                 self.settings.cleanup_mode,
                 self.settings.custom_vocabulary,
+                append_trailing_space=False,
+                newline_commands=self.settings.newline_commands,
             )
             with self._lock:
                 trim_phrase = self._pending_trim_phrase
@@ -1207,11 +1304,35 @@ class AppController:
                     "No speech detected; cleaned transcription text was empty.",
                 )
                 return
+            if _is_stock_whisper_phrase(cleaned):
+                self._notify_empty_transcription(stats, "Discarded stock phrase.")
+                return
+            if (
+                self.settings.append_trailing_space
+                and self.settings.cleanup_mode != "none"
+            ):
+                cleaned = append_trailing_space_if_needed(cleaned)
 
             self.set_status(STATUS_PASTING)
             self.logger.info("Restoring focus and pasting transcription...")
             paste_started = time.perf_counter()
             restored_target = self._restore_paste_target()
+            if (
+                sys.platform == "win32"
+                and not restored_target
+                and foreground_matches(self._paste_target_window) is False
+            ):
+                copy_text_to_clipboard(cleaned)
+                self.logger.warning(
+                    "Target window changed; text left on the clipboard."
+                )
+                self.notify(
+                    APP_NAME,
+                    "Target window changed. The text is on the clipboard; "
+                    "press Ctrl+V to paste it.",
+                )
+                paste_ms = int((time.perf_counter() - paste_started) * 1000)
+                return
             if sys.platform.startswith("linux") and not restored_target:
                 shortcut = self._paste_shortcut()
                 if copy_text_to_clipboard(cleaned):
@@ -1228,6 +1349,13 @@ class AppController:
                 paste_ms = int((time.perf_counter() - paste_started) * 1000)
                 return
             shortcut = self._paste_shortcut()
+            if sys.platform == "win32":
+                deadline = time.monotonic() + 1.0
+                while windows_modifier_state():
+                    remaining = deadline - time.monotonic()
+                    if remaining <= 0:
+                        break
+                    time.sleep(min(0.03, remaining))
             if insert_text(cleaned, shortcut=shortcut):
                 self.logger.info(
                     "Paste shortcut sent (%s); dictation text remains on clipboard.",
@@ -1265,11 +1393,15 @@ class AppController:
                 self._paste_target_process_name = None
                 self._overlay_anchor = None
                 self._pending_trim_phrase = None
-                wake_recording = self._recording_started_by_wake_word
                 self._recording_started_by_wake_word = False
                 wake_listener = self._wake_listener
+                wake_enabled = self.settings.wake_word_enabled
                 shutdown = self._shutdown
-            if wake_recording and wake_listener is not None and not shutdown:
+            if (
+                wake_listener is not None
+                and wake_enabled
+                and not shutdown
+            ):
                 try:
                     wake_listener.resume()
                 except Exception:
@@ -1390,6 +1522,8 @@ class AppController:
             frames = 0
             peak = 0.0
             device = "unknown"
+            refresh_ms: float | None = None
+            host_api = "unknown"
         else:
             first_block_display = (
                 int(stats.first_block_ms)
@@ -1400,10 +1534,12 @@ class AppController:
             frames = int(stats.frames)
             peak = float(stats.peak)
             device = str(stats.device_label)
+            refresh_ms = getattr(stats, "refresh_ms", None)
+            host_api = str(getattr(stats, "host_api", "unknown"))
         self.logger.info(
             "Take timing: to_stream_ms=%d first_block_ms=%s record_s=%.1f "
             "stop_ms=%d transcribe_ms=%d clean_ms=%d paste_ms=%d "
-            "frames=%d peak=%.3f device=%s",
+            "frames=%d peak=%.3f device=%s refresh_ms=%s host_api=%s",
             to_stream_ms,
             first_block_display,
             record_s,
@@ -1414,6 +1550,8 @@ class AppController:
             frames,
             peak,
             device,
+            refresh_ms,
+            host_api,
         )
 
     def _handle_error(self, message: str) -> None:
@@ -1427,7 +1565,20 @@ class AppController:
         name = self.settings.audio_input_device_name
         index = self.settings.audio_input_device
         if name is not None:
-            label = f"{name} [{index}]" if index is not None else name
+            label = name
+            try:
+                devices = list_audio_input_devices()
+                for group in group_physical_input_devices(devices):
+                    if any(
+                        row.name == name
+                        and row.host_api
+                        == (self.settings.audio_input_device_host_api or "")
+                        for row in group.rows
+                    ):
+                        label = group.label
+                        break
+            except Exception:
+                self.logger.exception("Could not resolve the microphone tooltip label.")
         elif index is not None:
             label = f"Unavailable microphone [{index}]"
         set_label = getattr(self.tray, "set_microphone_label", None)
@@ -1485,6 +1636,44 @@ class AppController:
             return
 
         # Linux: no reliable beep without extra dependencies; stay silent.
+
+
+_STOCK_WHISPER_PHRASES = frozenset(
+    {
+        "thank you for watching",
+        "thanks for watching",
+        "gracias por ver",
+        "subtítulos por la comunidad de amara.org",
+        "subtítulos realizados por la comunidad de amara.org",
+    }
+)
+
+
+def _normalize_stock_phrase(text: str) -> str:
+    """Casefold and strip punctuation and spaces for stock-phrase matching."""
+    chars: list[str] = []
+    for char in text.casefold():
+        if char.isspace():
+            continue
+        if unicodedata.category(char).startswith("P"):
+            continue
+        chars.append(char)
+    return "".join(chars)
+
+
+_STOCK_WHISPER_NORMALIZED = frozenset(
+    _normalize_stock_phrase(phrase) for phrase in _STOCK_WHISPER_PHRASES
+)
+
+# Word-boundary match for Amara subtitle credits; avoid a bare substring test
+# that static analysis treats as incomplete URL sanitization.
+_AMARA_CREDIT_RE = re.compile(r"\bamara\.org\b", re.IGNORECASE)
+
+
+def _is_stock_whisper_phrase(text: str) -> bool:
+    if _AMARA_CREDIT_RE.search(text):
+        return True
+    return _normalize_stock_phrase(text) in _STOCK_WHISPER_NORMALIZED
 
 
 def main(argv: list[str] | None = None) -> int:

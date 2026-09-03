@@ -51,17 +51,19 @@ Windows can check for updates inside the app; macOS and Linux updates are instal
 
 1. Click where you want the text to appear.
 2. Press the recording hotkey.
-3. Speak, then press the same hotkey or click the red orb.
+3. Speak, then press the same hotkey, hold the hotkey and release it to stop, or click the red orb.
 4. Speech transcribes locally, restores the original window, and pastes at the cursor.
 
 | Action | Windows | macOS | Linux |
 | --- | --- | --- | --- |
-| Start or stop | `Ctrl+Alt+Space` | `Control+Option+Space` | `Ctrl+Alt+Space` |
-| Favorite 1 | `Ctrl+Shift+E` | `Control+Shift+E` | `Ctrl+Shift+E` |
-| Favorite 2 | `Ctrl+Shift+S` | `Control+Shift+S` | `Ctrl+Shift+S` |
+| Start or stop | `Ctrl+Alt+Space` | `Control+Shift+Space` | `Ctrl+Alt+Space` |
+| Favorite 1 | Disabled | Disabled | Disabled |
+| Favorite 2 | Disabled | Disabled | Disabled |
 | Favorite 3 | Disabled | Disabled | Disabled |
 
-Favorites 1 and 2 default to English and Spanish. Assign any supported language to them from **Language Settings...** without changing the shortcuts.
+Favorites 1 and 2 default to English and Spanish, with no shortcut assigned.
+Give them one from **Hotkey Settings...**, and assign any supported language to them from **Language Settings...** without changing the shortcuts.
+Profiles saved before this change keep the shortcuts they already have.
 
 ### Hands-free wake word
 
@@ -77,7 +79,7 @@ Most settings are available from the tray or menu-bar icon and apply without a r
 | --- | --- |
 | Microphone | Follow the system default or select a specific input; test it with the live recording orb. |
 | Languages | Use automatic detection, select one language, or pin three favorites for quick dictation. |
-| Cleanup | Keep raw transcription, apply local basic cleanup, or opt into LLM cleanup with your own OpenAI API key. |
+| Cleanup | Keep raw transcription, apply local basic cleanup, or opt into LLM cleanup with your own OpenAI API key. Basic and LLM cleanup can append a trailing space after sentence punctuation and optionally turn spoken newline commands into real line breaks. |
 | Hotkeys | Choose suggested shortcuts or enter custom combinations with duplicate and conflict validation. |
 | Vocabulary | Bias transcription toward names, products, and technical terms you use often. |
 | Model | Trade speed for accuracy with `small` (~464 MB), `medium` (~1530 MB), `large-v3` (~3090 MB), or `large-v3-turbo` (~1620 MB); supported NVIDIA GPUs can use CUDA. |
