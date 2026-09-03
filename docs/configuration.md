@@ -215,12 +215,17 @@ macOS and Linux updates are installed manually from the Releases page.
 | `custom_vocabulary` | `[]` | Exact spellings used to bias transcription and cleanup. |
 | `wake_word_enabled` | `false` | Hands-free dictation: say a wake phrase to start, the stop phrase or a silence to finish. |
 | `wake_phrases` | `["hey speech", "oye speech"]` | Phrases that start recording while the wake word is enabled; any one of them triggers it. |
-| `stop_phrase` | `"stop"` | Spoken phrase that ends a wake-word recording; it is trimmed from the pasted text. |
-| `wake_silence_timeout_seconds` | `3.0` | Seconds of silence after speech that also end a wake-word recording (1–30). |
+| `wake_phrase_languages` | `{"hey speech": "en", "oye speech": "es"}` | Language override for the take started by each wake phrase. Absent phrases keep `language_mode`. Keys are normalised; values are Whisper language codes. |
+| `stop_phrase` | `"stop"` | Spoken phrase that ends a wake-word recording when it is the last thing said before a pause; it is trimmed from the pasted text. |
+| `wake_silence_timeout_seconds` | `3.0` | Seconds of silence after the last detected speech that also end a wake-word recording (1-30). |
 | `wake_model_size` | `"tiny"` | faster-whisper model for wake/stop detection. `tiny` is safe on CPU; on a GPU, `base` or `small` hear accented or code-switched phrases (e.g. "oye speech") much better. Uses the same `device`/`compute_type` as transcription. |
 
-The wake word runs a small local `tiny` Whisper model over a rolling audio window, using the same `device`/`compute_type` as transcription (CUDA included, with CPU fallback); it works alongside the hotkeys, which stay active either way. Toggle it from the tray menu or by setting `wake_word_enabled`.
+The wake word runs a small local Whisper model over a rolling audio window, using the same `device`/`compute_type` as transcription (CUDA included, with CPU fallback); it works alongside the hotkeys, which stay active either way.
+Toggle it from the tray menu or by setting `wake_word_enabled`.
 
-The phrases can be in any language — set `wake_phrase`/`stop_phrase` to whatever you actually say (accents included, e.g. `"oye speech"`). Detection auto-detects the language of each audio window and, when it hears nothing, retries with your `language_mode` and `language_favorites` as hints.
+Windows are gated by an RMS level check and then Silero VAD before the model runs.
+Detection uses one prompted pass with the configured phrases as `initial_prompt`, so short cues in any language (e.g. `"oye speech"`) land without a language-hint retry loop.
+The stop phrase must be the trailing words of the transcript, spoken just before a short pause; mid-sentence uses such as "stop the car now" do not end the take.
+Silence timeout is counted from the last VAD-detected speech in the recording tail.
 
 `paste_mode` can also force `clipboard_ctrl_shift_v` on Windows or Linux. Older `clipboard_ctrl_v` values retain automatic terminal detection for compatibility.

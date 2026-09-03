@@ -20,6 +20,7 @@ from winwhisper.wake_word import (
     audio_level,
     normalize_phrase,
     phrase_in_text,
+    phrase_is_trailing,
     trim_trailing_phrase,
 )
 
@@ -45,11 +46,39 @@ def test_phrase_in_text_tolerates_one_letter_mishearing_in_long_words():
     # The tiny wake-word model's common mistakes still match.
     assert phrase_in_text("hey speech", "hey speach")
     assert phrase_in_text("hey speech", "hey speec")
-    assert phrase_in_text("stop", "please stopp now")
+    # Words shorter than five letters must stay exact ("stop" != "step"/"shop").
+    assert phrase_in_text("stop", "please stop now")
+    assert not phrase_in_text("stop", "please stopp now")
+    assert not phrase_in_text("stop", "please step now")
+    assert not phrase_in_text("stop", "please shop now")
     # Short words must stay exact, and two-letter errors must not match.
     assert not phrase_in_text("hey speech", "he speech")
     assert not phrase_in_text("hey speech", "hey speeds")
     assert not phrase_in_text("hey speech", "hay speech")
+
+
+def test_phrase_in_text_allow_short_slip_for_multiword_wake():
+    # Spanish "oye" often lands as "oje"; wake path opts into short slip.
+    assert phrase_in_text("oye speech", "Oje speech.", allow_short_slip=True)
+    # Long-word fuzziness still works with the flag on.
+    assert phrase_in_text("hey speech", "hey speach", allow_short_slip=True)
+    # Accepted trade-off: "hay" is one edit from "hey" when "speech" is exact.
+    assert phrase_in_text("hey speech", "hay speech", allow_short_slip=True)
+    # Both words slipped -> reject (need at least one exact word).
+    assert not phrase_in_text("oye speech", "oje spich", allow_short_slip=True)
+    # Single short stop word stays strict even if the flag were passed.
+    assert not phrase_in_text("stop", "step", allow_short_slip=True)
+    assert not phrase_in_text("stop", "shop", allow_short_slip=True)
+
+
+def test_phrase_is_trailing_requires_phrase_at_end():
+    assert phrase_is_trailing("stop", "that is all stop")
+    assert phrase_is_trailing("stop", "that is all, stop.")
+    assert phrase_is_trailing("hey speech", "ok hey speach")
+    assert not phrase_is_trailing("stop", "stop the car now")
+    assert not phrase_is_trailing("stop", "please step")
+    assert not phrase_is_trailing("stop", "please shop")
+    assert not phrase_is_trailing("stop", "")
 
 
 def test_trim_trailing_phrase_removes_only_a_tail_occurrence():
@@ -120,53 +149,42 @@ def test_language_hints_from_settings():
     assert language_hints("fr", []) == ["fr"]
 
 
-def test_detect_phrase_tries_language_hints_until_a_transcript_matches(
+def test_detect_phrase_uses_one_prompted_pass_and_returns_matched_phrase(
     monkeypatch,
 ):
     import faster_whisper
     from winwhisper.wake_word import WhisperPhraseDetector
 
-    calls: list[str | None] = []
+    calls: list[dict] = []
 
-    class AutoGetsItWrongModel:
-        """Auto-detection hears English gibberish; the es hint hears right."""
-
+    class PromptedModel:
         def __init__(self, size, device=None, compute_type=None):
             pass
 
-        def transcribe(self, audio, language=None, **kwargs):
-            calls.append(language)
-            if language == "es":
-                return [type("Seg", (), {"text": "oye speech"})()], None
-            return [type("Seg", (), {"text": "OJ speech"})()], None
+        def transcribe(self, audio, **kwargs):
+            calls.append(kwargs)
+            return [type("Seg", (), {"text": "oye speech por favor"})()], None
 
-    monkeypatch.setattr(faster_whisper, "WhisperModel", AutoGetsItWrongModel)
+    monkeypatch.setattr(faster_whisper, "WhisperModel", PromptedModel)
 
+    # languages is accepted but ignored; one pass only.
     detector = WhisperPhraseDetector(languages=["es", "en"])
     audio = np.full(16_000, 400, dtype="int16")
 
-    assert detector.detect_phrase(audio, ["oye speech"]) == "oye speech"
-    assert calls == [None, "es"]
+    assert detector.detect_phrase(audio, ["hey speech", "oye speech"]) == "oye speech"
+    assert len(calls) == 1
+    assert calls[0]["initial_prompt"] == "Hey speech. Oye speech."
+    assert calls[0]["temperature"] == 0.0
+    assert calls[0]["condition_on_previous_text"] is False
+    assert calls[0]["compression_ratio_threshold"] is None
+    assert calls[0]["log_prob_threshold"] is None
 
     calls.clear()
-
-    class TalkativeModel:
-        def __init__(self, size, device=None, compute_type=None):
-            pass
-
-        def transcribe(self, audio, language=None, **kwargs):
-            calls.append(language)
-            return [type("Seg", (), {"text": "hey speech"})()], None
-
-    monkeypatch.setattr(faster_whisper, "WhisperModel", TalkativeModel)
-    talkative = WhisperPhraseDetector(languages=["es", "en"])
-
-    assert talkative.detect_phrase(audio, ["hey speech"]) == "hey speech"
-    assert calls == [None]  # a match on the auto pass skips the hints
-
-    calls.clear()
-    assert talkative.detect_phrase(audio, ["oye speech"]) is None
-    assert calls == [None, "es", "en"]  # no match tries every language
+    matched, transcript = detector.detect_transcript(audio, ["hey speech"])
+    assert matched is None
+    assert "oye speech" in transcript
+    assert len(calls) == 1
+    assert calls[0]["initial_prompt"] == "Hey speech."
 
 
 # --- RollingBuffer ----------------------------------------------------------
@@ -213,6 +231,7 @@ def test_wake_word_settings_defaults_and_normalization():
 
     assert settings.wake_word_enabled is False
     assert settings.wake_phrases == ["hey speech", "oye speech"]
+    assert settings.wake_phrase_languages == {"hey speech": "en", "oye speech": "es"}
     assert settings.stop_phrase == "stop"
     assert settings.wake_silence_timeout_seconds == 3.0
 
@@ -233,6 +252,19 @@ def test_wake_word_settings_defaults_and_normalization():
         Settings(wake_phrases=["!!!"])
     with pytest.raises(ValueError, match="at least one word"):
         Settings(stop_phrase="  ")
+
+
+def test_wake_phrase_languages_normalizes_and_validates():
+    assert Settings(
+        wake_phrase_languages={"Hey, Speech!": "English (en)", "custom cue": "fr"}
+    ).wake_phrase_languages == {"hey speech": "en", "custom cue": "fr"}
+
+    with pytest.raises(ValueError, match="Unsupported wake phrase language"):
+        Settings(wake_phrase_languages={"hey speech": "auto"})
+    with pytest.raises(ValueError, match="Unsupported wake phrase language"):
+        Settings(wake_phrase_languages={"hey speech": "not-a-language"})
+    with pytest.raises(ValueError, match="must be a mapping"):
+        Settings(wake_phrase_languages=["hey speech", "en"])  # type: ignore[arg-type]
 
 
 def test_wake_phrase_setting_migrates_to_list(monkeypatch, tmp_path):
@@ -287,27 +319,43 @@ class StubDetector:
         return ""
 
     def detect_phrase(self, audio, phrases) -> str | None:
+        matched, _transcript = self.detect_transcript(audio, phrases)
+        return matched
+
+    def detect_transcript(self, audio, phrases) -> tuple[str | None, str]:
         self.calls += 1
         if not self._transcripts:
-            return None
+            return None, ""
         transcript = self._transcripts.pop(0)
-        if any(phrase_in_text(phrase, transcript) for phrase in phrases):
-            return transcript
-        return None
+        for phrase in phrases:
+            if phrase_in_text(phrase, transcript, allow_short_slip=True):
+                return phrase, transcript
+        return None, transcript
 
 
 def _loud_block(samples=16_000):
     return np.full(samples, 10_000, dtype="int16")
 
 
-def test_listener_fires_on_wake_once_within_cooldown():
+def _loud_then_quiet(loud_samples=20_000, quiet_samples=8_000):
+    """Speech followed by a trailing pause (for stop-phrase evaluation)."""
+    return np.concatenate(
+        [
+            np.full(loud_samples, 10_000, dtype="int16"),
+            np.zeros(quiet_samples, dtype="int16"),
+        ]
+    )
+
+
+def test_listener_fires_on_wake_once_within_cooldown(monkeypatch):
+    monkeypatch.setattr("winwhisper.wake_word.has_speech", lambda audio: True)
     source = FakeSource()
     detector = StubDetector(["hey speech start", "hey speech start"])
     hits = []
     listener = WakeWordListener(
         source,
         ["hey speech"],
-        lambda: hits.append("hit"),
+        lambda phrase: hits.append(phrase),
         detector=detector,
         poll_seconds=0.02,
         cooldown_seconds=60.0,
@@ -319,9 +367,9 @@ def test_listener_fires_on_wake_once_within_cooldown():
         while not hits and time.monotonic() < deadline:
             time.sleep(0.01)
 
-        assert hits == ["hit"]
+        assert hits == ["hey speech"]
         time.sleep(0.15)
-        assert hits == ["hit"]
+        assert hits == ["hey speech"]
     finally:
         listener.stop()
 
@@ -329,14 +377,15 @@ def test_listener_fires_on_wake_once_within_cooldown():
     assert source.stop_count >= 1
 
 
-def test_listener_fires_on_any_configured_phrase():
+def test_listener_fires_on_any_configured_phrase(monkeypatch):
+    monkeypatch.setattr("winwhisper.wake_word.has_speech", lambda audio: True)
     source = FakeSource()
     detector = StubDetector(["oye speech empecemos"])
     hits = []
     listener = WakeWordListener(
         source,
         ["hey speech", "oye speech"],
-        lambda: hits.append("hit"),
+        lambda phrase: hits.append(phrase),
         detector=detector,
         poll_seconds=0.02,
         cooldown_seconds=0.0,
@@ -348,18 +397,19 @@ def test_listener_fires_on_any_configured_phrase():
         while not hits and time.monotonic() < deadline:
             time.sleep(0.01)
 
-        assert hits == ["hit"]
+        assert hits == ["oye speech"]
     finally:
         listener.stop()
 
 
-def test_listener_ignores_silence_without_calling_detector():
+def test_listener_ignores_silence_without_calling_detector(monkeypatch):
+    monkeypatch.setattr("winwhisper.wake_word.has_speech", lambda audio: True)
     source = FakeSource()
     detector = StubDetector(["hey speech"])
     listener = WakeWordListener(
         source,
         ["hey speech"],
-        lambda: None,
+        lambda phrase: None,
         detector=detector,
         poll_seconds=0.02,
     )
@@ -372,12 +422,32 @@ def test_listener_ignores_silence_without_calling_detector():
         listener.stop()
 
 
+def test_listener_skips_model_when_vad_finds_no_speech(monkeypatch):
+    monkeypatch.setattr("winwhisper.wake_word.has_speech", lambda audio: False)
+    source = FakeSource()
+    detector = StubDetector(["hey speech"])
+    listener = WakeWordListener(
+        source,
+        ["hey speech"],
+        lambda phrase: None,
+        detector=detector,
+        poll_seconds=0.02,
+    )
+    listener.start()
+    try:
+        source.on_block(_loud_block())
+        time.sleep(0.1)
+        assert detector.calls == 0
+    finally:
+        listener.stop()
+
+
 def test_listener_pause_releases_source_and_resume_restarts_it():
     source = FakeSource()
     listener = WakeWordListener(
         source,
         ["hey speech"],
-        lambda: None,
+        lambda phrase: None,
         detector=StubDetector([]),
         poll_seconds=0.02,
     )
@@ -409,10 +479,14 @@ def _wait_for(event: threading.Event, seconds: float = 2.0) -> bool:
     return event.wait(seconds)
 
 
-def test_stop_monitor_fires_on_stop_phrase():
+def test_stop_monitor_fires_on_trailing_stop_phrase_after_pause(monkeypatch):
+    monkeypatch.setattr(
+        "winwhisper.wake_word._speech_timestamps",
+        lambda audio: [{"start": 0, "end": max(0, int(audio.size) - 8_000)}],
+    )
     stopped: list[str] = []
     monitor = StopWordMonitor(
-        FakeRecentRecorder(_loud_block()),
+        FakeRecentRecorder(_loud_then_quiet()),
         "stop",
         30.0,
         lambda reason: stopped.append(reason),
@@ -429,7 +503,37 @@ def test_stop_monitor_fires_on_stop_phrase():
         monitor.stop()
 
 
-def test_stop_monitor_fires_after_silence_following_speech():
+def test_stop_monitor_ignores_non_trailing_stop_and_step(monkeypatch):
+    monkeypatch.setattr(
+        "winwhisper.wake_word._speech_timestamps",
+        lambda audio: [{"start": 0, "end": max(0, int(audio.size) - 8_000)}],
+    )
+    stopped: list[str] = []
+    monitor = StopWordMonitor(
+        FakeRecentRecorder(_loud_then_quiet()),
+        "stop",
+        30.0,
+        lambda reason: stopped.append(reason),
+        detector=StubDetector(["stop the car now", "please step"]),
+        poll_seconds=0.02,
+    )
+    monitor.start()
+    try:
+        time.sleep(0.2)
+        assert stopped == []
+    finally:
+        monitor.stop()
+
+
+def test_stop_monitor_fires_after_silence_following_speech(monkeypatch):
+    speech_until = time.monotonic() + 0.08
+
+    def fake_timestamps(audio):
+        if time.monotonic() < speech_until:
+            return [{"start": 0, "end": int(audio.size)}]
+        return []
+
+    monkeypatch.setattr("winwhisper.wake_word._speech_timestamps", fake_timestamps)
     recorder = FakeRecentRecorder(_loud_block())
     stopped: list[str] = []
     detector = StubDetector([])
@@ -444,10 +548,32 @@ def test_stop_monitor_fires_after_silence_following_speech():
     monitor.start()
     try:
         deadline = time.monotonic() + 2.0
-        while detector.calls < 1 and time.monotonic() < deadline:
-            time.sleep(0.005)
-        recorder._samples = np.zeros(16_000, dtype="int16")
+        while not stopped and time.monotonic() < deadline:
+            time.sleep(0.01)
+        assert stopped == ["silence"]
+    finally:
+        monitor.stop()
 
+
+def test_stop_monitor_counts_silence_from_last_speech_in_tail(monkeypatch):
+    """Silence timeout uses the end of the last VAD segment, not a fully quiet tail."""
+    monkeypatch.setattr(
+        "winwhisper.wake_word._speech_timestamps",
+        lambda audio: [{"start": 0, "end": 1_000}],
+    )
+    stopped: list[str] = []
+    # Tail still has loud samples overall, but VAD says speech ended near the start.
+    monitor = StopWordMonitor(
+        FakeRecentRecorder(_loud_block(40_000)),
+        "stop",
+        0.05,
+        lambda reason: stopped.append(reason),
+        detector=StubDetector([]),
+        poll_seconds=0.02,
+        tail_seconds=2.5,
+    )
+    monitor.start()
+    try:
         deadline = time.monotonic() + 2.0
         while not stopped and time.monotonic() < deadline:
             time.sleep(0.01)
@@ -456,7 +582,8 @@ def test_stop_monitor_fires_after_silence_following_speech():
         monitor.stop()
 
 
-def test_stop_monitor_ignores_silence_before_any_speech():
+def test_stop_monitor_ignores_silence_before_any_speech(monkeypatch):
+    monkeypatch.setattr("winwhisper.wake_word._speech_timestamps", lambda audio: [])
     stopped: list[str] = []
     monitor = StopWordMonitor(
         FakeRecentRecorder(np.zeros(16_000, dtype="int16")),
@@ -474,7 +601,9 @@ def test_stop_monitor_ignores_silence_before_any_speech():
         monitor.stop()
 
 
-def test_stop_monitor_exits_when_recording_is_over():
+def test_stop_monitor_exits_when_recording_is_over(monkeypatch):
+    monkeypatch.setattr("winwhisper.wake_word._speech_timestamps", lambda audio: [])
+
     class EndedRecorder:
         def recent_audio(self, seconds):
             return None
@@ -789,13 +918,35 @@ def test_wake_word_starts_recording_and_pauses_listener(monkeypatch, tmp_path):
     controller._start_wake_listener()
     listener = FakeListener.instances[0]
 
-    controller._on_wake_word()
+    controller._on_wake_word("hey speech")
 
     assert listener.paused is True
     assert controller.recorder.is_recording() is True
     assert controller.recorder.recent_audio_capture is True
     assert len(FakeMonitor.instances) == 1
     assert FakeMonitor.instances[0].started is True
+    # Default language_mode in make_controller is "es"; hey speech overrides to en.
+    assert controller._recording_language_mode == "en"
+
+
+def test_wake_word_phrase_language_override_reaches_toggle(monkeypatch, tmp_path):
+    controller = make_controller(monkeypatch, tmp_path, [], wake_word_enabled=True)
+    controller._start_wake_listener()
+
+    controller._on_wake_word("oye speech")
+
+    assert controller.recorder.is_recording() is True
+    assert controller._recording_language_mode == "es"
+
+
+def test_wake_word_unknown_phrase_keeps_configured_language(monkeypatch, tmp_path):
+    controller = make_controller(monkeypatch, tmp_path, [], wake_word_enabled=True)
+    controller._start_wake_listener()
+
+    controller._on_wake_word("hey computer")
+
+    assert controller.recorder.is_recording() is True
+    assert controller._recording_language_mode == "es"
 
 
 def test_wake_word_ignored_while_recording(monkeypatch, tmp_path):
@@ -807,7 +958,7 @@ def test_wake_word_ignored_while_recording(monkeypatch, tmp_path):
     # Hotkey take pauses the wake listener so PortAudio can refresh.
     assert listener.paused is True
 
-    controller._on_wake_word()
+    controller._on_wake_word("hey speech")
 
     assert listener.paused is True
     assert FakeMonitor.instances == []

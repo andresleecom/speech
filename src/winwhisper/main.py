@@ -75,7 +75,7 @@ from .wake_word import (
     StopWordMonitor,
     WakeWordListener,
     WhisperPhraseDetector,
-    language_hints,
+    normalize_phrase,
     trim_trailing_phrase,
 )
 
@@ -188,10 +188,6 @@ class AppController:
         self._wake_detector = WhisperPhraseDetector(
             device=str(settings.device),
             compute_type=str(settings.compute_type),
-            languages=language_hints(
-                str(settings.language_mode),
-                settings.language_favorites,
-            ),
             model_size=str(settings.wake_model_size),
         )
         self._wake_listener: WakeWordListener | None = None
@@ -567,7 +563,7 @@ class AppController:
         except Exception:
             self.logger.exception("Wake-word listener failed to resume.")
 
-    def _on_wake_word(self) -> None:
+    def _on_wake_word(self, phrase: str = "") -> None:
         with self._lock:
             if self._shutdown or self._processing or self.recorder.is_recording():
                 self.logger.info("Ignoring wake word; dictation already active.")
@@ -585,7 +581,10 @@ class AppController:
         # The macOS recorder only buffers live samples (for the stop-word
         # monitor) when asked before start_recording.
         self.recorder.set_recent_audio_capture(True)
-        self.toggle()
+        language_override = self.settings.wake_phrase_languages.get(
+            normalize_phrase(phrase)
+        )
+        self.toggle(language_override=language_override)
         with self._lock:
             started = self.recorder.is_recording()
 
