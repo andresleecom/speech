@@ -33,6 +33,6 @@
 | 03 | Push-to-talk on Windows keyboard hotkeys | src/winwhisper/hotkeys.py, hotkey_actions.py, main.py, tests/test_hotkeys.py, test_overlay_flow.py, docs | build+tests+flow | done |
 | 04 | Hotkey editor polish and conflict-free defaults | src/winwhisper/hotkey_actions.py, hotkey_settings.py, hotkey_settings_window.py, config.py, tests, docs | build+tests+flow | done |
 | 05 | Hotkey editor chord capture and OEM keys | src/winwhisper/hotkey_settings_window.py, hotkey_settings.py, hotkeys.py, main.py, tests | build+tests+flow | done |
-| 06 | Text processing fixes and version 0.1.21 | src/winwhisper/formatter.py, main.py, config.py, tray.py, pyproject.toml, tests, docs | build+tests+flow | pending |
+| 06 | Text processing fixes and version 0.1.21 | src/winwhisper/formatter.py, main.py, config.py, tray.py, pyproject.toml, tests, docs | build+tests+flow | done |
 
 Bar legend: build = diff review + import smoke · +tests = full pytest · +flow = drive the affected path from source.

@@ -79,7 +79,7 @@ Most settings are available from the tray or menu-bar icon and apply without a r
 | --- | --- |
 | Microphone | Follow the system default or select a specific input; test it with the live recording orb. |
 | Languages | Use automatic detection, select one language, or pin three favorites for quick dictation. |
-| Cleanup | Keep raw transcription, apply local basic cleanup, or opt into LLM cleanup with your own OpenAI API key. |
+| Cleanup | Keep raw transcription, apply local basic cleanup, or opt into LLM cleanup with your own OpenAI API key. Basic and LLM cleanup can append a trailing space after sentence punctuation and optionally turn spoken newline commands into real line breaks. |
 | Hotkeys | Choose suggested shortcuts or enter custom combinations with duplicate and conflict validation. |
 | Vocabulary | Bias transcription toward names, products, and technical terms you use often. |
 | Model | Trade speed for accuracy with `small` (~464 MB), `medium` (~1530 MB), `large-v3` (~3090 MB), or `large-v3-turbo` (~1620 MB); supported NVIDIA GPUs can use CUDA. |

@@ -8,6 +8,7 @@ import os
 import sys
 import threading
 import time
+import unicodedata
 from contextlib import redirect_stdout
 from pathlib import Path, PurePosixPath
 from typing import Any, Callable, Literal
@@ -30,7 +31,7 @@ from .focus import (
     get_window_process_name,
     restore_foreground_window,
 )
-from .formatter import clean_text
+from .formatter import append_trailing_space_if_needed, clean_text
 from .hotkey_settings import (
     HotkeyConfigurationError,
     display_hotkey,
@@ -1288,6 +1289,8 @@ class AppController:
                 result.text,
                 self.settings.cleanup_mode,
                 self.settings.custom_vocabulary,
+                append_trailing_space=False,
+                newline_commands=self.settings.newline_commands,
             )
             with self._lock:
                 trim_phrase = self._pending_trim_phrase
@@ -1300,6 +1303,14 @@ class AppController:
                     "No speech detected; cleaned transcription text was empty.",
                 )
                 return
+            if _is_stock_whisper_phrase(cleaned):
+                self._notify_empty_transcription(stats, "Discarded stock phrase.")
+                return
+            if (
+                self.settings.append_trailing_space
+                and self.settings.cleanup_mode != "none"
+            ):
+                cleaned = append_trailing_space_if_needed(cleaned)
 
             self.set_status(STATUS_PASTING)
             self.logger.info("Restoring focus and pasting transcription...")
@@ -1624,6 +1635,40 @@ class AppController:
             return
 
         # Linux: no reliable beep without extra dependencies; stay silent.
+
+
+_STOCK_WHISPER_PHRASES = frozenset(
+    {
+        "thank you for watching",
+        "thanks for watching",
+        "gracias por ver",
+        "subtítulos por la comunidad de amara.org",
+        "subtítulos realizados por la comunidad de amara.org",
+    }
+)
+
+
+def _normalize_stock_phrase(text: str) -> str:
+    """Casefold and strip punctuation and spaces for stock-phrase matching."""
+    chars: list[str] = []
+    for char in text.casefold():
+        if char.isspace():
+            continue
+        if unicodedata.category(char).startswith("P"):
+            continue
+        chars.append(char)
+    return "".join(chars)
+
+
+_STOCK_WHISPER_NORMALIZED = frozenset(
+    _normalize_stock_phrase(phrase) for phrase in _STOCK_WHISPER_PHRASES
+)
+
+
+def _is_stock_whisper_phrase(text: str) -> bool:
+    if "amara.org" in text.casefold():
+        return True
+    return _normalize_stock_phrase(text) in _STOCK_WHISPER_NORMALIZED
 
 
 def main(argv: list[str] | None = None) -> int:

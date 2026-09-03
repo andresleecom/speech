@@ -1370,6 +1370,25 @@ def test_empty_transcription_notifies_without_pasting(monkeypatch, tmp_path):
     assert not hasattr(controller.recorder, "last_take_stats")
 
 
+def test_stock_whisper_phrase_is_discarded_without_pasting(monkeypatch, tmp_path, caplog):
+    inserted: list[str] = []
+    controller = make_controller(
+        monkeypatch,
+        tmp_path,
+        [],
+        inserted,
+        transcription_text="Thank you for watching.",
+    )
+
+    with caplog.at_level("INFO"):
+        controller.toggle()
+        controller.toggle()
+
+    assert inserted == []
+    assert controller.tray.notifications == [("Speech", "No speech detected")]
+    assert "Discarded stock phrase." in caplog.text
+
+
 def test_zero_frames_skips_transcription_and_toasts_capture_failure(
     monkeypatch, tmp_path
 ):

@@ -23,6 +23,8 @@ def test_defaults_when_no_file_exists(monkeypatch, tmp_path):
     assert settings == Settings()
     assert settings.paste_mode == "auto"
     assert settings.check_for_updates is True
+    assert settings.append_trailing_space is True
+    assert settings.newline_commands is False
     assert settings.last_update_check_at is None
     assert settings.audio_input_device is None
     assert settings.audio_input_device_name is None

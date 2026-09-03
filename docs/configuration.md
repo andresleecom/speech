@@ -41,17 +41,27 @@ Select System Default or another device, and confirm that the operating system h
 
 ## Text cleanup
 
-Cleanup runs after transcription and before paste. It never changes the recorded audio.
+Cleanup runs after transcription and before paste.
+It never changes the recorded audio.
 
 | Mode | Behavior | Network use |
 | --- | --- | --- |
 | `none` | Paste the faster-whisper result unchanged. | None |
-| `basic` | Normalize whitespace and punctuation spacing, then capitalize the first alphabetic character. | None |
+| `basic` | Normalize whitespace and punctuation spacing, then capitalize the first alphabetic character when it starts the text or follows only opening punctuation. | None |
 | `llm` | Improve punctuation, capitalization, disfluencies, and vocabulary spelling without translating or adding ideas. | Transcript text only |
 
-`basic` is the default. LLM cleanup requires `OPENAI_API_KEY` in the environment before Speech starts and uses `gpt-4o-mini` by default.
+`basic` is the default.
+LLM cleanup requires `OPENAI_API_KEY` in the environment before Speech starts and uses `gpt-4o-mini` by default.
 
 If the API key is missing, the request fails, or it times out, Speech falls back to `basic` so dictation can still complete.
+
+`append_trailing_space` (default `true`) adds one trailing space when cleaned text ends in `.`, `!`, `?`, or `…`, so consecutive pastes do not glue together.
+It is skipped when `cleanup_mode` is `none`, and it is applied only after stop-phrase trimming and empty checks.
+
+`newline_commands` (default `false`) replaces the standalone spoken phrases `new line`, `new paragraph`, `nueva línea`, and `punto y aparte` with `\n` or `\n\n` during `basic` and `llm` cleanup.
+
+After cleanup, Speech discards whole-text stock Whisper hallucinations such as "Thank you for watching", "Thanks for watching", "Gracias por ver", and Amara.org subtitle credits.
+Those pastes are treated like an empty transcription.
 
 ## Hotkeys
 
@@ -195,6 +205,8 @@ macOS and Linux updates are installed manually from the Releases page.
 | `language_mode` | `auto` | Automatic detection or one supported Whisper language code. |
 | `language_favorites` | `["en", "es", null]` | Three distinct non-auto language codes; `null` leaves a slot unassigned. |
 | `cleanup_mode` | `basic` | `none`, `basic`, or `llm`. |
+| `append_trailing_space` | `true` | After `basic` or `llm` cleanup, append one space when the text ends in `.`, `!`, `?`, or `…`. |
+| `newline_commands` | `false` | When true, replace spoken `new line` / `new paragraph` / `nueva línea` / `punto y aparte` with real newlines during cleanup. |
 | `paste_mode` | `auto` | Use the platform default and switch supported Windows/Linux terminals to `Ctrl+Shift+V`. |
 | `delete_audio_after_transcription` | `true` | Delete temporary WAV files after transcription. |
 | `check_for_updates` | `true` | Check GitHub Releases daily on Windows. Ignored on macOS and Linux. See [Updates](#updates). |
