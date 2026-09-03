@@ -652,3 +652,20 @@ def test_tray_shows_unavailable_saved_microphone(monkeypatch):
     )
 
     assert unavailable.options["enabled"] is False
+
+
+def test_tray_icon_reuses_the_shared_app_mark():
+    from winwhisper.branding import IDLE_ICON_COLOR, app_icon_image
+
+    tray = TrayApp(FakeController())
+
+    idle = tray._make_icon_image()
+    assert idle.size == (64, 64)
+    assert idle.tobytes() == app_icon_image(color=IDLE_ICON_COLOR).tobytes()
+
+    tray._status = "Recording"
+    recording = tray._make_icon_image()
+    assert recording.tobytes() == (
+        app_icon_image(color=tray_module._STATUS_COLORS["Recording"]).tobytes()
+    )
+    assert recording.tobytes() != idle.tobytes()

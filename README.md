@@ -56,12 +56,14 @@ Windows can check for updates inside the app; macOS and Linux updates are instal
 
 | Action | Windows | macOS | Linux |
 | --- | --- | --- | --- |
-| Start or stop | `Ctrl+Alt+Space` | `Control+Option+Space` | `Ctrl+Alt+Space` |
-| Favorite 1 | `Ctrl+Shift+E` | `Control+Shift+E` | `Ctrl+Shift+E` |
-| Favorite 2 | `Ctrl+Shift+S` | `Control+Shift+S` | `Ctrl+Shift+S` |
+| Start or stop | `Ctrl+Alt+Space` | `Control+Shift+Space` | `Ctrl+Alt+Space` |
+| Favorite 1 | Disabled | Disabled | Disabled |
+| Favorite 2 | Disabled | Disabled | Disabled |
 | Favorite 3 | Disabled | Disabled | Disabled |
 
-Favorites 1 and 2 default to English and Spanish. Assign any supported language to them from **Language Settings...** without changing the shortcuts.
+Favorites 1 and 2 default to English and Spanish, with no shortcut assigned.
+Give them one from **Hotkey Settings...**, and assign any supported language to them from **Language Settings...** without changing the shortcuts.
+Profiles saved before this change keep the shortcuts they already have.
 
 ### Hands-free wake word
 

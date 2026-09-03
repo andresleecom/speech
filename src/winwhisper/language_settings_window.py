@@ -5,7 +5,7 @@ import threading
 from collections.abc import Callable
 from typing import Any
 
-from .branding import APP_NAME
+from .branding import APP_NAME, apply_tk_app_icon
 from .languages import (
     AUTO_LANGUAGE_MODE,
     DEFAULT_LANGUAGE_FAVORITES,
@@ -134,6 +134,7 @@ def _run_tk_dialog(
     root.title(f"{APP_NAME} Settings - Languages")
     root.resizable(False, False)
     root.configure(bg="#F7F7F8")
+    apply_tk_app_icon(root)
 
     frame = tk.Frame(root, bg="#F7F7F8", padx=24, pady=22)
     frame.grid(row=0, column=0, sticky="nsew")

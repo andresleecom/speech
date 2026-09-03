@@ -7,6 +7,10 @@ from winwhisper.language_settings_window import (
     _filtered_choices,
 )
 
+# The headless Tk double lives with the hotkey dialog tests; both dialogs are
+# built the same way, so there is one fake rather than two.
+from test_hotkey_settings_window import install_fake_tk
+
 
 class ImmediateThread:
     def __init__(self, target, args=(), **kwargs) -> None:
@@ -73,3 +77,16 @@ def test_macos_language_picker_is_scheduled_on_appkit_main_queue(monkeypatch):
     LanguageSettingsWindow().show("Japanese", favorites, on_save)
 
     assert calls == [("ja", ("en", "es", None), on_save)]
+
+
+def test_language_dialog_uses_the_app_icon_and_a_hyphen_title(monkeypatch):
+    roots = install_fake_tk(monkeypatch)
+
+    window_module._run_tk_dialog("en", ("en", "es", None), lambda mode, favs: None)
+
+    root = roots[0]
+    assert root.window_title == "Speech Settings - Languages"
+    assert len(root.icon_photos) == 1
+    default, photo = root.icon_photos[0]
+    assert default is True
+    assert photo.image.size == (64, 64)

@@ -61,10 +61,13 @@ Push-to-talk is available for Windows keyboard bindings only, while mouse bindin
 
 | Action | Windows | macOS | Linux |
 | --- | --- | --- | --- |
-| Start or stop | `Ctrl+Alt+Space` | `Control+Option+Space` | `Ctrl+Alt+Space` |
-| Favorite 1 | `Ctrl+Shift+E` | `Control+Shift+E` | `Ctrl+Shift+E` |
-| Favorite 2 | `Ctrl+Shift+S` | `Control+Shift+S` | `Ctrl+Shift+S` |
+| Start or stop | `Ctrl+Alt+Space` | `Control+Shift+Space` | `Ctrl+Alt+Space` |
+| Favorite 1 | Disabled | Disabled | Disabled |
+| Favorite 2 | Disabled | Disabled | Disabled |
 | Favorite 3 | Disabled | Disabled | Disabled |
+
+New profiles ship without quick-language shortcuts, because `Ctrl+Shift+E` and `Ctrl+Shift+S` are already taken by editors, browsers, and word processors.
+Existing profiles keep every shortcut they have saved; changing a default never rewrites a settings file.
 
 Open **Hotkey Settings...**, select a suggestion, enter a combination, or press **Record** and click a mouse button, then save. Speech rejects duplicates.
 
@@ -113,7 +116,9 @@ A combination contains zero or more modifiers and exactly one trigger key. Suppo
 
 macOS supports ASCII letters and digits, Space, Enter, Tab, Escape, Backspace, Delete, navigation keys, arrow keys, and `F1` through `F20`.
 
-Windows also supports numpad keys, Plus, Minus, and function keys through `F24`. Linux uses the listener-based X11 backend and the standard cross-platform keys.
+Windows also supports numpad keys, Plus, Minus, and function keys through `F24`.
+Linux uses the listener-based X11 backend, so it accepts letters, digits, `F1` through `F20`, Space, Enter, Tab, Escape, Backspace, Delete, Insert, Home, End, Page Up, Page Down, the arrow keys, and numpad keys.
+Any other trigger is rejected on Linux rather than saved as a shortcut that could never fire.
 
 macOS rejects Option with a letter or number because its result changes with the keyboard layout. Prefer Space, a function key, or a shortcut without Option.
 

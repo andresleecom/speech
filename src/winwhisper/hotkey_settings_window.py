@@ -5,7 +5,7 @@ import threading
 from collections.abc import Callable, Mapping
 from typing import Any
 
-from .branding import APP_NAME
+from .branding import APP_NAME, apply_tk_app_icon
 from .hotkey_actions import HOTKEY_ACTIONS, HotkeyAction
 from .hotkey_settings import display_hotkey
 from .logger import get_logger
@@ -13,6 +13,8 @@ from .logger import get_logger
 SaveHotkeys = Callable[[dict[str, str]], None]
 
 _ACCENT = "#DB4241"
+_MUTED = "#62626A"
+_SURFACE = "#F7F7F8"
 
 
 class HotkeySettingsWindow:
@@ -115,7 +117,7 @@ def _make_record_command(
     setting_key: str,
     captures: dict[str, Any],
     platform: str,
-    error_setter: Callable[[str], None],
+    status_setter: Callable[..., None],
 ) -> Callable[[], None]:
     """Build the per-row Record handler.
 
@@ -132,14 +134,14 @@ def _make_record_command(
     def on_captured(combo: str) -> None:
         def apply() -> None:
             value.set(display_hotkey(combo, platform=platform))
-            error_setter("")
+            status_setter("")
             restore()
 
         root.after(0, apply)
 
     def on_cancelled() -> None:
         def apply() -> None:
-            error_setter("No mouse button detected. Try again, or type a shortcut.")
+            status_setter("No mouse button detected. Try again, or type a shortcut.")
             restore()
 
         root.after(0, apply)
@@ -156,11 +158,14 @@ def _make_record_command(
             capture.start()
         except Exception:
             get_logger(__name__).exception("Mouse capture could not start.")
-            error_setter("Mouse capture is unavailable on this system.")
+            status_setter("Mouse capture is unavailable on this system.")
             return
         captures[setting_key] = capture
         button.configure(text="Press a button...")
-        error_setter("Press a mouse button now. Left click needs a modifier.")
+        status_setter(
+            "Press a mouse button now. Left click needs a modifier.",
+            is_error=False,
+        )
 
     return start
 
@@ -176,32 +181,51 @@ def _run_tk_dialog(
     from tkinter import ttk
 
     root = tk.Tk()
-    root.title(f"{APP_NAME} Settings — Hotkeys")
+    root.title(f"{APP_NAME} Settings - Hotkeys")
     root.resizable(False, False)
-    root.configure(bg="#F7F7F8")
+    root.configure(bg=_SURFACE)
+    apply_tk_app_icon(root)
 
-    frame = tk.Frame(root, bg="#F7F7F8", padx=24, pady=22)
+    frame = tk.Frame(root, bg=_SURFACE, padx=24, pady=22)
     frame.grid(row=0, column=0, sticky="nsew")
 
     tk.Label(
         frame,
         text="Hotkey settings",
-        bg="#F7F7F8",
+        bg=_SURFACE,
         fg="#1E1E22",
         font=("Segoe UI", 16, "bold"),
         anchor="w",
-    ).grid(row=0, column=0, columnspan=2, sticky="w")
+    ).grid(row=0, column=0, columnspan=3, sticky="w")
     tk.Label(
         frame,
         text=(
             "Choose a shortcut, type one such as Ctrl + Alt + Space, or press "
             "Record and click a mouse button."
         ),
-        bg="#F7F7F8",
-        fg="#62626A",
+        bg=_SURFACE,
+        fg=_MUTED,
         font=("Segoe UI", 9),
         anchor="w",
-    ).grid(row=1, column=0, columnspan=2, sticky="w", pady=(4, 18))
+    ).grid(row=1, column=0, columnspan=3, sticky="w", pady=(4, 18))
+
+    status = tk.StringVar(value="")
+    status_label = tk.Label(
+        frame,
+        textvariable=status,
+        bg=_SURFACE,
+        fg=_ACCENT,
+        font=("Segoe UI", 9),
+        justify="left",
+        wraplength=450,
+        anchor="w",
+    )
+
+    def set_status(message: str, *, is_error: bool = True) -> None:
+        # Hints and failures share the one line, so its color has to say which
+        # of the two the reader is looking at.
+        status.set(message)
+        status_label.configure(fg=_ACCENT if is_error else _MUTED)
 
     values: dict[str, tk.StringVar] = {}
     captures: dict[str, Any] = {}
@@ -209,7 +233,7 @@ def _run_tk_dialog(
         tk.Label(
             frame,
             text=action.label_for_favorites(language_favorites),
-            bg="#F7F7F8",
+            bg=_SURFACE,
             fg="#2B2B30",
             font=("Segoe UI", 9),
             anchor="w",
@@ -247,33 +271,23 @@ def _run_tk_dialog(
                 action.setting_key,
                 captures,
                 platform,
-                error_setter=lambda message: error.set(message),
+                status_setter=set_status,
             )
         )
 
-    error = tk.StringVar(value="")
-    tk.Label(
-        frame,
-        textvariable=error,
-        bg="#F7F7F8",
-        fg=_ACCENT,
-        font=("Segoe UI", 9),
-        justify="left",
-        wraplength=450,
-        anchor="w",
-    ).grid(
+    status_label.grid(
         row=len(HOTKEY_ACTIONS) + 2,
         column=0,
-        columnspan=2,
+        columnspan=3,
         sticky="ew",
         pady=(12, 4),
     )
 
-    actions = tk.Frame(frame, bg="#F7F7F8")
+    actions = tk.Frame(frame, bg=_SURFACE)
     actions.grid(
         row=len(HOTKEY_ACTIONS) + 3,
         column=0,
-        columnspan=2,
+        columnspan=3,
         sticky="e",
         pady=(12, 0),
     )
@@ -290,7 +304,7 @@ def _run_tk_dialog(
         try:
             on_save({key: value.get() for key, value in values.items()})
         except Exception as exc:
-            error.set(str(exc) or "The hotkey settings could not be saved.")
+            set_status(str(exc) or "The hotkey settings could not be saved.")
             return
         close()
 
@@ -343,7 +357,7 @@ def _run_macos_dialog(
     alert = AppKit.NSAlert.alloc().init()
     alert.setMessageText_("Hotkey settings")
     alert.setInformativeText_(
-        "Choose a shortcut or type one, such as Control + Option + Space."
+        "Choose a shortcut or type one, such as Control + Shift + Space."
     )
     alert.addButtonWithTitle_("Save hotkeys")
     alert.addButtonWithTitle_("Cancel")

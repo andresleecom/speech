@@ -19,12 +19,12 @@ from .audio_inputs import (
     list_audio_input_devices,
     refresh_audio_device_table,
 )
-from .branding import APP_NAME
+from .branding import APP_NAME, IDLE_ICON_COLOR, app_icon_image
 from .hotkey_settings import display_hotkey
 from .languages import language_name, tray_language_modes
 
 _STATUS_COLORS = {
-    "Idle": (128, 128, 128, 255),
+    "Idle": IDLE_ICON_COLOR,
     "Recording": (220, 38, 38, 255),
     "Testing microphone": (14, 116, 144, 255),
     "Transcribing": (245, 158, 11, 255),
@@ -550,14 +550,8 @@ class TrayApp:
         return tooltip[: _TOOLTIP_MAX_LENGTH - 3] + "..."
 
     def _make_icon_image(self) -> Any:
-        from PIL import Image, ImageDraw
-
         color = _STATUS_COLORS.get(self._status, _STATUS_COLORS["Idle"])
-        image = Image.new("RGBA", (64, 64), (0, 0, 0, 0))
-        draw = ImageDraw.Draw(image)
-        draw.ellipse((8, 8, 56, 56), fill=color)
-        draw.ellipse((8, 8, 56, 56), outline=(255, 255, 255, 255), width=3)
-        return image
+        return app_icon_image(color=color)
 
     def _update_menu(self) -> None:
         with self._ui_lock:

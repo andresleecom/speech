@@ -11,6 +11,8 @@ from winwhisper.config import (
     load_settings_report,
     save_settings,
 )
+from winwhisper.hotkey_actions import default_hotkeys
+from winwhisper.hotkey_settings import normalize_hotkey_profile
 
 
 def test_defaults_when_no_file_exists(monkeypatch, tmp_path):
@@ -30,9 +32,34 @@ def test_defaults_when_no_file_exists(monkeypatch, tmp_path):
     assert (tmp_path / "settings.json").exists()
 
 
-def test_default_force_language_hotkeys_avoid_altgr_and_macos_option():
-    assert DEFAULT_HOTKEYS["force_english"] == "<ctrl>+<shift>+e"
-    assert DEFAULT_HOTKEYS["force_spanish"] == "<ctrl>+<shift>+s"
+def test_new_profiles_ship_without_quick_language_shortcuts():
+    # Ctrl+Shift+E and Ctrl+Shift+S belong to editors, browsers, and Word.
+    assert DEFAULT_HOTKEYS["force_english"] == ""
+    assert DEFAULT_HOTKEYS["force_spanish"] == ""
+    assert DEFAULT_HOTKEYS["force_language_3"] == ""
+
+
+def test_toggle_default_avoids_the_macos_input_source_switcher():
+    assert default_hotkeys("win32")["toggle_recording"] == "<ctrl>+<alt>+<space>"
+    assert default_hotkeys("linux")["toggle_recording"] == "<ctrl>+<alt>+<space>"
+    assert default_hotkeys("darwin")["toggle_recording"] == "<ctrl>+<shift>+<space>"
+
+
+def test_saved_hotkeys_survive_a_default_change(monkeypatch, tmp_path):
+    monkeypatch.setenv("WINWHISPER_APPDATA_DIR", str(tmp_path))
+    saved = {
+        "toggle_recording": "<ctrl>+<alt>+<space>",
+        "force_english": "<ctrl>+<shift>+e",
+        "force_spanish": "<ctrl>+<shift>+s",
+    }
+    (tmp_path / "settings.json").write_text(
+        json.dumps({"hotkeys": saved}), encoding="utf-8"
+    )
+
+    settings = load_settings()
+
+    assert settings.hotkeys == saved
+    assert normalize_hotkey_profile(settings.hotkeys, platform="win32") == saved
 
 
 def test_settings_accept_every_catalog_language_and_normalize_picker_labels():

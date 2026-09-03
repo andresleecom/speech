@@ -567,3 +567,15 @@ def test_message_loop_survives_foreign_argtypes_clobber():
     assert fired == ["toggle", "toggle"]
     assert manager._thread is not None and manager._thread.is_alive()
     manager.stop()
+
+
+@pytest.mark.parametrize("platform", ["win32", "linux", "darwin"])
+def test_default_profile_registers_only_the_toggle(platform):
+    from winwhisper.hotkey_actions import default_hotkeys
+
+    manager = HotkeyManager(default_hotkeys(platform), lambda action: None)
+
+    # The quick-language actions ship disabled, so nothing else is requested.
+    assert manager._requested_combos == (
+        default_hotkeys(platform)["toggle_recording"],
+    )

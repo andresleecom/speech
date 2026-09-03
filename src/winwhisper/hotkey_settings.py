@@ -84,6 +84,33 @@ _TRIGGER_LABELS = {
     "numpad_plus": "Numpad +",
     "numpad_minus": "Numpad -",
 }
+# Key names pynput reports on the Linux (X11) listener backend. Anything else
+# would be saved happily and then never fire.
+_LINUX_NAMED_TRIGGERS = frozenset(
+    {
+        "space",
+        "enter",
+        "tab",
+        "esc",
+        "backspace",
+        "delete",
+        "insert",
+        "home",
+        "end",
+        "page_up",
+        "page_down",
+        "up",
+        "down",
+        "left",
+        "right",
+        "numpad_plus",
+        "numpad_minus",
+        "numpad_multiply",
+        "numpad_divide",
+        "numpad_decimal",
+        *(f"numpad{digit}" for digit in range(10)),
+    }
+)
 _DISABLED_VALUES = {"", "disabled", "none", "off"}
 _LEGACY_MACOS_DEFAULTS = {
     "force_english": ("<ctrl>+<alt>+e", "<ctrl>+<shift>+e"),
@@ -140,10 +167,14 @@ def normalize_hotkey_input(value: str, *, platform: str | None = None) -> str | 
     if is_mouse_trigger(trigger):
         return _normalize_mouse_combo(trigger, modifiers)
 
-    if platform == "darwin":
+    if platform == "darwin" or _is_linux(platform):
+        # The listener backends report these keys under pynput's names; the
+        # Windows spelling would never match an event there.
         trigger = {"pageup": "page_up", "pagedown": "page_down"}.get(
             trigger, trigger
         )
+
+    if platform == "darwin":
         if "alt" in modifiers and len(trigger) == 1:
             raise HotkeyConfigurationError(
                 "Option with a letter or number changes across keyboard layouts. "
@@ -175,6 +206,13 @@ def normalize_hotkey_profile(
     platform: str | None = None,
     language_favorites: object = None,
 ) -> dict[str, str]:
+    """Validate a whole hotkey profile.
+
+    Saved values are never replaced by defaults: an action missing from
+    ``values`` stays missing, which is how an action is disabled. Only a brand
+    new profile picks up ``default_hotkeys``, so changing a default cannot move
+    a shortcut an existing user already relies on.
+    """
     platform = platform or sys.platform
     unknown = set(values) - set(HOTKEY_ACTION_BY_KEY)
     if unknown:
@@ -259,15 +297,36 @@ def _plain_token(value: str) -> str:
     return re.sub(r"[\s_-]", "", token)
 
 
+def _is_linux(platform: str) -> bool:
+    return platform.startswith("linux")
+
+
+def is_linux_supported_trigger(trigger: str) -> bool:
+    """Whether the Linux listener backend can report this trigger key."""
+    if len(trigger) == 1 and trigger.isascii():
+        return True
+    if trigger in _LINUX_NAMED_TRIGGERS:
+        return True
+    if trigger.startswith("f") and trigger[1:].isdigit():
+        return 1 <= int(trigger[1:]) <= 20
+    return False
+
+
 def _validate_platform_trigger(combo: str, trigger: str, platform: str) -> None:
     if platform == "win32":
         combo_to_hotkey(combo)
         return
-    if platform != "darwin":
+    if platform == "darwin":
+        if not is_macos_supported_trigger(trigger):
+            raise HotkeyConfigurationError(
+                f"Unsupported macOS hotkey trigger key: {trigger!r}"
+            )
         return
-    if not is_macos_supported_trigger(trigger):
+    if _is_linux(platform) and not is_linux_supported_trigger(trigger):
         raise HotkeyConfigurationError(
-            f"Unsupported macOS hotkey trigger key: {trigger!r}"
+            f"Unsupported Linux hotkey trigger key: {trigger!r}. Use a letter, "
+            "a number, a function key up to F20, or a named key such as Space, "
+            "Enter, Page Up, or an arrow key."
         )
 
 

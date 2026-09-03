@@ -16,6 +16,7 @@
 - D09 Anything touching device selection is validated with a Bluetooth headset toggle before merge (lesson from 0.1.19.41).
 - D10 Task 01 executor = codex gpt-5.6-sol (executor-switch: grok-4.5 API returned 500 "service temporarily unavailable" on two consecutive dispatches).
 - D11 pystray caches the Win32 popup menu and only rebuilds it on `update_menu`, so "rebuilt on open" is implemented as a 2 s device-signature poll (private `ctypes.WinDLL("winmm")`, `waveInGetNumDevs` plus `waveInGetDevCapsW`, about 0.4 ms) that calls `refresh_menu()` when the set of input devices changes; the PortAudio mapper pseudo-devices are hidden from the menu.
+- D12 Task 04 executor = Opus subagent (executor-switch: grok-4.5 API 500 and codex backend 404 on the same dispatch); packets, HARD RULES and the pass gate are unchanged.
 
 ## Constraints
 - Never set argtypes on `ctypes.windll.*`; private `ctypes.WinDLL` handles only. No new dependencies. Markdown: one sentence per line, no em dashes. Run Python as `env -u SSLKEYLOGFILE .venv/Scripts/python.exe`.
@@ -30,7 +31,7 @@
 | 01 | Microphone menu: one entry per physical mic, rebuilt on open, refresh-aware | src/winwhisper/audio_inputs.py, tray.py, main.py, tests/test_audio_inputs.py, test_tray.py, test_overlay_flow.py, docs/configuration.md | build+tests+flow | done |
 | 02 | Windows: do not paste when the target window changed | src/winwhisper/focus.py, main.py, tests/test_focus.py, test_overlay_flow.py | build+tests+flow | done |
 | 03 | Push-to-talk on Windows keyboard hotkeys | src/winwhisper/hotkeys.py, hotkey_actions.py, main.py, tests/test_hotkeys.py, test_overlay_flow.py, docs | build+tests+flow | done |
-| 04 | Hotkey editor polish and conflict-free defaults | src/winwhisper/hotkey_actions.py, hotkey_settings.py, hotkey_settings_window.py, config.py, tests, docs | build+tests+flow | pending |
+| 04 | Hotkey editor polish and conflict-free defaults | src/winwhisper/hotkey_actions.py, hotkey_settings.py, hotkey_settings_window.py, config.py, tests, docs | build+tests+flow | done |
 | 05 | Hotkey editor chord capture and OEM keys | src/winwhisper/hotkey_settings_window.py, hotkey_settings.py, hotkeys.py, main.py, tests | build+tests+flow | pending |
 | 06 | Text processing fixes and version 0.1.21 | src/winwhisper/formatter.py, main.py, config.py, tray.py, pyproject.toml, tests, docs | build+tests+flow | pending |
 

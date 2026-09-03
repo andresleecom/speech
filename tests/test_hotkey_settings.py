@@ -154,3 +154,67 @@ def test_windows_named_trigger_labels_round_trip(stored, expected):
     label = display_hotkey(stored, platform="win32")
 
     assert normalize_hotkey_input(label, platform="win32") == expected
+
+
+def test_toggle_suggestions_drop_keys_apps_already_own():
+    from winwhisper.hotkey_actions import HOTKEY_ACTION_BY_KEY
+
+    toggle = HOTKEY_ACTION_BY_KEY["toggle_recording"]
+
+    for platform in ("win32", "darwin", "linux"):
+        suggestions = toggle.suggestions(platform)
+        # F10 opens menus and F11 toggles full screen almost everywhere.
+        assert "<f10>" not in suggestions
+        assert "<f11>" not in suggestions
+        assert "<f8>" in suggestions
+
+
+def test_linux_accepts_page_up_and_rejects_keys_pynput_cannot_report():
+    assert (
+        normalize_hotkey_input("Ctrl + Alt + Page Up", platform="linux")
+        == "<ctrl>+<alt>+<page_up>"
+    )
+    assert (
+        normalize_hotkey_input("<ctrl>+<alt>+<pageup>", platform="linux")
+        == "<ctrl>+<alt>+<page_up>"
+    )
+
+    for misspelling in ("Ctrl + Alt + Page Upp", "Ctrl + Alt + PgUpp"):
+        with pytest.raises(HotkeyConfigurationError, match="Unsupported Linux"):
+            normalize_hotkey_input(misspelling, platform="linux")
+
+    with pytest.raises(HotkeyConfigurationError, match="Unsupported Linux"):
+        normalize_hotkey_input("Ctrl + Alt + F21", platform="linux")
+
+
+def test_linux_keeps_the_keys_the_listener_backend_reports():
+    assert normalize_hotkey_input("Ctrl + Alt + Space", platform="linux") == (
+        "<ctrl>+<alt>+<space>"
+    )
+    assert normalize_hotkey_input("F8", platform="linux") == "<f8>"
+    assert normalize_hotkey_input("Ctrl + Shift + R", platform="linux") == (
+        "<ctrl>+<shift>+r"
+    )
+    assert normalize_hotkey_input("Ctrl + Shift + Numpad +", platform="linux") == (
+        "<ctrl>+<shift>+<numpad_plus>"
+    )
+
+
+def test_saved_profile_with_the_old_defaults_is_left_alone():
+    saved = {
+        "toggle_recording": "<ctrl>+<alt>+<space>",
+        "force_english": "<ctrl>+<shift>+e",
+        "force_spanish": "<ctrl>+<shift>+s",
+    }
+
+    assert normalize_hotkey_profile(dict(saved), platform="win32") == saved
+
+
+def test_normalize_profile_never_substitutes_a_default_for_a_saved_value():
+    profile = normalize_hotkey_profile(
+        {"toggle_recording": "Ctrl + Shift + F9"},
+        platform="win32",
+    )
+
+    # The absent actions stay absent, and the saved toggle keeps its combo.
+    assert profile == {"toggle_recording": "<ctrl>+<shift>+<f9>"}
