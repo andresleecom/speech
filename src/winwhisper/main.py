@@ -24,6 +24,7 @@ from .config import Settings, app_data_dir, load_settings_report, save_settings
 from .diagnostics import run_diagnostics as run_diagnostics_report
 from .focus import (
     ScreenPoint,
+    foreground_matches,
     get_cursor_anchor,
     get_foreground_window,
     get_window_process_name,
@@ -1266,6 +1267,22 @@ class AppController:
             self.logger.info("Restoring focus and pasting transcription...")
             paste_started = time.perf_counter()
             restored_target = self._restore_paste_target()
+            if (
+                sys.platform == "win32"
+                and not restored_target
+                and foreground_matches(self._paste_target_window) is False
+            ):
+                copy_text_to_clipboard(cleaned)
+                self.logger.warning(
+                    "Target window changed; text left on the clipboard."
+                )
+                self.notify(
+                    APP_NAME,
+                    "Target window changed. The text is on the clipboard; "
+                    "press Ctrl+V to paste it.",
+                )
+                paste_ms = int((time.perf_counter() - paste_started) * 1000)
+                return
             if sys.platform.startswith("linux") and not restored_target:
                 shortcut = self._paste_shortcut()
                 if copy_text_to_clipboard(cleaned):

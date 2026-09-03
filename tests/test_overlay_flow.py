@@ -1213,6 +1213,55 @@ def test_failed_windows_focus_restore_still_attempts_paste(monkeypatch, tmp_path
     inserted: list[tuple[str, str]] = []
     controller = make_controller(monkeypatch, tmp_path, [], inserted)
     monkeypatch.setattr(main_module, "restore_foreground_window", lambda _hwnd: False)
+    monkeypatch.setattr(main_module, "foreground_matches", lambda hwnd: hwnd == 777)
+
+    controller.toggle()
+    controller.toggle()
+
+    assert inserted == [("Hola mundo", "ctrl_v")]
+
+
+def test_changed_windows_foreground_copies_without_pasting(
+    monkeypatch,
+    tmp_path,
+    caplog,
+):
+    copied: list[str] = []
+    inserted: list[tuple[str, str]] = []
+    controller = make_controller(monkeypatch, tmp_path, [], inserted)
+    monkeypatch.setattr(main_module, "restore_foreground_window", lambda _hwnd: False)
+    monkeypatch.setattr(main_module, "foreground_matches", lambda _hwnd: False)
+    monkeypatch.setattr(
+        main_module,
+        "copy_text_to_clipboard",
+        lambda text: copied.append(text) or True,
+    )
+
+    with caplog.at_level("WARNING"):
+        controller.toggle()
+        controller.toggle()
+
+    assert copied == ["Hola mundo"]
+    assert inserted == []
+    assert controller.tray.notifications == [
+        (
+            "Speech",
+            "Target window changed. The text is on the clipboard; "
+            "press Ctrl+V to paste it.",
+        )
+    ]
+    assert "Target window changed; text left on the clipboard." in caplog.text
+
+
+def test_non_windows_skips_foreground_guard(monkeypatch, tmp_path):
+    inserted: list[tuple[str, str]] = []
+    controller = make_controller(monkeypatch, tmp_path, [], inserted)
+    monkeypatch.setattr(sys, "platform", "linux")
+
+    def unexpected_foreground_check(_hwnd):
+        raise AssertionError("Windows foreground guard should not run")
+
+    monkeypatch.setattr(main_module, "foreground_matches", unexpected_foreground_check)
 
     controller.toggle()
     controller.toggle()
