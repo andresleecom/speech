@@ -22,4 +22,4 @@
 ## Tasks
 | # | Task | Scope (files/areas) | Bar | Status |
 |---|------|---------------------|-----|--------|
-| 01 | Prompted single-pass detection, VAD gates, trailing stop phrase, per-phrase language, dogfood logging | src/winwhisper/wake_word.py, config.py, main.py, tests/test_wake_word.py, test_config.py, test_overlay_flow.py, docs/configuration.md, README.md | build+tests+flow | pending |
+| 01 | Prompted single-pass detection, VAD gates, trailing stop phrase, per-phrase language, dogfood logging | src/winwhisper/wake_word.py, config.py, main.py, tests/test_wake_word.py, test_config.py, test_overlay_flow.py, docs/configuration.md, README.md | build+tests+flow | done |

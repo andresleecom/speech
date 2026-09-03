@@ -18,7 +18,7 @@ Windows 10/11 · macOS · Linux (x86_64, X11)
 ## Why Speech
 
 - **Private by design.** Recording and transcription run locally with faster-whisper.
-- **Hands-free if you like.** Say "hey speech" (or "oye speech") to start dictating and "stop" (or just pause) to paste — hotkeys and mouse still work.
+- **Hands-free if you like.** Say "hey speech" (or "oye speech") to start dictating and "stop" as the last word before a pause (or just go quiet) to paste - hotkeys and mouse still work.
 - **Works where you work.** Dictate into browsers, documents, chat apps, IDEs, and terminals.
 - **Speaks your language.** Use automatic detection or choose from 100 supported languages.
 - **Fits your workflow.** Pick a microphone, pin three language favorites, customize hotkeys, and choose your cleanup level.
@@ -67,7 +67,10 @@ Profiles saved before this change keep the shortcuts they already have.
 
 ### Hands-free wake word
 
-Enable **Wake word ("hey speech" / "oye speech")** from the tray menu and dictation needs no keyboard at all: say "hey speech" (English) or "oye speech" (Spanish) to start recording, then say "stop" — or simply go quiet for a few seconds — to transcribe and paste at the cursor. The spoken stop word is trimmed from the pasted text. Detection runs locally on your configured device (CUDA supported); hotkeys and the recording orb keep working in parallel. The phrases and silence timeout are configurable; see [Configuration](docs/configuration.md).
+Enable **Wake word ("hey speech" / "oye speech")** from the tray menu and dictation needs no keyboard at all: say "hey speech" (English) or "oye speech" (Spanish) to start recording in that language, then say "stop" as the last word before a pause - or simply go quiet for a few seconds - to transcribe and paste at the cursor.
+The spoken stop word is trimmed from the pasted text.
+Detection runs locally on your configured device (CUDA supported); hotkeys and the recording orb keep working in parallel.
+The phrases, per-phrase languages, and silence timeout are configurable; see [Configuration](docs/configuration.md).
 
 ![Speech dictation on Linux/X11: press Ctrl+Alt+Space, speak, and the transcription appears at the cursor](docs/linux.gif)
 

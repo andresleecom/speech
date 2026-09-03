@@ -59,6 +59,11 @@ class Settings(BaseModel):
     wake_phrases: list[str] = Field(
         default_factory=lambda: ["hey speech", "oye speech"]
     )
+    # Language override for the take started by each wake phrase. Absent
+    # phrases keep the configured language_mode. Keys are normalised phrases.
+    wake_phrase_languages: dict[str, str] = Field(
+        default_factory=lambda: {"hey speech": "en", "oye speech": "es"}
+    )
     stop_phrase: str = "stop"
     wake_silence_timeout_seconds: float = 3.0
     # tiny is the safe default for CPU-only machines. On a GPU, base/small
@@ -113,6 +118,30 @@ class Settings(BaseModel):
         if not phrases:
             raise ValueError(f"At least one wake phrase is required: {value!r}")
         return phrases
+
+    @field_validator("wake_phrase_languages", mode="before")
+    @classmethod
+    def validate_wake_phrase_languages(cls, value: object) -> dict[str, str]:
+        from .wake_word import normalize_phrase
+
+        if value is None:
+            return {"hey speech": "en", "oye speech": "es"}
+        if not isinstance(value, dict):
+            raise ValueError(
+                f"wake_phrase_languages must be a mapping of phrase to language: {value!r}"
+            )
+        result: dict[str, str] = {}
+        for raw_phrase, raw_language in value.items():
+            phrase = normalize_phrase(raw_phrase)
+            if not phrase:
+                continue
+            normalized = normalize_language_mode(raw_language)
+            if normalized is None or normalized == AUTO_LANGUAGE_MODE:
+                raise ValueError(
+                    f"Unsupported wake phrase language: {raw_language!r}"
+                )
+            result[phrase] = normalized
+        return result
 
     @field_validator("stop_phrase", mode="before")
     @classmethod

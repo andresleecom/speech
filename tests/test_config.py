@@ -31,6 +31,7 @@ def test_defaults_when_no_file_exists(monkeypatch, tmp_path):
     assert settings.audio_input_device_host_api is None
     assert settings.language_favorites == ["en", "es", None]
     assert settings.custom_vocabulary == []
+    assert settings.wake_phrase_languages == {"hey speech": "en", "oye speech": "es"}
     assert (tmp_path / "settings.json").exists()
 
 

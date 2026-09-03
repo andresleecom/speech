@@ -29,9 +29,14 @@ WAKE_COOLDOWN_SECONDS = 2.0
 # Stop-word monitoring while a hands-free recording is active.
 STOP_POLL_SECONDS = 1.0
 STOP_TAIL_SECONDS = 2.5
+# The stop phrase is only evaluated once the user has paused after speaking.
+STOP_TRAILING_QUIET_SECONDS = 0.5
 
 # RMS threshold (0..1, int16 scale) separating speech from background noise.
 SPEECH_LEVEL_THRESHOLD = 0.01
+
+# Silero VAD: ignore clicks shorter than this before calling the tiny model.
+VAD_MIN_SPEECH_MS = 250
 
 # Digital gain applied before detection. Some microphones deliver a very low
 # signal (e.g. broadcast dynamics at modest gain); the tiny model and its VAD
@@ -75,12 +80,34 @@ def _levenshtein_at_most(a: str, b: str, max_dist: int) -> bool:
     return row[-1] <= max_dist
 
 
-def phrase_in_text(phrase: str, text: str) -> bool:
+def _words_match_fuzzy(wanted: str, heard: str) -> bool:
+    """Exact match, or 1-edit fuzziness for words of five or more letters."""
+    return wanted == heard or (
+        len(wanted) >= 5 and _levenshtein_at_most(wanted, heard, 1)
+    )
+
+
+def _words_match_with_short_slip(wanted: str, heard: str) -> bool:
+    """Existing fuzzy rule, plus 1-edit for words of three or four letters."""
+    if _words_match_fuzzy(wanted, heard):
+        return True
+    return 3 <= len(wanted) <= 4 and _levenshtein_at_most(wanted, heard, 1)
+
+
+def phrase_in_text(
+    phrase: str, text: str, *, allow_short_slip: bool = False
+) -> bool:
     """Whole-word substring match of a normalized phrase inside text.
 
     Besides exact matching, tolerates a one-letter mishearing in words of
-    four or more characters ("hey speach", "hey speec") — the tiny wake-word
-    model's most common mistakes. Short words like "hey" must match exactly.
+    five or more characters ("hey speach", "hey speec") - the tiny wake-word
+    model's most common mistakes. Short words like "hey" and "stop" must
+    match exactly by default, so "stop" does not match "step" or "shop".
+
+    When ``allow_short_slip`` is True and the phrase has two or more words,
+    a three- or four-letter word may also slip by one edit, but only if at
+    least one word in the candidate window matches exactly ("oje speech"
+    for "oye speech"; not "oje spich").
     """
     needle = normalize_phrase(phrase)
     haystack = normalize_phrase(text)
@@ -91,15 +118,39 @@ def phrase_in_text(phrase: str, text: str) -> bool:
 
     needle_words = needle.split()
     words = haystack.split()
+    use_short_slip = allow_short_slip and len(needle_words) >= 2
     for start in range(0, len(words) - len(needle_words) + 1):
         window = words[start : start + len(needle_words)]
-        if all(
-            wanted == heard
-            or (len(wanted) >= 4 and _levenshtein_at_most(wanted, heard, 1))
+        if use_short_slip:
+            pairs = list(zip(needle_words, window))
+            if all(
+                _words_match_with_short_slip(wanted, heard)
+                for wanted, heard in pairs
+            ) and any(wanted == heard for wanted, heard in pairs):
+                return True
+        elif all(
+            _words_match_fuzzy(wanted, heard)
             for wanted, heard in zip(needle_words, window)
         ):
             return True
     return False
+
+
+def phrase_is_trailing(phrase: str, text: str) -> bool:
+    """True when the phrase is the last words of the text (same fuzziness)."""
+    needle = normalize_phrase(phrase)
+    haystack = normalize_phrase(text)
+    if not needle or not haystack:
+        return False
+    needle_words = needle.split()
+    words = haystack.split()
+    if len(words) < len(needle_words):
+        return False
+    window = words[-len(needle_words) :]
+    return all(
+        _words_match_fuzzy(wanted, heard)
+        for wanted, heard in zip(needle_words, window)
+    )
 
 
 def trim_trailing_phrase(text: str, phrase: str) -> str:
@@ -141,6 +192,46 @@ def boost_audio(audio_int16: Any, gain: float = WAKE_GAIN) -> Any:
 
     samples = np.asarray(audio_int16, dtype="float32") * gain
     return np.clip(samples, -32768, 32767).astype("int16")
+
+
+def _audio_to_float32(audio_int16: Any) -> Any:
+    import numpy as np
+
+    return np.asarray(audio_int16, dtype="int16").reshape(-1).astype("float32") / INT16_PEAK
+
+
+def _speech_timestamps(audio_int16: Any) -> list[dict[str, Any]]:
+    """Silero VAD speech segments for a 16 kHz int16 buffer (already boosted)."""
+    from faster_whisper.vad import VadOptions, get_speech_timestamps
+
+    audio_float = _audio_to_float32(audio_int16)
+    if audio_float.size == 0:
+        return []
+    return get_speech_timestamps(
+        audio_float,
+        vad_options=VadOptions(min_speech_duration_ms=VAD_MIN_SPEECH_MS),
+        sampling_rate=SAMPLE_RATE,
+    )
+
+
+def has_speech(audio_int16: Any) -> bool:
+    """True when Silero VAD finds at least one speech segment in the buffer."""
+    try:
+        return bool(_speech_timestamps(audio_int16))
+    except Exception:
+        return False
+
+
+def phrases_initial_prompt(phrases: list[str]) -> str:
+    """Build an initial_prompt from wake/stop phrases as capitalised sentences."""
+    parts: list[str] = []
+    for phrase in phrases:
+        normalized = normalize_phrase(phrase)
+        if not normalized:
+            continue
+        capitalised = normalized[:1].upper() + normalized[1:]
+        parts.append(f"{capitalised}.")
+    return " ".join(parts)
 
 
 class RollingBuffer:
@@ -210,11 +301,10 @@ class WhisperPhraseDetector:
     Follows the app's device/compute_type (e.g. CUDA) for fast detection and
     falls back to CPU int8 if the requested device cannot load the model.
 
-    ``languages`` (e.g. the user's language favorites) matter because
-    auto-detection can lock onto the wrong language for short phrases: a
-    Spanish "oye speech" auto-detected as English comes out as "OJ speech".
-    So each window is tried with auto-detection first and then with every
-    hint until a transcript matches one of the target phrases.
+    Each window is transcribed once with the target phrases as
+    ``initial_prompt`` so short multilingual cues ("oye speech") land
+    correctly without a language-hint retry loop. ``languages`` is still
+    accepted for constructor compatibility but ignored.
     """
 
     def __init__(
@@ -227,7 +317,7 @@ class WhisperPhraseDetector:
         self._model: Any | None = None
         self._device = device
         self._compute_type = compute_type
-        self._languages = list(languages or ())
+        self._languages = list(languages or ())  # kept, unused
         self._model_size = model_size
         self._lock = threading.Lock()
         self._logger = get_logger(__name__)
@@ -241,38 +331,43 @@ class WhisperPhraseDetector:
             return ""
         audio_float = audio.astype("float32") / INT16_PEAK
         with self._lock:
-            return self._run_with_fallback(audio_float, language=None)
+            return self._run_with_fallback(audio_float)
 
     def detect_phrase(self, audio_int16: Any, phrases: list[str]) -> str | None:
-        """Return the first transcript matching any of the phrases, or None.
+        """Return the matched phrase after one prompted pass, or None."""
+        matched, _transcript = self.detect_transcript(audio_int16, phrases)
+        return matched
 
-        Tries auto-detection first, then each language hint, stopping at the
-        first match — English speech matches on the auto pass (one
-        inference), other languages on their hint pass.
-        """
+    def detect_transcript(
+        self, audio_int16: Any, phrases: list[str]
+    ) -> tuple[str | None, str]:
+        """Return ``(matched_phrase | None, transcript)`` after one prompted pass."""
         import numpy as np
 
         audio = np.asarray(audio_int16, dtype="int16").reshape(-1)
         if audio.size < SAMPLE_RATE // 2:
-            return None
+            return None, ""
         audio_float = audio.astype("float32") / INT16_PEAK
+        prompt = phrases_initial_prompt(phrases)
         with self._lock:
-            for language in [None, *self._languages]:
-                transcript = self._run_with_fallback(audio_float, language=language)
-                if not transcript:
-                    continue
-                self._logger.debug(
-                    "Wake-word window heard %r (language=%s).",
-                    transcript[:120],
-                    language or "auto",
-                )
-                if any(phrase_in_text(phrase, transcript) for phrase in phrases):
-                    return transcript
-        return None
+            transcript = self._run_with_fallback(
+                audio_float, initial_prompt=prompt or None
+            )
+        if transcript:
+            self._logger.info("Wake-word window heard %r", transcript)
+            for phrase in phrases:
+                if phrase_in_text(phrase, transcript, allow_short_slip=True):
+                    return phrase, transcript
+        return None, transcript
 
-    def _run_with_fallback(self, audio_float: Any, language: str | None) -> str:
+    def _run_with_fallback(
+        self,
+        audio_float: Any,
+        language: str | None = None,
+        initial_prompt: str | None = None,
+    ) -> str:
         try:
-            return self._run_model(audio_float, language)
+            return self._run_model(audio_float, language, initial_prompt)
         except Exception:
             if (self._device, self._compute_type) == _CPU_FALLBACK:
                 raise
@@ -283,15 +378,25 @@ class WhisperPhraseDetector:
             )
             self._model = None
             self._device, self._compute_type = _CPU_FALLBACK
-            return self._run_model(audio_float, language)
+            return self._run_model(audio_float, language, initial_prompt)
 
-    def _run_model(self, audio_float: Any, language: str | None) -> str:
+    def _run_model(
+        self,
+        audio_float: Any,
+        language: str | None = None,
+        initial_prompt: str | None = None,
+    ) -> str:
         model = self._load_model()
         segments, _info = model.transcribe(
             audio_float,
             beam_size=1,
             vad_filter=True,
             language=language,
+            initial_prompt=initial_prompt,
+            condition_on_previous_text=False,
+            temperature=0.0,
+            compression_ratio_threshold=None,
+            log_prob_threshold=None,
         )
         return " ".join(
             segment_text
@@ -336,13 +441,13 @@ class WhisperPhraseDetector:
 
 
 class WakeWordListener:
-    """Always-on listener that fires ``on_wake`` when the wake phrase is heard."""
+    """Always-on listener that fires ``on_wake(phrase)`` when a wake phrase is heard."""
 
     def __init__(
         self,
         source: AudioSource,
         wake_phrases: list[str],
-        on_wake: Callable[[], None],
+        on_wake: Callable[[str], None],
         detector: WhisperPhraseDetector | None = None,
         poll_seconds: float = WAKE_POLL_SECONDS,
         cooldown_seconds: float = WAKE_COOLDOWN_SECONDS,
@@ -431,6 +536,8 @@ class WakeWordListener:
         level = audio_level(audio)
         if audio.size < SAMPLE_RATE or level < SPEECH_LEVEL_THRESHOLD:
             return
+        if not has_speech(audio):
+            return
         matched = self._detector.detect_phrase(audio, self._wake_phrases)
         if matched is None:
             return
@@ -439,10 +546,8 @@ class WakeWordListener:
             if now - self._last_hit_at < self._cooldown_seconds:
                 return
             self._last_hit_at = now
-        self._logger.info(
-            "Wake phrase heard (transcript=%r).", matched[:120]
-        )
-        self._on_wake()
+        self._logger.info("Wake phrase heard (phrase=%r).", matched)
+        self._on_wake(matched)
 
 
 class StopWordMonitor:
@@ -489,7 +594,8 @@ class StopWordMonitor:
 
     def _run(self) -> None:
         speech_seen = False
-        silence_seconds = 0.0
+        last_speech_at: float | None = None
+        quiet_samples = max(1, int(STOP_TRAILING_QUIET_SECONDS * SAMPLE_RATE))
         while not self._stop_event.wait(self._poll_seconds):
             try:
                 audio = self._recorder.recent_audio(self._tail_seconds)
@@ -501,25 +607,39 @@ class StopWordMonitor:
                 return
             try:
                 audio = boost_audio(audio)
-                level = audio_level(audio)
-                if level >= SPEECH_LEVEL_THRESHOLD:
+                now = time.monotonic()
+                segments = _speech_timestamps(audio)
+                if segments:
                     speech_seen = True
-                    silence_seconds = 0.0
-                    matched = self._detector.detect_phrase(audio, [self._stop_phrase])
-                    if matched is not None:
+                    last_end = int(segments[-1]["end"])
+                    silence_at_end = max(0.0, (int(audio.size) - last_end) / SAMPLE_RATE)
+                    last_speech_at = now - silence_at_end
+                elif speech_seen and last_speech_at is None:
+                    last_speech_at = now - self._tail_seconds
+
+                trailing = audio[-quiet_samples:] if audio.size else audio
+                trailing_quiet = audio_level(trailing) < SPEECH_LEVEL_THRESHOLD
+                if speech_seen and trailing_quiet:
+                    _matched, transcript = self._detector.detect_transcript(
+                        audio, [self._stop_phrase]
+                    )
+                    if phrase_is_trailing(self._stop_phrase, transcript):
                         self._logger.info(
-                            "Stop phrase heard (transcript=%r).", matched[:120]
+                            "Stop phrase heard (transcript=%r).", transcript[:120]
                         )
                         self._on_stop("phrase")
                         return
-                elif speech_seen:
-                    silence_seconds += self._poll_seconds
-                    if silence_seconds >= self._silence_timeout_seconds:
-                        self._logger.info(
-                            "Silence for %.1fs after speech; auto-stopping.",
-                            silence_seconds,
-                        )
-                        self._on_stop("silence")
-                        return
+
+                if (
+                    speech_seen
+                    and last_speech_at is not None
+                    and now - last_speech_at >= self._silence_timeout_seconds
+                ):
+                    self._logger.info(
+                        "Silence for %.1fs after speech; auto-stopping.",
+                        now - last_speech_at,
+                    )
+                    self._on_stop("silence")
+                    return
             except Exception:
                 self._logger.exception("Stop-word detection pass failed.")
