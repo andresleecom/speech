@@ -46,6 +46,9 @@ _TOGGLE_SUGGESTIONS = (
     "<f11>",
 )
 
+TOGGLE_ACTION = "toggle"
+TOGGLE_RELEASE_ACTION = "toggle_release"
+
 _MACOS_NAMED_TRIGGERS = frozenset(
     {
         "space",
@@ -78,7 +81,7 @@ def is_macos_supported_trigger(trigger: str) -> bool:
 HOTKEY_ACTIONS = (
     HotkeyAction(
         setting_key="toggle_recording",
-        dispatch_action="toggle",
+        dispatch_action=TOGGLE_ACTION,
         label="Start / stop recording",
         default_combo="<ctrl>+<alt>+<space>",
         windows_suggestions=_TOGGLE_SUGGESTIONS,

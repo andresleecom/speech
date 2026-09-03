@@ -55,6 +55,10 @@ If the API key is missing, the request fails, or it times out, Speech falls back
 
 ## Hotkeys
 
+Tap the dictation hotkey to toggle recording on or off.
+Hold the dictation hotkey for at least 500 ms and release it to stop and transcribe.
+Push-to-talk is available for Windows keyboard bindings only, while mouse bindings, macOS, and Linux remain toggle-only.
+
 | Action | Windows | macOS | Linux |
 | --- | --- | --- | --- |
 | Start or stop | `Ctrl+Alt+Space` | `Control+Option+Space` | `Ctrl+Alt+Space` |

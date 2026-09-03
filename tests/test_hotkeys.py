@@ -1,5 +1,7 @@
+import ctypes
 import os
 import sys
+import threading
 import types
 
 import pytest
@@ -282,6 +284,112 @@ def _describe_backend_key(key):
     if key in {"ctrl", "alt", "shift", "cmd"}:
         return "mod", key
     return "key", key
+
+
+class _FakeClock:
+    def __init__(self) -> None:
+        self.now = 0.0
+
+    def monotonic(self) -> float:
+        return self.now
+
+
+class _AdvancingCancel:
+    def __init__(self, clock: _FakeClock) -> None:
+        self.clock = clock
+
+    def is_set(self) -> bool:
+        return False
+
+    def wait(self, seconds: float) -> bool:
+        self.clock.now += seconds
+        return False
+
+
+class _FakeGetAsyncKeyState:
+    def __init__(self, is_down) -> None:
+        self._is_down = is_down
+        self.argtypes = None
+        self.restype = None
+
+    def __call__(self, vk: int) -> int:
+        return 0x8000 if self._is_down(vk) else 0
+
+
+def _run_fake_push_to_talk_poll(monkeypatch, release_at: float) -> list[str]:
+    import winwhisper.hotkeys as hotkeys_mod
+
+    clock = _FakeClock()
+    get_key_state = _FakeGetAsyncKeyState(lambda _vk: clock.now < release_at)
+    fake_user32 = types.SimpleNamespace(GetAsyncKeyState=get_key_state)
+    monkeypatch.setattr(ctypes, "WinDLL", lambda *_args, **_kwargs: fake_user32)
+    monkeypatch.setattr(hotkeys_mod.time, "monotonic", clock.monotonic)
+
+    actions: list[str] = []
+    manager = HotkeyManager({"toggle_recording": "<f8>"}, actions.append)
+    manager._dispatch = actions.append
+    cancel = _AdvancingCancel(clock)
+    manager._start_push_to_talk_poll = lambda vk: manager._poll_push_to_talk(
+        vk, cancel, clock.monotonic()
+    )
+
+    manager._handle_registered_hotkey("toggle", 0x77)
+    return actions
+
+
+def test_held_toggle_dispatches_release_after_trigger_goes_up(monkeypatch):
+    assert _run_fake_push_to_talk_poll(monkeypatch, 0.6) == [
+        "toggle",
+        "toggle_release",
+    ]
+
+
+def test_quick_toggle_release_dispatches_no_second_action(monkeypatch):
+    assert _run_fake_push_to_talk_poll(monkeypatch, 0.2) == ["toggle"]
+
+
+def test_stop_ends_push_to_talk_poll(monkeypatch):
+    started = threading.Event()
+    get_key_state = _FakeGetAsyncKeyState(lambda _vk: started.set() or True)
+    fake_user32 = types.SimpleNamespace(GetAsyncKeyState=get_key_state)
+    monkeypatch.setattr(ctypes, "WinDLL", lambda *_args, **_kwargs: fake_user32)
+    manager = HotkeyManager({"toggle_recording": "<f8>"}, lambda _action: None)
+
+    manager._start_push_to_talk_poll(0x77)
+    assert started.wait(1.0)
+    poll_thread = manager._push_to_talk_thread
+    assert poll_thread is not None
+
+    manager.stop()
+
+    assert poll_thread.is_alive() is False
+    assert manager._push_to_talk_thread is None
+
+
+def test_second_toggle_press_replaces_push_to_talk_poll(monkeypatch):
+    started = threading.Event()
+    get_key_state = _FakeGetAsyncKeyState(lambda _vk: started.set() or True)
+    fake_user32 = types.SimpleNamespace(GetAsyncKeyState=get_key_state)
+    monkeypatch.setattr(ctypes, "WinDLL", lambda *_args, **_kwargs: fake_user32)
+    manager = HotkeyManager({"toggle_recording": "<f8>"}, lambda _action: None)
+
+    try:
+        manager._start_push_to_talk_poll(0x77)
+        assert started.wait(1.0)
+        first_thread = manager._push_to_talk_thread
+        first_cancel = manager._push_to_talk_cancel
+        assert first_thread is not None
+        assert first_cancel is not None
+
+        started.clear()
+        manager._start_push_to_talk_poll(0x77)
+        assert started.wait(1.0)
+
+        assert first_cancel.is_set() is True
+        assert first_thread.is_alive() is False
+        assert manager._push_to_talk_thread is not first_thread
+    finally:
+        manager.stop()
 
 
 def test_backend_fires_on_full_chord():

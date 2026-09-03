@@ -37,7 +37,8 @@ from .hotkey_settings import (
     normalize_hotkey_profile,
 )
 from .hotkey_settings_window import HotkeySettingsWindow
-from .hotkeys import HotkeyManager
+from .hotkey_actions import TOGGLE_ACTION, TOGGLE_RELEASE_ACTION
+from .hotkeys import HotkeyManager, windows_modifier_state
 from .inserter import (
     PasteShortcut,
     copy_text_to_clipboard,
@@ -351,8 +352,19 @@ class AppController:
             recording,
             processing,
         )
-        if action == "toggle":
+        if action == TOGGLE_ACTION:
             self.toggle()
+            return
+        if action == TOGGLE_RELEASE_ACTION:
+            if recording and not processing:
+                self.logger.info("Stopping dictation action=push_to_talk_release.")
+                self._request_stop()
+            else:
+                self.logger.info(
+                    "Ignoring push_to_talk_release while recording=%s processing=%s.",
+                    recording,
+                    processing,
+                )
             return
         if action == "force_en":
             self._toggle_favorite_language(0)
@@ -1299,6 +1311,13 @@ class AppController:
                 paste_ms = int((time.perf_counter() - paste_started) * 1000)
                 return
             shortcut = self._paste_shortcut()
+            if sys.platform == "win32":
+                deadline = time.monotonic() + 1.0
+                while windows_modifier_state():
+                    remaining = deadline - time.monotonic()
+                    if remaining <= 0:
+                        break
+                    time.sleep(min(0.03, remaining))
             if insert_text(cleaned, shortcut=shortcut):
                 self.logger.info(
                     "Paste shortcut sent (%s); dictation text remains on clipboard.",

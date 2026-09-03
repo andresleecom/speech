@@ -51,7 +51,7 @@ Windows can check for updates inside the app; macOS and Linux updates are instal
 
 1. Click where you want the text to appear.
 2. Press the recording hotkey.
-3. Speak, then press the same hotkey or click the red orb.
+3. Speak, then press the same hotkey, hold the hotkey and release it to stop, or click the red orb.
 4. Speech transcribes locally, restores the original window, and pastes at the cursor.
 
 | Action | Windows | macOS | Linux |

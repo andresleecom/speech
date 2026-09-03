@@ -314,6 +314,7 @@ def make_controller(
         "insert_text",
         lambda text, shortcut="ctrl_v": inserted.append((text, shortcut)) or True,
     )
+    monkeypatch.setattr(main_module, "windows_modifier_state", lambda: set())
     monkeypatch.setattr(main_module.threading, "Thread", ImmediateThread)
     # controller.run() starts the Windows update check, and ImmediateThread makes
     # it synchronous. Stub the release lookup so flow tests never reach GitHub:
@@ -1159,6 +1160,75 @@ def test_hotkey_stop_restores_target_window_before_paste(monkeypatch, tmp_path):
         "transcribing",
         "hide",
     ]
+
+
+def test_push_to_talk_release_stops_and_pastes(monkeypatch, tmp_path, caplog):
+    inserted: list[tuple[str, str]] = []
+    controller = make_controller(monkeypatch, tmp_path, [], inserted)
+    controller.toggle()
+
+    with caplog.at_level("INFO"):
+        controller.on_hotkey("toggle_release")
+
+    assert controller.recorder.is_recording() is False
+    assert inserted == [("Hola mundo", "ctrl_v")]
+    assert "push_to_talk_release" in caplog.text
+
+
+def test_push_to_talk_release_is_ignored_while_idle(monkeypatch, tmp_path):
+    inserted: list[tuple[str, str]] = []
+    controller = make_controller(monkeypatch, tmp_path, [], inserted)
+
+    controller.on_hotkey("toggle_release")
+
+    assert controller.recorder.is_recording() is False
+    assert inserted == []
+
+
+def test_paste_does_not_wait_when_windows_modifiers_are_up(monkeypatch, tmp_path):
+    inserted: list[tuple[str, str]] = []
+    controller = make_controller(monkeypatch, tmp_path, [], inserted)
+    checks: list[bool] = []
+    monkeypatch.setattr(
+        main_module,
+        "windows_modifier_state",
+        lambda: checks.append(True) or set(),
+    )
+
+    def unexpected_sleep(_seconds):
+        raise AssertionError("Modifier wait should not sleep when modifiers are up")
+
+    monkeypatch.setattr(main_module.time, "sleep", unexpected_sleep)
+
+    controller.toggle()
+    controller.toggle()
+
+    assert checks == [True]
+    assert inserted == [("Hola mundo", "ctrl_v")]
+
+
+def test_paste_modifier_wait_is_bounded_when_modifiers_never_clear(
+    monkeypatch, tmp_path
+):
+    inserted: list[tuple[str, str]] = []
+    controller = make_controller(monkeypatch, tmp_path, [], inserted)
+    clock = [0.0]
+    sleeps: list[float] = []
+    monkeypatch.setattr(main_module, "windows_modifier_state", lambda: {"ctrl"})
+    monkeypatch.setattr(main_module.time, "monotonic", lambda: clock[0])
+
+    def advance(seconds: float) -> None:
+        sleeps.append(seconds)
+        clock[0] += seconds
+
+    monkeypatch.setattr(main_module.time, "sleep", advance)
+
+    controller.toggle()
+    controller.toggle()
+
+    assert sum(sleeps) == pytest.approx(1.0)
+    assert all(seconds <= 0.03 for seconds in sleeps)
+    assert inserted == [("Hola mundo", "ctrl_v")]
 
 
 def test_failed_focus_restore_skips_paste(monkeypatch, tmp_path):
