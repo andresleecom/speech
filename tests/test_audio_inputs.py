@@ -14,13 +14,25 @@ from winwhisper.audio_inputs import (
     list_audio_input_devices,
     macos_audio_capture_device,
     normalize_audio_input_device,
+    refresh_audio_device_table,
+    register_open_stream,
     resolve_input_device,
+    unregister_open_stream,
 )
 
 
 @pytest.fixture(autouse=True)
 def use_portaudio_device_discovery(monkeypatch):
     monkeypatch.setattr(audio_inputs, "_use_native_macos_audio", lambda: False)
+
+
+@pytest.fixture(autouse=True)
+def reset_open_stream_counter():
+    with audio_inputs._open_stream_lock:
+        audio_inputs._open_stream_count = 0
+    yield
+    with audio_inputs._open_stream_lock:
+        audio_inputs._open_stream_count = 0
 
 
 def _hostapis():
@@ -303,3 +315,62 @@ def test_macos_saved_device_reports_when_it_disappears(monkeypatch):
 
     with pytest.raises(AudioInputDeviceError, match="no longer available"):
         macos_audio_capture_device(4)
+
+
+def test_refresh_audio_device_table_reinitializes_portaudio(monkeypatch):
+    calls: list[str] = []
+
+    sounddevice = types.SimpleNamespace(
+        _terminate=lambda: calls.append("terminate"),
+        _initialize=lambda: calls.append("initialize"),
+    )
+    monkeypatch.setitem(sys.modules, "sounddevice", sounddevice)
+
+    elapsed = refresh_audio_device_table()
+
+    assert calls == ["terminate", "initialize"]
+    assert elapsed is not None
+    assert elapsed >= 0.0
+
+
+def test_refresh_audio_device_table_skips_while_stream_registered(monkeypatch):
+    calls: list[str] = []
+
+    sounddevice = types.SimpleNamespace(
+        _terminate=lambda: calls.append("terminate"),
+        _initialize=lambda: calls.append("initialize"),
+    )
+    monkeypatch.setitem(sys.modules, "sounddevice", sounddevice)
+
+    register_open_stream()
+    try:
+        assert refresh_audio_device_table() is None
+        assert calls == []
+    finally:
+        unregister_open_stream()
+
+
+def test_refresh_audio_device_table_skips_on_macos(monkeypatch):
+    calls: list[str] = []
+    monkeypatch.setattr(audio_inputs, "_use_native_macos_audio", lambda: True)
+    sounddevice = types.SimpleNamespace(
+        _terminate=lambda: calls.append("terminate"),
+        _initialize=lambda: calls.append("initialize"),
+    )
+    monkeypatch.setitem(sys.modules, "sounddevice", sounddevice)
+
+    assert refresh_audio_device_table() is None
+    assert calls == []
+
+
+def test_refresh_audio_device_table_returns_none_on_exception(monkeypatch):
+    def boom():
+        raise RuntimeError("portaudio dead")
+
+    sounddevice = types.SimpleNamespace(
+        _terminate=boom,
+        _initialize=lambda: None,
+    )
+    monkeypatch.setitem(sys.modules, "sounddevice", sounddevice)
+
+    assert refresh_audio_device_table() is None

@@ -1,8 +1,11 @@
 """Input-device discovery and settings normalization for microphone capture."""
 from __future__ import annotations
 
+import logging
 import re
 import sys
+import threading
+import time
 from dataclasses import dataclass
 from typing import Any, Final
 
@@ -16,6 +19,58 @@ _WASAPI_HOST_API: Final = "Windows WASAPI"
 _CAPTURE_SAMPLE_RATE: Final = 16_000
 _CAPTURE_CHANNELS: Final = 1
 _CAPTURE_DTYPE: Final = "int16"
+
+# Use stdlib logging here: importing winwhisper.logger pulls in config, which
+# imports this module, and a package-logger import would cycle at load time.
+_logger = logging.getLogger(__name__)
+_open_stream_lock = threading.Lock()
+_open_stream_count = 0
+
+
+def register_open_stream() -> None:
+    """Mark that this process holds an open PortAudio stream."""
+    global _open_stream_count
+    with _open_stream_lock:
+        _open_stream_count += 1
+
+
+def unregister_open_stream() -> None:
+    """Mark that a PortAudio stream in this process has been closed."""
+    global _open_stream_count
+    with _open_stream_lock:
+        if _open_stream_count > 0:
+            _open_stream_count -= 1
+
+
+def refresh_audio_device_table() -> float | None:
+    """Re-run PortAudio init so the device table matches current hardware.
+
+    Returns elapsed milliseconds on success, or ``None`` when skipped (macOS,
+    any open stream in-process) or when terminate/initialize raises.
+    Must never run while a PortAudio stream is open in this process.
+    """
+    if _use_native_macos_audio():
+        return None
+
+    with _open_stream_lock:
+        if _open_stream_count > 0:
+            _logger.debug(
+                "Skipping audio device table refresh; %s open stream(s) in process.",
+                _open_stream_count,
+            )
+            return None
+        try:
+            sounddevice = _sounddevice()
+            started = time.perf_counter()
+            sounddevice._terminate()
+            sounddevice._initialize()
+            return (time.perf_counter() - started) * 1000.0
+        except Exception:
+            _logger.warning(
+                "Could not refresh the PortAudio device table.",
+                exc_info=True,
+            )
+            return None
 
 
 class AudioInputDeviceError(RuntimeError):

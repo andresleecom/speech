@@ -21,4 +21,4 @@
 ## Tasks
 | # | Task | Scope (files/areas) | Bar | Status |
 |---|------|---------------------|-----|--------|
-| 01 | Device table refresh before open, open-stream guard, wake pause around takes, timing fields, version 0.1.20 | src/winwhisper/audio_inputs.py, recorder.py, wake_word_source.py, main.py, pyproject.toml, tests | build+tests+flow | pending |
+| 01 | Device table refresh before open, open-stream guard, wake pause around takes, timing fields, version 0.1.20 | src/winwhisper/audio_inputs.py, recorder.py, wake_word_source.py, main.py, pyproject.toml, tests | build+tests+flow | done |

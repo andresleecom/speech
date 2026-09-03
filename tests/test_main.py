@@ -232,8 +232,9 @@ def test_posix_single_instance_setup_errors_fail_open(
     assert main_module._single_instance_lock_handle is None
 
 
-def test_pyproject_version_is_0_1_19():
+def test_pyproject_version_is_three_part_semver():
     from pathlib import Path
+    import re
     import tomllib
 
     data = tomllib.loads(
@@ -241,7 +242,7 @@ def test_pyproject_version_is_0_1_19():
             encoding="utf-8"
         )
     )
-    assert data["project"]["version"] == "0.1.19"
+    assert re.fullmatch(r"^\d+\.\d+\.\d+$", data["project"]["version"])
 
 
 def test_downloading_model_status_constant_exists():

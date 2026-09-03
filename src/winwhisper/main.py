@@ -389,6 +389,14 @@ class AppController:
                         self._paste_target_window
                     )
                     self._overlay_anchor = get_cursor_anchor(self._paste_target_window)
+                    wake_listener = self._wake_listener
+                    if wake_listener is not None:
+                        try:
+                            wake_listener.pause()
+                        except Exception:
+                            self.logger.exception(
+                                "Wake-word listener failed to pause before recording."
+                            )
                     try:
                         self.recorder.start_recording()
                     except Exception as exc:
@@ -422,6 +430,7 @@ class AppController:
                 self.notify(APP_NAME, message)
             else:
                 self._handle_error(start_error)
+            self._resume_wake_listener_if_enabled()
             return
         if beep is not None:
             self._beep(*beep)
@@ -529,6 +538,18 @@ class AppController:
             listener.stop()
         except Exception:
             self.logger.exception("Wake-word listener failed to stop cleanly.")
+
+    def _resume_wake_listener_if_enabled(self) -> None:
+        with self._lock:
+            listener = self._wake_listener
+            enabled = self.settings.wake_word_enabled
+            shutdown = self._shutdown
+        if listener is None or not enabled or shutdown:
+            return
+        try:
+            listener.resume()
+        except Exception:
+            self.logger.exception("Wake-word listener failed to resume.")
 
     def _on_wake_word(self) -> None:
         with self._lock:
@@ -1265,11 +1286,15 @@ class AppController:
                 self._paste_target_process_name = None
                 self._overlay_anchor = None
                 self._pending_trim_phrase = None
-                wake_recording = self._recording_started_by_wake_word
                 self._recording_started_by_wake_word = False
                 wake_listener = self._wake_listener
+                wake_enabled = self.settings.wake_word_enabled
                 shutdown = self._shutdown
-            if wake_recording and wake_listener is not None and not shutdown:
+            if (
+                wake_listener is not None
+                and wake_enabled
+                and not shutdown
+            ):
                 try:
                     wake_listener.resume()
                 except Exception:
@@ -1390,6 +1415,8 @@ class AppController:
             frames = 0
             peak = 0.0
             device = "unknown"
+            refresh_ms: float | None = None
+            host_api = "unknown"
         else:
             first_block_display = (
                 int(stats.first_block_ms)
@@ -1400,10 +1427,12 @@ class AppController:
             frames = int(stats.frames)
             peak = float(stats.peak)
             device = str(stats.device_label)
+            refresh_ms = getattr(stats, "refresh_ms", None)
+            host_api = str(getattr(stats, "host_api", "unknown"))
         self.logger.info(
             "Take timing: to_stream_ms=%d first_block_ms=%s record_s=%.1f "
             "stop_ms=%d transcribe_ms=%d clean_ms=%d paste_ms=%d "
-            "frames=%d peak=%.3f device=%s",
+            "frames=%d peak=%.3f device=%s refresh_ms=%s host_api=%s",
             to_stream_ms,
             first_block_display,
             record_s,
@@ -1414,6 +1443,8 @@ class AppController:
             frames,
             peak,
             device,
+            refresh_ms,
+            host_api,
         )
 
     def _handle_error(self, message: str) -> None:

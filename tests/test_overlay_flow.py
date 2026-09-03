@@ -1073,6 +1073,60 @@ def test_start_recording_shows_floating_overlay(monkeypatch, tmp_path):
     assert FakeOverlay.instances[0].events == ["show:ScreenPoint(x=240, y=320)"]
 
 
+def test_hotkey_take_pauses_and_resumes_wake_listener(monkeypatch, tmp_path):
+    class FakeWakeListener:
+        def __init__(self) -> None:
+            self.paused = False
+
+        def pause(self) -> None:
+            self.paused = True
+
+        def resume(self) -> None:
+            self.paused = False
+
+    restored: list[int | None] = []
+    inserted: list[str] = []
+    controller = make_controller(monkeypatch, tmp_path, restored, inserted)
+    controller.settings.wake_word_enabled = True
+    listener = FakeWakeListener()
+    controller._wake_listener = listener
+
+    controller.toggle()
+    assert listener.paused is True
+    assert controller.recorder.is_recording() is True
+
+    controller.toggle()
+    assert inserted == [("Hola mundo", "ctrl_v")]
+    assert listener.paused is False
+
+
+def test_hotkey_failed_start_resumes_wake_listener(monkeypatch, tmp_path):
+    class FakeWakeListener:
+        def __init__(self) -> None:
+            self.paused = False
+
+        def pause(self) -> None:
+            self.paused = True
+
+        def resume(self) -> None:
+            self.paused = False
+
+    class FailingRecorder(FakeRecorder):
+        def start_recording(self) -> None:
+            raise RuntimeError("mic unavailable")
+
+    controller = make_controller(monkeypatch, tmp_path, [], [])
+    controller.settings.wake_word_enabled = True
+    controller.recorder = FailingRecorder()
+    listener = FakeWakeListener()
+    controller._wake_listener = listener
+
+    controller.toggle()
+
+    assert controller.recorder.is_recording() is False
+    assert listener.paused is False
+
+
 def test_overlay_stop_restores_target_window_before_paste(monkeypatch, tmp_path):
     restored: list[int | None] = []
     inserted: list[str] = []
@@ -1197,6 +1251,8 @@ def test_zero_frames_skips_transcription_and_toasts_capture_failure(
         seconds=1.2,
         first_block_ms=None,
         device_label="USB Mic [3]",
+        refresh_ms=12.5,
+        host_api="MME",
     )
 
     controller.toggle()
@@ -1226,6 +1282,8 @@ def test_empty_transcription_with_peak_zero_toasts_delivered_silence(
         seconds=1.0,
         first_block_ms=12.0,
         device_label="PodMic [2]",
+        refresh_ms=None,
+        host_api="MME",
     )
 
     controller.toggle()
@@ -1251,6 +1309,8 @@ def test_empty_transcription_with_peak_keeps_no_speech_toast(monkeypatch, tmp_pa
         seconds=1.0,
         first_block_ms=8.0,
         device_label="PodMic [2]",
+        refresh_ms=40.0,
+        host_api="Windows WASAPI",
     )
 
     controller.toggle()
