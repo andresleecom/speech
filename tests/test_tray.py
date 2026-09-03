@@ -669,3 +669,28 @@ def test_tray_icon_reuses_the_shared_app_mark():
         app_icon_image(color=tray_module._STATUS_COLORS["Recording"]).tobytes()
     )
     assert recording.tobytes() != idle.tobytes()
+
+
+def test_app_icon_image_uses_packaged_asset_when_present(tmp_path, monkeypatch):
+    from PIL import Image
+
+    import winwhisper.branding as branding
+
+    asset_dir = tmp_path / "assets"
+    asset_dir.mkdir()
+    asset = asset_dir / "app-icon-256.png"
+    Image.new("RGBA", (256, 256), (226, 76, 74, 255)).save(asset)
+
+    monkeypatch.setattr(
+        branding,
+        "_asset_icon_path",
+        lambda: asset,
+    )
+
+    icon = branding.app_icon_image(64)
+    assert icon.size == (64, 64)
+    assert icon.getpixel((32, 32))[:3] == (226, 76, 74)
+
+    # Colour path stays the drawn status disc, not the packaged PNG.
+    coloured = branding.app_icon_image(64, color=branding.IDLE_ICON_COLOR)
+    assert coloured.tobytes() != icon.tobytes()

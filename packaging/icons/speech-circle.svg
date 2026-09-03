@@ -1,0 +1,18 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 256 256" width="256" height="256">
+  <defs>
+    <linearGradient id="btn-red" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#E24C4A"/>
+      <stop offset="1" stop-color="#CC3635"/>
+    </linearGradient>
+    <radialGradient id="surf-dark" cx="0.35" cy="0.25" r="1">
+      <stop offset="0" stop-color="#33333b"/>
+      <stop offset="1" stop-color="#1b1b20"/>
+    </radialGradient>
+  </defs>
+  <!-- orb-icon: circular family at 64 px and larger -->
+  <circle cx="128" cy="128" r="112" fill="none" stroke="rgba(219,66,65,0.20)" stroke-width="7"/>
+  <circle cx="128" cy="128" r="96" fill="none" stroke="rgba(219,66,65,0.40)" stroke-width="7"/>
+  <circle cx="128" cy="128" r="76" fill="url(#surf-dark)" stroke="rgba(255,255,255,0.14)" stroke-width="2.5"/>
+  <circle cx="128" cy="128" r="47" fill="url(#btn-red)"/>
+  <rect x="114.5" y="114.5" width="27" height="27" rx="6.5" fill="#fff"/>
+</svg>

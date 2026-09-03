@@ -16,6 +16,21 @@ def test_macos_executable_is_wired_to_audio_input_entitlement():
     assert "<true/>" in entitlements
 
 
+def test_macos_bundle_uses_the_speech_icns():
+    spec = (ROOT / "packaging" / "Speech.spec").read_text(encoding="utf-8")
+
+    assert 'icon=str(ROOT / "packaging" / "macos" / "speech.icns")' in spec
+    assert (ROOT / "packaging" / "macos" / "speech.icns").is_file()
+
+
+def test_windows_exe_uses_the_speech_ico():
+    spec = (ROOT / "packaging" / "Speech.spec").read_text(encoding="utf-8")
+
+    assert 'packaging" / "windows" / "speech.ico"' in spec
+    assert "icon=EXE_ICON" in spec
+    assert (ROOT / "packaging" / "windows" / "speech.ico").is_file()
+
+
 def test_macos_build_verifies_boolean_entitlement_without_grep_or_plistlib():
     script = (ROOT / "scripts" / "build_macos.sh").read_text(encoding="utf-8")
 

@@ -127,6 +127,7 @@ python -m winwhisper.main
 ```
 
 Run the test suite with `python -m pytest -q`. Platform dependencies, environment activation, packaging commands, and release details live in [CONTRIBUTING.md](CONTRIBUTING.md).
+Regenerate the icons with `python scripts/make_icons.py` after changing `packaging/icons/*.svg`.
 
 ## Roadmap
 
