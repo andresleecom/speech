@@ -86,6 +86,7 @@ class FakeWidget:
         self.grid_options = None
         self.pack_options = None
         self.children = []
+        self.bindings: dict[str, object] = {}
         if isinstance(master, FakeWidget):
             master.children.append(self)
 
@@ -99,7 +100,10 @@ class FakeWidget:
         self.options.update(options)
 
     def bind(self, sequence, handler) -> None:
-        return None
+        self.bindings[sequence] = handler
+
+    def unbind(self, sequence) -> None:
+        self.bindings.pop(sequence, None)
 
     def focus_set(self) -> None:
         return None
@@ -113,6 +117,13 @@ class FakeRoot(FakeWidget):
         self.scheduled = []
         self.destroyed = False
 
+    def after(self, delay, callback) -> None:
+        # Run capture UI updates immediately so tests stay synchronous.
+        self.scheduled.append((delay, callback))
+        if delay == 0:
+            callback()
+            return
+
     def title(self, text) -> None:
         self.window_title = text
 
@@ -124,9 +135,6 @@ class FakeRoot(FakeWidget):
 
     def protocol(self, name, handler) -> None:
         return None
-
-    def after(self, delay, callback) -> None:
-        self.scheduled.append((delay, callback))
 
     def update_idletasks(self) -> None:
         return None
@@ -277,11 +285,11 @@ def test_recording_hint_is_neutral_grey_not_an_error(monkeypatch):
     status_label, record_button = status_and_record_widgets(roots[0])
     record_button.options["command"]()
 
-    assert status_label.options["textvariable"].get().startswith("Press a mouse button")
+    assert status_label.options["textvariable"].get().startswith("Press a shortcut")
     assert status_label.options["fg"] == window_module._MUTED
 
 
-def test_capture_failure_keeps_the_accent_colour(monkeypatch):
+def test_mouse_capture_failure_still_allows_keyboard_record(monkeypatch):
     class BrokenCapture:
         def __init__(self, on_captured, on_cancelled) -> None:
             return None
@@ -299,7 +307,98 @@ def test_capture_failure_keeps_the_accent_colour(monkeypatch):
     status_label, record_button = status_and_record_widgets(roots[0])
     record_button.options["command"]()
 
-    assert status_label.options["textvariable"].get() == (
-        "Mouse capture is unavailable on this system."
+    assert status_label.options["textvariable"].get().startswith("Press a shortcut")
+    assert status_label.options["fg"] == window_module._MUTED
+    assert "<KeyPress>" in roots[0].bindings
+
+
+def test_keypress_during_record_fills_the_combo_box(monkeypatch):
+    class FakeCapture:
+        def __init__(self, on_captured, on_cancelled) -> None:
+            self.on_captured = on_captured
+            self.on_cancelled = on_cancelled
+            self.cancelled = False
+
+        def start(self) -> None:
+            return None
+
+        def cancel(self) -> None:
+            self.cancelled = True
+            if self.on_cancelled:
+                self.on_cancelled()
+
+    import types
+
+    import winwhisper.mouse_capture as mouse_capture
+
+    monkeypatch.setattr(mouse_capture, "MouseCapture", FakeCapture)
+    monkeypatch.setattr(
+        window_module,
+        "combo_from_key_event",
+        lambda **kwargs: "<ctrl>+<alt>+<space>",
     )
-    assert status_label.options["fg"] == window_module._ACCENT
+    # Avoid calling real GetAsyncKeyState during the fake KeyPress.
+    import winwhisper.hotkeys as hotkeys_module
+
+    monkeypatch.setattr(hotkeys_module, "windows_modifier_state", lambda: set())
+    roots = install_fake_tk(monkeypatch)
+
+    window_module._run_tk_dialog({}, lambda values: None, platform="win32")
+    root = roots[0]
+    status_label, record_button = status_and_record_widgets(root)
+    combobox = next(
+        widget
+        for widget in find_widgets(root)
+        if "textvariable" in widget.options and widget.options.get("width") == 30
+    )
+    record_button.options["command"]()
+    handler = root.bindings["<KeyPress>"]
+    handler(
+        types.SimpleNamespace(keycode=0x20, keysym="space", state=0x4 | 0x20000)
+    )
+
+    assert combobox.options["textvariable"].get() == "Ctrl + Alt + Space"
+    assert record_button.options["text"] == "Record"
+    assert "<KeyPress>" not in root.bindings
+    assert status_label.options["textvariable"].get() == ""
+
+
+def test_capture_hooks_fire_on_open_and_close_including_save_error(monkeypatch):
+    events = []
+
+    def begin() -> None:
+        events.append("begin")
+
+    def end() -> None:
+        events.append("end")
+
+    monkeypatch.setattr(window_module.sys, "platform", "win32")
+    monkeypatch.setattr(window_module.threading, "Thread", ImmediateThread)
+    monkeypatch.setattr(
+        window_module,
+        "_run_tk_dialog",
+        lambda *args, **kwargs: (_ for _ in ()).throw(RuntimeError("boom")),
+    )
+
+    HotkeySettingsWindow().show(
+        {},
+        lambda values: None,
+        on_capture_begin=begin,
+        on_capture_end=end,
+    )
+
+    assert events == ["begin", "end"]
+
+    events.clear()
+
+    def run_ok(*args, **kwargs) -> None:
+        return None
+
+    monkeypatch.setattr(window_module, "_run_tk_dialog", run_ok)
+    HotkeySettingsWindow().show(
+        {},
+        lambda values: None,
+        on_capture_begin=begin,
+        on_capture_end=end,
+    )
+    assert events == ["begin", "end"]

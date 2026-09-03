@@ -220,10 +220,23 @@ class FakeHotkeySettingsWindow:
 
     def __init__(self) -> None:
         self.shown_with = None
+        self.capture_hooks = None
         self.instances.append(self)
 
-    def show(self, hotkeys, on_save, language_favorites) -> None:
+    def show(
+        self,
+        hotkeys,
+        on_save,
+        language_favorites,
+        on_capture_begin=None,
+        on_capture_end=None,
+    ) -> None:
         self.shown_with = (dict(hotkeys), on_save, list(language_favorites))
+        self.capture_hooks = (on_capture_begin, on_capture_end)
+        if on_capture_begin is not None:
+            on_capture_begin()
+        if on_capture_end is not None:
+            on_capture_end()
 
 
 class FakeLanguageSettingsWindow:
@@ -674,6 +687,7 @@ def test_controller_opens_hotkey_window_with_live_save_callback(monkeypatch, tmp
         raising=False,
     )
     controller = make_controller(monkeypatch, tmp_path, [], [])
+    original = controller.hotkeys
 
     controller.open_hotkey_settings()
 
@@ -682,6 +696,11 @@ def test_controller_opens_hotkey_window_with_live_save_callback(monkeypatch, tmp
     assert hotkeys == controller.settings.hotkeys
     assert on_save == controller.set_hotkeys
     assert language_favorites == ["en", "es", None]
+    begin, end = window.capture_hooks
+    assert begin is not None and end is not None
+    assert original.stopped is True
+    # Dialog closed immediately in the fake, so start ran again after stop.
+    assert original.started is True
 
 
 def test_controller_opens_language_window_with_live_save_callback(monkeypatch, tmp_path):

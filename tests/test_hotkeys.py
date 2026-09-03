@@ -84,6 +84,121 @@ def test_trigger_to_vk_rejects_unknown():
         trigger_to_vk("nonsense_key")
 
 
+# Measured on a machine with en-US (current) + es-ES installed.
+_EN_US = 0x04090409
+_ES_ES = 0x040A040A
+
+
+class _DualLayoutUser32:
+    """Fake user32 matching en-US current + es-ES installed measurements."""
+
+    def __init__(self):
+        # Unshifted ToUnicodeEx glyphs per layout → VK.
+        self._unshifted = {
+            _EN_US: {
+                0xBC: ",",
+                0xDC: "\\",
+                # OEM_102 exists but its glyph round-trips to a different VK.
+                0xE2: "\\",
+            },
+            _ES_ES: {
+                0xE2: "<",
+                0xC0: "ñ",
+                0xDC: "º",
+            },
+        }
+        # VkKeyScanExW: char → (vk | (shift_state << 8)), or 0xFFFF.
+        self._scans = {
+            _EN_US: {
+                ord("<"): 0x01BC,  # Shift+comma
+                ord(","): 0x00BC,
+                ord("\\"): 0x00DC,
+                ord("ñ"): 0xFFFF,
+                ord("º"): 0xFFFF,
+                ord("€"): 0xFFFF,
+            },
+            _ES_ES: {
+                ord("<"): 0x00E2,
+                ord("ñ"): 0x00C0,
+                ord("º"): 0x00DC,
+                ord("\\"): 0xFFFF,
+            },
+        }
+        self._altgr = {
+            _EN_US: {},
+            _ES_ES: {0x45: "€"},
+        }
+
+    def GetKeyboardLayout(self, _thread_id):
+        return _EN_US
+
+    def GetKeyboardLayoutList(self, n, arr):
+        layouts = (_EN_US, _ES_ES)
+        if arr is None or n == 0:
+            return len(layouts)
+        for index, layout in enumerate(layouts[:n]):
+            arr[index] = layout
+        return min(n, len(layouts))
+
+    def VkKeyScanExW(self, char_code, layout):
+        return self._scans.get(int(layout), {}).get(int(char_code), 0xFFFF)
+
+    def MapVirtualKeyExW(self, vk, _map_type, _layout):
+        return int(vk) & 0xFF
+
+    def ToUnicodeEx(self, vk, scancode, keystate, buf, buflen, flags, layout):
+        layout = int(layout)
+        vk = int(vk)
+        ctrl = bool(keystate[0x11])
+        alt = bool(keystate[0x12])
+        if ctrl and alt:
+            character = self._altgr.get(layout, {}).get(vk)
+        elif not ctrl and not alt:
+            character = self._unshifted.get(layout, {}).get(vk)
+        else:
+            character = None
+        if character:
+            buf.value = character
+            return 1
+        buf.value = ""
+        return 0
+
+
+def test_trigger_to_vk_maps_layout_character_through_vkkeyscan(monkeypatch):
+    import ctypes
+
+    monkeypatch.setattr(ctypes, "WinDLL", lambda *args, **kwargs: _DualLayoutUser32())
+
+    # en-US is current and only maps '<' as Shift+comma; es-ES maps it
+    # unshifted to VK_OEM_102, which must win.
+    assert trigger_to_vk("<") == 0xE2
+    assert trigger_to_vk("ñ") == 0xC0
+    assert trigger_to_vk("º") == 0xDC
+
+
+def test_character_for_virtual_key_prefers_round_trip_layout(monkeypatch):
+    import ctypes
+
+    from winwhisper.hotkeys import character_for_virtual_key
+
+    monkeypatch.setattr(ctypes, "WinDLL", lambda *args, **kwargs: _DualLayoutUser32())
+
+    # en-US ToUnicodeEx(0xE2) yields '\', but that char's real VK is 0xDC, so
+    # the round trip fails and es-ES's '<' is accepted instead.
+    assert character_for_virtual_key(0xE2) == "<"
+
+
+def test_altgr_produces_character_reads_tounicode(monkeypatch):
+    import ctypes
+
+    from winwhisper.hotkeys import altgr_produces_character
+
+    monkeypatch.setattr(ctypes, "WinDLL", lambda *args, **kwargs: _DualLayoutUser32())
+
+    # en-US is current and has no AltGr+E binding; es-ES still produces €.
+    assert altgr_produces_character(0x45) == "€"
+
+
 def test_combo_to_hotkey_ctrl_alt_space():
     fs, vk = combo_to_hotkey("<ctrl>+<alt>+<space>")
     assert fs == _MOD_CONTROL | _MOD_ALT

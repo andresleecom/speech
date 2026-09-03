@@ -7,10 +7,11 @@ from typing import Any
 
 from .branding import APP_NAME, apply_tk_app_icon
 from .hotkey_actions import HOTKEY_ACTIONS, HotkeyAction
-from .hotkey_settings import display_hotkey
+from .hotkey_settings import combo_from_key_event, display_hotkey
 from .logger import get_logger
 
 SaveHotkeys = Callable[[dict[str, str]], None]
+CaptureHook = Callable[[], None]
 
 _ACCENT = "#DB4241"
 _MUTED = "#62626A"
@@ -30,6 +31,8 @@ class HotkeySettingsWindow:
         hotkeys: Mapping[str, str],
         on_save: SaveHotkeys,
         language_favorites: object = None,
+        on_capture_begin: CaptureHook | None = None,
+        on_capture_end: CaptureHook | None = None,
     ) -> None:
         with self._lock:
             if self._is_open:
@@ -39,12 +42,24 @@ class HotkeySettingsWindow:
         snapshot = dict(hotkeys)
         favorites_snapshot = language_favorites
         if sys.platform == "darwin":
-            self._show_macos(snapshot, on_save, favorites_snapshot)
+            self._show_macos(
+                snapshot,
+                on_save,
+                favorites_snapshot,
+                on_capture_begin=on_capture_begin,
+                on_capture_end=on_capture_end,
+            )
             return
 
         threading.Thread(
             target=self._run_tk,
-            args=(snapshot, on_save, favorites_snapshot),
+            args=(
+                snapshot,
+                on_save,
+                favorites_snapshot,
+                on_capture_begin,
+                on_capture_end,
+            ),
             name="winwhisper-hotkey-settings",
             daemon=True,
         ).start()
@@ -53,12 +68,23 @@ class HotkeySettingsWindow:
         with self._lock:
             self._is_open = False
 
+    def _run_capture_hook(self, hook: CaptureHook | None, label: str) -> None:
+        if hook is None:
+            return
+        try:
+            hook()
+        except Exception:
+            self._logger.exception("Hotkey settings %s hook failed.", label)
+
     def _run_tk(
         self,
         hotkeys: dict[str, str],
         on_save: SaveHotkeys,
         language_favorites: object,
+        on_capture_begin: CaptureHook | None = None,
+        on_capture_end: CaptureHook | None = None,
     ) -> None:
+        self._run_capture_hook(on_capture_begin, "capture begin")
         try:
             _run_tk_dialog(
                 hotkeys,
@@ -69,6 +95,7 @@ class HotkeySettingsWindow:
         except Exception:
             self._logger.exception("Hotkey settings window failed.")
         finally:
+            self._run_capture_hook(on_capture_end, "capture end")
             self._mark_closed()
 
     def _show_macos(
@@ -76,7 +103,10 @@ class HotkeySettingsWindow:
         hotkeys: dict[str, str],
         on_save: SaveHotkeys,
         language_favorites: object,
+        on_capture_begin: CaptureHook | None = None,
+        on_capture_end: CaptureHook | None = None,
     ) -> None:
+        self._run_capture_hook(on_capture_begin, "capture begin")
         try:
             from Foundation import NSOperationQueue
 
@@ -86,11 +116,13 @@ class HotkeySettingsWindow:
                 except Exception:
                     self._logger.exception("macOS hotkey settings window failed.")
                 finally:
+                    self._run_capture_hook(on_capture_end, "capture end")
                     self._mark_closed()
 
             NSOperationQueue.mainQueue().addOperationWithBlock_(present)
         except Exception:
             self._logger.exception("Could not schedule the macOS settings window.")
+            self._run_capture_hook(on_capture_end, "capture end")
             self._mark_closed()
 
 
@@ -118,52 +150,143 @@ def _make_record_command(
     captures: dict[str, Any],
     platform: str,
     status_setter: Callable[..., None],
+    active_capture: dict[str, Any],
 ) -> Callable[[], None]:
     """Build the per-row Record handler.
 
-    Capture callbacks arrive on a listener thread, so every UI touch is bounced
-    back through ``root.after``. Tk is not thread-safe and will crash or hang if
-    widgets are poked from anywhere but its own loop.
+    Mouse and keyboard capture run together; whichever reports a combo first
+    wins. Capture callbacks from the mouse listener arrive on another thread,
+    so every UI touch is bounced back through ``root.after``.
     """
+    from .hotkeys import windows_modifier_state
     from .mouse_capture import MouseCapture
+
+    def stop_mouse(session: dict[str, Any] | None) -> None:
+        if session is None:
+            return
+        mouse = session.get("mouse")
+        session["mouse"] = None
+        if mouse is not None:
+            try:
+                mouse.cancel()
+            except Exception:
+                pass
 
     def restore() -> None:
         button.configure(text="Record")
-        captures.pop(setting_key, None)
+        session = captures.pop(setting_key, None)
+        if active_capture.get("key") == setting_key:
+            active_capture["key"] = None
+            try:
+                root.unbind("<KeyPress>")
+            except Exception:
+                pass
+        stop_mouse(session)
+
+    def apply_combo(combo: str) -> None:
+        value.set(display_hotkey(combo, platform=platform))
+        status_setter("")
+        restore()
 
     def on_captured(combo: str) -> None:
         def apply() -> None:
-            value.set(display_hotkey(combo, platform=platform))
-            status_setter("")
-            restore()
+            session = captures.get(setting_key)
+            if session is None or session.get("done"):
+                return
+            session["done"] = True
+            apply_combo(combo)
 
         root.after(0, apply)
 
     def on_cancelled() -> None:
         def apply() -> None:
-            status_setter("No mouse button detected. Try again, or type a shortcut.")
+            session = captures.get(setting_key)
+            if session is None or session.get("done"):
+                return
+            status_setter(
+                "No input detected. Try again, or choose a shortcut from the list."
+            )
             restore()
 
         root.after(0, apply)
 
+    def on_key_press(event: Any) -> str | None:
+        if active_capture.get("key") != setting_key:
+            return None
+        session = captures.get(setting_key)
+        if session is None or session.get("done"):
+            return None
+        keysym = str(getattr(event, "keysym", "") or "")
+        if keysym.lower() == "escape":
+            session["done"] = True
+            status_setter("")
+            restore()
+            return "break"
+        extra: tuple[str, ...] = ()
+        if platform == "win32":
+            try:
+                # Tk state has Ctrl/Shift/Alt; the Win key only shows up here.
+                extra = tuple(
+                    name for name in windows_modifier_state() if name == "cmd"
+                )
+            except Exception:
+                extra = ()
+        combo = combo_from_key_event(
+            keycode=int(getattr(event, "keycode", 0) or 0),
+            keysym=keysym,
+            state=int(getattr(event, "state", 0) or 0),
+            platform=platform,
+            extra_modifiers=extra,
+        )
+        if combo is None:
+            return "break"
+        session["done"] = True
+        stop_mouse(session)
+        apply_combo(combo)
+        return "break"
+
     def start() -> None:
         existing = captures.get(setting_key)
         if existing is not None:
-            existing.cancel()
+            existing["done"] = True
             restore()
             return
 
-        capture = MouseCapture(on_captured, on_cancelled)
+        # Only one row records at a time.
+        previous_key = active_capture.get("key")
+        if previous_key is not None and previous_key in captures:
+            previous = captures.get(previous_key)
+            if previous is not None:
+                previous["done"] = True
+                previous_button = previous.get("button")
+                if previous_button is not None:
+                    previous_button.configure(text="Record")
+                stop_mouse(previous)
+            captures.pop(previous_key, None)
+            active_capture["key"] = None
+            try:
+                root.unbind("<KeyPress>")
+            except Exception:
+                pass
+
+        capture: Any = None
         try:
+            capture = MouseCapture(on_captured, on_cancelled)
             capture.start()
         except Exception:
             get_logger(__name__).exception("Mouse capture could not start.")
-            status_setter("Mouse capture is unavailable on this system.")
-            return
-        captures[setting_key] = capture
-        button.configure(text="Press a button...")
+            capture = None
+        captures[setting_key] = {
+            "mouse": capture,
+            "button": button,
+            "done": False,
+        }
+        active_capture["key"] = setting_key
+        root.bind("<KeyPress>", on_key_press)
+        button.configure(text="Press keys...")
         status_setter(
-            "Press a mouse button now. Left click needs a modifier.",
+            "Press a shortcut or mouse button now. Escape cancels. "
+            "Left click needs a modifier.",
             is_error=False,
         )
 
@@ -200,8 +323,8 @@ def _run_tk_dialog(
     tk.Label(
         frame,
         text=(
-            "Choose a shortcut, type one such as Ctrl + Alt + Space, or press "
-            "Record and click a mouse button."
+            "Choose a shortcut, or press Record and then the keys or a mouse "
+            "button."
         ),
         bg=_SURFACE,
         fg=_MUTED,
@@ -229,6 +352,7 @@ def _run_tk_dialog(
 
     values: dict[str, tk.StringVar] = {}
     captures: dict[str, Any] = {}
+    active_capture: dict[str, Any] = {"key": None}
     for row, action in enumerate(HOTKEY_ACTIONS, start=2):
         tk.Label(
             frame,
@@ -272,6 +396,7 @@ def _run_tk_dialog(
                 captures,
                 platform,
                 status_setter=set_status,
+                active_capture=active_capture,
             )
         )
 
@@ -295,9 +420,21 @@ def _run_tk_dialog(
     def close() -> None:
         # Leaving a capture running would keep a mouse listener alive with no
         # window to report into.
-        for capture in list(captures.values()):
-            capture.cancel()
-        captures.clear()
+        for key in list(captures):
+            session = captures.pop(key, None)
+            if session is None:
+                continue
+            mouse = session.get("mouse") if isinstance(session, dict) else session
+            if mouse is not None:
+                try:
+                    mouse.cancel()
+                except Exception:
+                    pass
+        active_capture["key"] = None
+        try:
+            root.unbind("<KeyPress>")
+        except Exception:
+            pass
         root.destroy()
 
     def save() -> None:
@@ -305,6 +442,30 @@ def _run_tk_dialog(
             on_save({key: value.get() for key, value in values.items()})
         except Exception as exc:
             set_status(str(exc) or "The hotkey settings could not be saved.")
+            return
+        close()
+
+    def on_escape(_event: Any) -> None:
+        if active_capture.get("key") is not None:
+            key = active_capture["key"]
+            session = captures.get(key)
+            if session is not None:
+                button = session.get("button")
+                if button is not None:
+                    button.configure(text="Record")
+                mouse = session.get("mouse")
+                if mouse is not None:
+                    try:
+                        mouse.cancel()
+                    except Exception:
+                        pass
+            captures.pop(key, None)
+            active_capture["key"] = None
+            try:
+                root.unbind("<KeyPress>")
+            except Exception:
+                pass
+            set_status("")
             return
         close()
 
@@ -333,7 +494,7 @@ def _run_tk_dialog(
     ).pack(side="left")
 
     root.bind("<Return>", lambda event: save())
-    root.bind("<Escape>", lambda event: close())
+    root.bind("<Escape>", on_escape)
     root.protocol("WM_DELETE_WINDOW", close)
     root.update_idletasks()
     x = max(0, (root.winfo_screenwidth() - root.winfo_width()) // 2)

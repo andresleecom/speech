@@ -69,7 +69,10 @@ Push-to-talk is available for Windows keyboard bindings only, while mouse bindin
 New profiles ship without quick-language shortcuts, because `Ctrl+Shift+E` and `Ctrl+Shift+S` are already taken by editors, browsers, and word processors.
 Existing profiles keep every shortcut they have saved; changing a default never rewrites a settings file.
 
-Open **Hotkey Settings...**, select a suggestion, enter a combination, or press **Record** and click a mouse button, then save. Speech rejects duplicates.
+Open **Hotkey Settings...**, select a suggestion, or press **Record** and then the keys or a mouse button, then save.
+Speech rejects duplicates.
+On Windows and Linux, Record captures the chord from the keyboard; keys that a name table cannot express still bind through the active layout.
+A Ctrl+Alt combination that AltGr would use to type a character is rejected so it cannot steal that key.
 
 On Windows and Linux, valid changes rebind immediately without a restart. On macOS, Speech saves the new profile and does not restart the global-hotkey listener from the settings window: a packaged Speech.app relaunches after the settings dialog closes so the new shortcuts take effect; source/dev runs keep the saved settings and ask you to quit and reopen Speech. If the save fails, the previous hotkeys stay in effect.
 

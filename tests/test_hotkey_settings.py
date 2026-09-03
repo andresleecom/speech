@@ -2,6 +2,7 @@ import pytest
 
 from winwhisper.hotkey_settings import (
     HotkeyConfigurationError,
+    combo_from_key_event,
     display_hotkey,
     normalize_hotkey_input,
     normalize_hotkey_profile,
@@ -218,3 +219,183 @@ def test_normalize_profile_never_substitutes_a_default_for_a_saved_value():
 
     # The absent actions stay absent, and the saved toggle keeps its combo.
     assert profile == {"toggle_recording": "<ctrl>+<shift>+<f9>"}
+
+
+def test_combo_from_key_event_space_f8_letter_and_less_than():
+    assert (
+        combo_from_key_event(
+            keycode=0x20,
+            keysym="space",
+            state=0x4 | 0x20000,
+            platform="win32",
+        )
+        == "<ctrl>+<alt>+<space>"
+    )
+    assert (
+        combo_from_key_event(
+            keycode=0x77,
+            keysym="F8",
+            state=0x4 | 0x1,
+            platform="win32",
+        )
+        == "<ctrl>+<shift>+<f8>"
+    )
+    assert (
+        combo_from_key_event(
+            keycode=0x41,
+            keysym="a",
+            state=0x4 | 0x1,
+            platform="win32",
+        )
+        == "<ctrl>+<shift>+a"
+    )
+    # OEM key: keysym "less" (or "<") with a layout-specific keycode.
+    assert (
+        combo_from_key_event(
+            keycode=0xE2,
+            keysym="less",
+            state=0x4 | 0x20000,
+            platform="win32",
+        )
+        == "<ctrl>+<alt>+<"
+    )
+
+
+def test_combo_from_key_event_bare_modifier_is_ignored():
+    assert (
+        combo_from_key_event(
+            keycode=0x11,
+            keysym="Control_L",
+            state=0x4,
+            platform="win32",
+        )
+        is None
+    )
+
+
+def test_combo_from_key_event_linux_prior_is_page_up():
+    assert (
+        combo_from_key_event(
+            keycode=0,
+            keysym="Prior",
+            state=0x4 | 0x8,
+            platform="linux",
+        )
+        == "<ctrl>+<alt>+<page_up>"
+    )
+
+
+def test_windows_rejects_ctrl_alt_when_altgr_types_a_character(monkeypatch):
+    import winwhisper.hotkey_settings as settings_module
+
+    monkeypatch.setattr(settings_module, "trigger_to_vk", lambda trigger: 0x45)
+    monkeypatch.setattr(
+        settings_module,
+        "altgr_produces_character",
+        lambda vk: "€" if vk == 0x45 else None,
+    )
+
+    with pytest.raises(
+        HotkeyConfigurationError,
+        match=r'Ctrl \+ Alt \+ E types "€" on your keyboard layout',
+    ):
+        normalize_hotkey_input("Ctrl + Alt + E", platform="win32")
+
+    # Space is a named trigger, not a single printable character, so AltGr
+    # rejection does not apply and the default chord still validates.
+    assert (
+        normalize_hotkey_input("Ctrl + Alt + Space", platform="win32")
+        == "<ctrl>+<alt>+<space>"
+    )
+
+
+def _dual_layout_user32():
+    """en-US current + es-ES installed; mirrors the measured OEM / AltGr tables."""
+    en_us, es_es = 0x04090409, 0x040A040A
+
+    class FakeUser32:
+        def GetKeyboardLayout(self, _thread_id):
+            return en_us
+
+        def GetKeyboardLayoutList(self, n, arr):
+            layouts = (en_us, es_es)
+            if arr is None or n == 0:
+                return len(layouts)
+            for index, layout in enumerate(layouts[:n]):
+                arr[index] = layout
+            return min(n, len(layouts))
+
+        def VkKeyScanExW(self, char_code, layout):
+            scans = {
+                en_us: {
+                    ord("<"): 0x01BC,
+                    ord("\\"): 0x00DC,
+                    ord("ñ"): 0xFFFF,
+                    ord("º"): 0xFFFF,
+                },
+                es_es: {
+                    ord("<"): 0x00E2,
+                    ord("ñ"): 0x00C0,
+                    ord("º"): 0x00DC,
+                },
+            }
+            return scans.get(int(layout), {}).get(int(char_code), 0xFFFF)
+
+        def MapVirtualKeyExW(self, vk, _map_type, _layout):
+            return int(vk) & 0xFF
+
+        def ToUnicodeEx(self, vk, scancode, keystate, buf, buflen, flags, layout):
+            layout = int(layout)
+            vk = int(vk)
+            ctrl = bool(keystate[0x11])
+            alt = bool(keystate[0x12])
+            if ctrl and alt:
+                character = {es_es: {0x45: "€"}}.get(layout, {}).get(vk)
+            elif not ctrl and not alt:
+                character = {
+                    en_us: {0xE2: "\\", 0xDC: "\\"},
+                    es_es: {0xE2: "<", 0xC0: "ñ", 0xDC: "º"},
+                }.get(layout, {}).get(vk)
+            else:
+                character = None
+            if character:
+                buf.value = character
+                return 1
+            buf.value = ""
+            return 0
+
+    return FakeUser32()
+
+
+def test_windows_rejects_ctrl_alt_e_via_installed_spanish_layout(monkeypatch):
+    """AltGr+E → € on es-ES must reject even while en-US is the active layout."""
+    import ctypes
+
+    monkeypatch.setattr(
+        ctypes, "WinDLL", lambda *args, **kwargs: _dual_layout_user32()
+    )
+
+    with pytest.raises(
+        HotkeyConfigurationError,
+        match=r'Ctrl \+ Alt \+ E types "€" on your keyboard layout',
+    ):
+        normalize_hotkey_input("<ctrl>+<alt>+e", platform="win32")
+
+
+def test_combo_from_key_event_oem_key_uses_layout_character_not_keysym(monkeypatch):
+    """ISO <> key must bind as '<' even when Tk reports keysym 'backslash'."""
+    import ctypes
+
+    monkeypatch.setattr(
+        ctypes, "WinDLL", lambda *args, **kwargs: _dual_layout_user32()
+    )
+
+    assert (
+        combo_from_key_event(
+            keycode=0xE2,
+            keysym="backslash",
+            state=0x20004,
+            platform="win32",
+        )
+        == "<ctrl>+<alt>+<"
+    )

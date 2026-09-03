@@ -895,10 +895,36 @@ class AppController:
         self.logger.info("Hotkey settings updated and applied without restart.")
 
     def open_hotkey_settings(self) -> None:
+        def on_capture_begin() -> None:
+            # RegisterHotKey consumes chords before Tk can see them, so the live
+            # manager must be stopped for the whole dialog lifetime.
+            self.logger.info("Stopping hotkeys while the settings dialog is open.")
+            self.hotkeys.stop()
+
+        def on_capture_end() -> None:
+            self.logger.info("Restarting hotkeys after the settings dialog closed.")
+            try:
+                activation = self.hotkeys.start()
+            except Exception:
+                self.logger.exception(
+                    "Hotkeys could not be restarted after the settings dialog."
+                )
+                return
+            if not activation.successful:
+                failed = ", ".join(
+                    display_hotkey(combo) for combo in activation.failed
+                )
+                self.logger.error(
+                    "Hotkeys restarted with failures after settings dialog: %s.",
+                    failed,
+                )
+
         self.hotkey_settings_window.show(
             self.settings.hotkeys,
             self.set_hotkeys,
             self.settings.language_favorites,
+            on_capture_begin=on_capture_begin,
+            on_capture_end=on_capture_end,
         )
 
     def open_language_settings(self) -> None:

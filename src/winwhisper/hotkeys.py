@@ -176,7 +176,135 @@ def trigger_to_vk(trigger: str) -> int:
         number = int(name[1:])
         if 1 <= number <= 24:
             return 0x70 + (number - 1)  # VK_F1 == 0x70
+    # Single characters outside the name table (OEM punctuation, ñ, º, …)
+    # resolve through the active keyboard layout.
+    if len(trigger) == 1:
+        vk = _vk_from_layout_character(trigger)
+        if vk is not None:
+            return vk
     raise ValueError(f"Unsupported hotkey trigger key: {trigger!r}")
+
+
+def _installed_layouts() -> tuple[int, ...]:
+    """Return installed keyboard layouts, current thread layout first.
+
+    ``GetKeyboardLayoutList`` lists every HKL the user has installed; the
+    active per-window layout can still be a different one. OEM characters and
+    AltGr collisions must be resolved against the full set so a chord saved as
+    ``<`` always binds the physical ISO key even when en-US is current.
+    """
+    import ctypes
+    from ctypes import wintypes
+
+    user32 = ctypes.WinDLL("user32", use_last_error=True)
+    current = int(user32.GetKeyboardLayout(0))
+    count = int(user32.GetKeyboardLayoutList(0, None))
+    if count <= 0:
+        return (current,)
+    array = (wintypes.HKL * count)()
+    filled = int(user32.GetKeyboardLayoutList(count, array))
+    layouts = [current]
+    seen = {current}
+    for index in range(max(filled, 0)):
+        layout = int(array[index])
+        if layout not in seen:
+            layouts.append(layout)
+            seen.add(layout)
+    return tuple(layouts)
+
+
+def _vk_from_layout_character(character: str) -> int | None:
+    """Map one character to a VK via VkKeyScanExW across installed layouts.
+
+    Prefers a layout where the character is unshifted (high byte 0), otherwise
+    the first layout that maps it at all.
+    """
+    import ctypes
+
+    user32 = ctypes.WinDLL("user32", use_last_error=True)
+    first_mapped: int | None = None
+    for layout in _installed_layouts():
+        result = int(user32.VkKeyScanExW(ord(character), layout))
+        if result in (-1, 0xFFFF):
+            continue
+        vk = result & 0xFF
+        shift_state = (result >> 8) & 0xFF
+        if shift_state == 0:
+            return vk
+        if first_mapped is None:
+            first_mapped = vk
+    return first_mapped
+
+
+def altgr_produces_character(vk: int) -> str | None:
+    """Return the character AltGr (Ctrl+Alt) types for ``vk``, if any.
+
+    Checks every installed layout (current first). Used to reject
+    Ctrl+Alt+printable chords that any installed layout already claims for
+    typing (for example AltGr+E → € on es-ES even while en-US is active).
+    """
+    import ctypes
+
+    user32 = ctypes.WinDLL("user32", use_last_error=True)
+    keystate = (ctypes.c_ubyte * 256)()
+    keystate[0x11] = 0x80  # VK_CONTROL
+    keystate[0x12] = 0x80  # VK_MENU (Alt)
+    keystate[0xA2] = 0x80  # VK_LCONTROL
+    keystate[0xA5] = 0x80  # VK_RMENU (right Alt / AltGr)
+    for layout in _installed_layouts():
+        buf = ctypes.create_unicode_buffer(8)
+        scancode = int(user32.MapVirtualKeyExW(vk, 0, layout))
+        produced = int(
+            user32.ToUnicodeEx(vk, scancode, keystate, buf, len(buf), 0, layout)
+        )
+        character = buf.value if produced > 0 else ""
+        # Clear any dead-key state ToUnicodeEx may have left behind.
+        clear_state = (ctypes.c_ubyte * 256)()
+        clear_buf = ctypes.create_unicode_buffer(8)
+        user32.ToUnicodeEx(
+            vk, scancode, clear_state, clear_buf, len(clear_buf), 0, layout
+        )
+        if produced > 0 and character:
+            return character[0]
+    return None
+
+
+def character_for_virtual_key(vk: int) -> str | None:
+    """Return the unshifted character a VK types on an installed layout.
+
+    For each layout (current first), read the unshifted glyph with
+    ``ToUnicodeEx`` and accept it only when ``VkKeyScanExW`` round-trips to
+    the same VK. That rejects cases like en-US mapping OEM_102 to a glyph
+    whose real key is a different VK (e.g. ``\\`` on 0xDC).
+    """
+    import ctypes
+
+    user32 = ctypes.WinDLL("user32", use_last_error=True)
+    empty_state = (ctypes.c_ubyte * 256)()
+    for layout in _installed_layouts():
+        buf = ctypes.create_unicode_buffer(8)
+        scancode = int(user32.MapVirtualKeyExW(vk, 0, layout))
+        produced = int(
+            user32.ToUnicodeEx(
+                vk, scancode, empty_state, buf, len(buf), 0, layout
+            )
+        )
+        # Clear any dead-key state ToUnicodeEx may have left behind.
+        clear_buf = ctypes.create_unicode_buffer(8)
+        user32.ToUnicodeEx(
+            vk, scancode, empty_state, clear_buf, len(clear_buf), 0, layout
+        )
+        if produced <= 0 or not buf.value:
+            continue
+        character = buf.value[0]
+        if character.isspace() or not character.isprintable():
+            continue
+        scan = int(user32.VkKeyScanExW(ord(character), layout))
+        if scan in (-1, 0xFFFF):
+            continue
+        if (scan & 0xFF) == vk:
+            return character
+    return None
 
 
 def combo_to_hotkey(combo: str) -> tuple[int, int]:
