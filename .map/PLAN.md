@@ -19,4 +19,4 @@
 ## Tasks
 | # | Task | Scope (files/areas) | Bar | Status |
 |---|------|---------------------|-----|--------|
-| 01 | Fix the installer hand-off, make it observable, bump to 0.1.22 | src/winwhisper/updater.py, update_controller.py, pyproject.toml, docs/troubleshooting.md, tests/test_updater.py, test_updater_install.py | build+tests+flow | pending |
+| 01 | Fix the installer hand-off, make it observable, bump to 0.1.22 | src/winwhisper/updater.py, update_controller.py, pyproject.toml, docs/troubleshooting.md, tests/test_updater.py, test_updater_install.py | build+tests+flow | done |

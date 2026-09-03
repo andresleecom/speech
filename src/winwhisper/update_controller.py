@@ -81,10 +81,26 @@ class UpdateCoordinator:
             if not self._confirm_update_install(update):
                 return
 
+            self._logger.info("Update version %s found.", update.version)
             self._notify(APP_NAME, f"Downloading version {update.version}.")
+            download_started = time.perf_counter()
             installer_path, _checksum_path = download_update(update)
+            download_seconds = time.perf_counter() - download_started
+            installer_bytes = installer_path.stat().st_size
+            self._logger.info(
+                "Download completed: %s bytes in %.1f seconds.",
+                installer_bytes,
+                download_seconds,
+            )
             relaunch_path = current_app_executable()
+            our_pid = os.getpid()
+            self._logger.info("Installer path: %s", installer_path)
+            self._logger.info("Our pid: %s", our_pid)
+            self._logger.info("Relaunch path: %s", relaunch_path)
             if relaunch_path is None:
+                self._logger.warning(
+                    "No relaunch path (source run); the app will not reopen after install."
+                )
                 self._notify(APP_NAME, "Starting installer after Speech exits.")
             else:
                 self._notify(
@@ -94,9 +110,10 @@ class UpdateCoordinator:
             # Wait for this process to exit so install-dir binaries are unlocked.
             launch_installer(
                 installer_path,
-                wait_for_pid=os.getpid(),
+                wait_for_pid=our_pid,
                 relaunch_path=relaunch_path,
             )
+            self._logger.info("Exiting so the installer can replace the binaries.")
             self._exit_app()
         except Exception as exc:
             self._logger.warning("Update check failed with %s.", exc.__class__.__name__)

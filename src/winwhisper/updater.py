@@ -311,11 +311,38 @@ def sha256_file(target: Path) -> str:
     return digest.hexdigest()
 
 
+def windows_hidden_process_creationflags() -> int:
+    """Creation flags for a hidden PowerShell child that still runs its command.
+
+    Never combine ``DETACHED_PROCESS`` here. On this host, ``powershell.exe``
+    started with ``DETACHED_PROCESS`` exits with code 0 without executing
+    ``-Command``, so the installer never runs and nothing is logged.
+    ``CREATE_NO_WINDOW`` plus ``CREATE_NEW_PROCESS_GROUP`` keeps the window
+    hidden while still running the hand-off script.
+    """
+    creationflags = 0
+    if hasattr(subprocess, "CREATE_NO_WINDOW"):
+        creationflags |= subprocess.CREATE_NO_WINDOW
+    if hasattr(subprocess, "CREATE_NEW_PROCESS_GROUP"):
+        creationflags |= subprocess.CREATE_NEW_PROCESS_GROUP
+    return creationflags
+
+
+def powershell_single_quoted(value: str) -> str:
+    """Wrap ``value`` as a PowerShell single-quoted string literal.
+
+    Inside single quotes only ``'`` is special and is escaped by doubling.
+    Use this for ``Start-Process -ArgumentList`` elements so paths with spaces
+    are not split when PowerShell joins the list with spaces.
+    """
+    return "'" + value.replace("'", "''") + "'"
+
+
 def launch_installer(
     installer_path: Path,
     wait_for_pid: int | None = None,
     relaunch_path: Path | None = None,
-) -> None:
+) -> str | None:
     """Launch the installer, optionally after the given process exits.
 
     Waiting for our own PID lets Speech release file locks before Inno Setup
@@ -326,31 +353,55 @@ def launch_installer(
     marked ``skipifsilent`` and updates are installed with ``/SILENT``, so
     updating used to leave the user with no Speech running and no indication
     that they had to start it themselves.
+
+    On the Windows wait-for-pid path, returns the PowerShell ``-Command``
+    string so callers and tests can inspect the hand-off without running it.
     """
     installer = str(installer_path.resolve())
-    args = [installer, "/SILENT", "/NORESTART", "/CURRENTUSER"]
+    install_log = str((installer_path.parent / "install.log").resolve())
+    handoff_log = str((installer_path.parent / "handoff.log").resolve())
+    # Embed double quotes in /LOG= so Start-Process's space-joined ArgumentList
+    # keeps a path-with-spaces as one Inno token: /LOG="C:\Users\...\install.log"
+    installer_args = [
+        "/SILENT",
+        "/NORESTART",
+        "/CURRENTUSER",
+        "/SUPPRESSMSGBOXES",
+        f'/LOG="{install_log}"',
+    ]
+    args = [installer, *installer_args]
 
     if wait_for_pid is not None and os.name == "nt":
+        handoff_log_ps = json.dumps(handoff_log)
+        argument_list = ",".join(
+            powershell_single_quoted(arg) for arg in installer_args
+        )
+
+        def _handoff_line(message: str) -> str:
+            return (
+                f'"$(Get-Date -Format o) {message}" | '
+                f"Out-File -FilePath {handoff_log_ps} -Append"
+            )
+
         command = (
-            f"Wait-Process -Id {int(wait_for_pid)} -ErrorAction SilentlyContinue; "
-            f"Start-Process -FilePath {json.dumps(installer)} "
-            f"-ArgumentList '/SILENT','/NORESTART','/CURRENTUSER'"
+            f"{_handoff_line('waiting')}; "
+            f"Wait-Process -Id {int(wait_for_pid)} -Timeout 60 "
+            f"-ErrorAction SilentlyContinue; "
+            f"{_handoff_line('launching')}; "
+            f"$p = Start-Process -FilePath {json.dumps(installer)} "
+            f"-ArgumentList {argument_list} -PassThru -Wait; "
+            f'"$(Get-Date -Format o) installer-exit=$($p.ExitCode)" | '
+            f"Out-File -FilePath {handoff_log_ps} -Append"
         )
         if relaunch_path is not None:
-            # -Wait so Speech restarts after the install completes, not during
-            # it. Even if the install fails, starting the old build back up
-            # leaves the user better off than with nothing running.
+            # -PassThru -Wait so Speech restarts after the install completes,
+            # not during it. Even if the install fails, starting the old build
+            # back up leaves the user better off than with nothing running.
             command += (
-                " -Wait; Start-Process -FilePath "
+                f"; {_handoff_line('relaunching')}; "
+                f"Start-Process -FilePath "
                 f"{json.dumps(str(relaunch_path.resolve()))}"
             )
-        creationflags = 0
-        if hasattr(subprocess, "CREATE_NO_WINDOW"):
-            creationflags |= subprocess.CREATE_NO_WINDOW
-        if hasattr(subprocess, "DETACHED_PROCESS"):
-            creationflags |= subprocess.DETACHED_PROCESS
-        if hasattr(subprocess, "CREATE_NEW_PROCESS_GROUP"):
-            creationflags |= subprocess.CREATE_NEW_PROCESS_GROUP
         subprocess.Popen(
             [
                 "powershell",
@@ -361,11 +412,12 @@ def launch_installer(
                 command,
             ],
             close_fds=True,
-            creationflags=creationflags,
+            creationflags=windows_hidden_process_creationflags(),
         )
-        return
+        return command
 
     subprocess.Popen(args, close_fds=True)
+    return None
 
 
 def _is_safe_asset_name(name: str) -> bool:
