@@ -193,6 +193,9 @@ def _installed_layouts() -> tuple[int, ...]:
     AltGr collisions must be resolved against the full set so a chord saved as
     ``<`` always binds the physical ISO key even when en-US is current.
     """
+    if os.name != "nt":
+        return ()
+
     import ctypes
     from ctypes import wintypes
 
@@ -219,6 +222,9 @@ def _vk_from_layout_character(character: str) -> int | None:
     Prefers a layout where the character is unshifted (high byte 0), otherwise
     the first layout that maps it at all.
     """
+    if os.name != "nt":
+        return None
+
     import ctypes
 
     user32 = ctypes.WinDLL("user32", use_last_error=True)
@@ -243,6 +249,9 @@ def altgr_produces_character(vk: int) -> str | None:
     Ctrl+Alt+printable chords that any installed layout already claims for
     typing (for example AltGr+E → € on es-ES even while en-US is active).
     """
+    if os.name != "nt":
+        return None
+
     import ctypes
 
     user32 = ctypes.WinDLL("user32", use_last_error=True)
@@ -277,6 +286,9 @@ def character_for_virtual_key(vk: int) -> str | None:
     the same VK. That rejects cases like en-US mapping OEM_102 to a glyph
     whose real key is a different VK (e.g. ``\\`` on 0xDC).
     """
+    if os.name != "nt":
+        return None
+
     import ctypes
 
     user32 = ctypes.WinDLL("user32", use_last_error=True)
@@ -801,6 +813,9 @@ class HotkeyManager:
         cancel: threading.Event,
         pressed_at: float,
     ) -> None:
+        if os.name != "nt":
+            return
+
         import ctypes
 
         # Keep this handle private for the same reason as the message loop's

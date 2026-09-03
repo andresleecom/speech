@@ -167,7 +167,15 @@ class _DualLayoutUser32:
 def test_trigger_to_vk_maps_layout_character_through_vkkeyscan(monkeypatch):
     import ctypes
 
-    monkeypatch.setattr(ctypes, "WinDLL", lambda *args, **kwargs: _DualLayoutUser32())
+    import winwhisper.hotkeys as hotkeys_mod
+
+    monkeypatch.setattr(hotkeys_mod.os, "name", "nt")
+    monkeypatch.setattr(
+        ctypes,
+        "WinDLL",
+        lambda *args, **kwargs: _DualLayoutUser32(),
+        raising=False,
+    )
 
     # en-US is current and only maps '<' as Shift+comma; es-ES maps it
     # unshifted to VK_OEM_102, which must win.
@@ -179,9 +187,16 @@ def test_trigger_to_vk_maps_layout_character_through_vkkeyscan(monkeypatch):
 def test_character_for_virtual_key_prefers_round_trip_layout(monkeypatch):
     import ctypes
 
+    import winwhisper.hotkeys as hotkeys_mod
     from winwhisper.hotkeys import character_for_virtual_key
 
-    monkeypatch.setattr(ctypes, "WinDLL", lambda *args, **kwargs: _DualLayoutUser32())
+    monkeypatch.setattr(hotkeys_mod.os, "name", "nt")
+    monkeypatch.setattr(
+        ctypes,
+        "WinDLL",
+        lambda *args, **kwargs: _DualLayoutUser32(),
+        raising=False,
+    )
 
     # en-US ToUnicodeEx(0xE2) yields '\', but that char's real VK is 0xDC, so
     # the round trip fails and es-ES's '<' is accepted instead.
@@ -191,12 +206,62 @@ def test_character_for_virtual_key_prefers_round_trip_layout(monkeypatch):
 def test_altgr_produces_character_reads_tounicode(monkeypatch):
     import ctypes
 
+    import winwhisper.hotkeys as hotkeys_mod
     from winwhisper.hotkeys import altgr_produces_character
 
-    monkeypatch.setattr(ctypes, "WinDLL", lambda *args, **kwargs: _DualLayoutUser32())
+    monkeypatch.setattr(hotkeys_mod.os, "name", "nt")
+    monkeypatch.setattr(
+        ctypes,
+        "WinDLL",
+        lambda *args, **kwargs: _DualLayoutUser32(),
+        raising=False,
+    )
 
     # en-US is current and has no AltGr+E binding; es-ES still produces €.
     assert altgr_produces_character(0x45) == "€"
+
+
+def test_installed_layouts_unsupported_off_windows(monkeypatch):
+    import winwhisper.hotkeys as hotkeys_mod
+    from winwhisper.hotkeys import _installed_layouts
+
+    monkeypatch.setattr(hotkeys_mod.os, "name", "posix")
+    assert _installed_layouts() == ()
+
+
+def test_vk_from_layout_character_unsupported_off_windows(monkeypatch):
+    import winwhisper.hotkeys as hotkeys_mod
+    from winwhisper.hotkeys import _vk_from_layout_character
+
+    monkeypatch.setattr(hotkeys_mod.os, "name", "posix")
+    assert _vk_from_layout_character("<") is None
+
+
+def test_altgr_produces_character_unsupported_off_windows(monkeypatch):
+    import winwhisper.hotkeys as hotkeys_mod
+    from winwhisper.hotkeys import altgr_produces_character
+
+    monkeypatch.setattr(hotkeys_mod.os, "name", "posix")
+    assert altgr_produces_character(0x45) is None
+
+
+def test_character_for_virtual_key_unsupported_off_windows(monkeypatch):
+    import winwhisper.hotkeys as hotkeys_mod
+    from winwhisper.hotkeys import character_for_virtual_key
+
+    monkeypatch.setattr(hotkeys_mod.os, "name", "posix")
+    assert character_for_virtual_key(0xE2) is None
+
+
+def test_poll_push_to_talk_unsupported_off_windows(monkeypatch):
+    import winwhisper.hotkeys as hotkeys_mod
+
+    monkeypatch.setattr(hotkeys_mod.os, "name", "posix")
+    # Avoid HotkeyManager.__init__ (app paths / logging) when forcing posix on Windows.
+    manager = object.__new__(HotkeyManager)
+    cancel = threading.Event()
+    # Must return immediately without touching WinDLL.
+    HotkeyManager._poll_push_to_talk(manager, 0x77, cancel, 0.0)
 
 
 def test_combo_to_hotkey_ctrl_alt_space():
@@ -253,7 +318,10 @@ def test_hotkey_manager_start_is_noop_off_windows(monkeypatch):
     assert manager._thread is None
 
 
-@pytest.mark.skipif(os.name != "nt", reason="Windows-only")
+@pytest.mark.skipif(
+    os.name != "nt" or not hasattr(ctypes, "WinDLL"),
+    reason="Windows-only",
+)
 def test_start_reports_native_registration_conflict():
     combo = "<ctrl>+<alt>+<shift>+<f24>"
     first = HotkeyManager({"toggle_recording": combo}, lambda action: None)
@@ -437,7 +505,10 @@ def _run_fake_push_to_talk_poll(monkeypatch, release_at: float) -> list[str]:
     clock = _FakeClock()
     get_key_state = _FakeGetAsyncKeyState(lambda _vk: clock.now < release_at)
     fake_user32 = types.SimpleNamespace(GetAsyncKeyState=get_key_state)
-    monkeypatch.setattr(ctypes, "WinDLL", lambda *_args, **_kwargs: fake_user32)
+    monkeypatch.setattr(hotkeys_mod.os, "name", "nt")
+    monkeypatch.setattr(
+        ctypes, "WinDLL", lambda *_args, **_kwargs: fake_user32, raising=False
+    )
     monkeypatch.setattr(hotkeys_mod.time, "monotonic", clock.monotonic)
 
     actions: list[str] = []
@@ -464,10 +535,15 @@ def test_quick_toggle_release_dispatches_no_second_action(monkeypatch):
 
 
 def test_stop_ends_push_to_talk_poll(monkeypatch):
+    import winwhisper.hotkeys as hotkeys_mod
+
     started = threading.Event()
     get_key_state = _FakeGetAsyncKeyState(lambda _vk: started.set() or True)
     fake_user32 = types.SimpleNamespace(GetAsyncKeyState=get_key_state)
-    monkeypatch.setattr(ctypes, "WinDLL", lambda *_args, **_kwargs: fake_user32)
+    monkeypatch.setattr(hotkeys_mod.os, "name", "nt")
+    monkeypatch.setattr(
+        ctypes, "WinDLL", lambda *_args, **_kwargs: fake_user32, raising=False
+    )
     manager = HotkeyManager({"toggle_recording": "<f8>"}, lambda _action: None)
 
     manager._start_push_to_talk_poll(0x77)
@@ -482,10 +558,15 @@ def test_stop_ends_push_to_talk_poll(monkeypatch):
 
 
 def test_second_toggle_press_replaces_push_to_talk_poll(monkeypatch):
+    import winwhisper.hotkeys as hotkeys_mod
+
     started = threading.Event()
     get_key_state = _FakeGetAsyncKeyState(lambda _vk: started.set() or True)
     fake_user32 = types.SimpleNamespace(GetAsyncKeyState=get_key_state)
-    monkeypatch.setattr(ctypes, "WinDLL", lambda *_args, **_kwargs: fake_user32)
+    monkeypatch.setattr(hotkeys_mod.os, "name", "nt")
+    monkeypatch.setattr(
+        ctypes, "WinDLL", lambda *_args, **_kwargs: fake_user32, raising=False
+    )
     manager = HotkeyManager({"toggle_recording": "<f8>"}, lambda _action: None)
 
     try:
@@ -615,7 +696,10 @@ def test_normalize_char_key_maps_control_characters():
     assert normalize_char_key("7") == "7"
 
 
-@pytest.mark.skipif(os.name != "nt", reason="Windows-only")
+@pytest.mark.skipif(
+    os.name != "nt" or not hasattr(ctypes, "WinDLL"),
+    reason="Windows-only",
+)
 def test_native_overlay_does_not_mutate_shared_windll():
     """Regression: native_overlay set argtypes on the process-wide windll cache,
     clobbering the hotkey thread's GetMessageW binding (different MSG struct) and
@@ -632,7 +716,10 @@ def test_native_overlay_does_not_mutate_shared_windll():
     )
 
 
-@pytest.mark.skipif(os.name != "nt", reason="Windows-only")
+@pytest.mark.skipif(
+    os.name != "nt" or not hasattr(ctypes, "WinDLL"),
+    reason="Windows-only",
+)
 def test_message_loop_survives_foreign_argtypes_clobber():
     """Regression: even if another module clobbers the shared windll bindings
     (the exact mechanism that killed hotkeys after the first take), the hotkey

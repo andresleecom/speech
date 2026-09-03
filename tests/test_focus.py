@@ -98,6 +98,7 @@ def test_foreground_matches_accepts_another_window_from_same_process(monkeypatch
         focus_module.ctypes,
         "windll",
         types.SimpleNamespace(user32=user32),
+        raising=False,
     )
     monkeypatch.setattr(focus_module.time, "sleep", sleeps.append)
 
@@ -114,6 +115,7 @@ def test_foreground_matches_returns_false_after_300_ms(monkeypatch):
         focus_module.ctypes,
         "windll",
         types.SimpleNamespace(user32=user32),
+        raising=False,
     )
     monkeypatch.setattr(focus_module.time, "sleep", sleeps.append)
 

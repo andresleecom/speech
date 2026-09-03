@@ -221,7 +221,9 @@ def test_normalize_profile_never_substitutes_a_default_for_a_saved_value():
     assert profile == {"toggle_recording": "<ctrl>+<shift>+<f9>"}
 
 
-def test_combo_from_key_event_space_f8_letter_and_less_than():
+def test_combo_from_key_event_space_f8_letter_and_less_than(monkeypatch):
+    import ctypes
+
     assert (
         combo_from_key_event(
             keycode=0x20,
@@ -250,6 +252,12 @@ def test_combo_from_key_event_space_f8_letter_and_less_than():
         == "<ctrl>+<shift>+a"
     )
     # OEM key: keysym "less" (or "<") with a layout-specific keycode.
+    # When WinDLL is absent (POSIX CI / simulated), force the unsupported
+    # layout path so keysym "less" resolves to "<" without a real Win32 call.
+    if not hasattr(ctypes, "WinDLL"):
+        import winwhisper.hotkeys as hotkeys_mod
+
+        monkeypatch.setattr(hotkeys_mod.os, "name", "posix")
     assert (
         combo_from_key_event(
             keycode=0xE2,
@@ -371,8 +379,14 @@ def test_windows_rejects_ctrl_alt_e_via_installed_spanish_layout(monkeypatch):
     """AltGr+E → € on es-ES must reject even while en-US is the active layout."""
     import ctypes
 
+    import winwhisper.hotkeys as hotkeys_mod
+
+    monkeypatch.setattr(hotkeys_mod.os, "name", "nt")
     monkeypatch.setattr(
-        ctypes, "WinDLL", lambda *args, **kwargs: _dual_layout_user32()
+        ctypes,
+        "WinDLL",
+        lambda *args, **kwargs: _dual_layout_user32(),
+        raising=False,
     )
 
     with pytest.raises(
@@ -386,8 +400,14 @@ def test_combo_from_key_event_oem_key_uses_layout_character_not_keysym(monkeypat
     """ISO <> key must bind as '<' even when Tk reports keysym 'backslash'."""
     import ctypes
 
+    import winwhisper.hotkeys as hotkeys_mod
+
+    monkeypatch.setattr(hotkeys_mod.os, "name", "nt")
     monkeypatch.setattr(
-        ctypes, "WinDLL", lambda *args, **kwargs: _dual_layout_user32()
+        ctypes,
+        "WinDLL",
+        lambda *args, **kwargs: _dual_layout_user32(),
+        raising=False,
     )
 
     assert (
