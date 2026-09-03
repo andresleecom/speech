@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import logging
 import sys
 import threading
 from collections.abc import Callable
@@ -10,16 +11,20 @@ from . import startup as startup_module
 from .audio_inputs import (
     AudioInputDevice,
     AudioInputDeviceError,
+    PhysicalInputDevice,
     SYSTEM_DEFAULT_INPUT_LABEL,
     audio_input_device_label,
+    group_physical_input_devices,
+    input_device_signature,
     list_audio_input_devices,
+    refresh_audio_device_table,
 )
-from .branding import APP_NAME
+from .branding import APP_NAME, IDLE_ICON_COLOR, app_icon_image
 from .hotkey_settings import display_hotkey
 from .languages import language_name, tray_language_modes
 
 _STATUS_COLORS = {
-    "Idle": (128, 128, 128, 255),
+    "Idle": IDLE_ICON_COLOR,
     "Recording": (220, 38, 38, 255),
     "Testing microphone": (14, 116, 144, 255),
     "Transcribing": (245, 158, 11, 255),
@@ -29,6 +34,8 @@ _STATUS_COLORS = {
 }
 _TOOLTIP_MAX_LENGTH = 120
 _MAX_PENDING_NOTIFICATIONS = 20
+_INPUT_DEVICE_POLL_SECONDS = 2.0
+_logger = logging.getLogger(__name__)
 
 
 class TrayApp:
@@ -44,8 +51,11 @@ class TrayApp:
         self._icon: Any | None = None
         self._status = "Idle"
         self._microphone_label = SYSTEM_DEFAULT_INPUT_LABEL
+        self._microphone_item_cls: Any | None = None
         self._ui_lock = threading.RLock()
         self._pending_notifications: list[tuple[str, str]] = []
+        self._input_device_poll_timer: threading.Timer | None = None
+        self._last_input_device_signature: tuple[str, ...] | None = None
 
     def run(self) -> None:
         from pystray import Icon, Menu, MenuItem
@@ -65,10 +75,15 @@ class TrayApp:
 
     def stop(self) -> None:
         with self._ui_lock:
+            timer = self._input_device_poll_timer
+            self._input_device_poll_timer = None
+            self._last_input_device_signature = None
             icon = self._icon
             self._icon = None
-            if icon is None:
-                return
+        if timer is not None:
+            timer.cancel()
+        if icon is None:
+            return
         try:
             icon.stop()
         except Exception:
@@ -122,6 +137,44 @@ class TrayApp:
             self._pending_notifications.clear()
         for title, message in pending:
             self.notify(title, message)
+        self._start_input_device_polling()
+
+    def _start_input_device_polling(self) -> None:
+        signature = input_device_signature()
+        if signature is None:
+            return
+        with self._ui_lock:
+            if self._icon is None:
+                return
+            self._last_input_device_signature = signature
+            self._schedule_input_device_poll_unlocked()
+
+    def _schedule_input_device_poll_unlocked(self) -> None:
+        timer = threading.Timer(
+            _INPUT_DEVICE_POLL_SECONDS,
+            self._poll_input_devices,
+        )
+        timer.daemon = True
+        self._input_device_poll_timer = timer
+        timer.start()
+
+    def _poll_input_devices(self) -> None:
+        signature = input_device_signature()
+        with self._ui_lock:
+            self._input_device_poll_timer = None
+            if self._icon is None or signature is None:
+                return
+            changed = signature != self._last_input_device_signature
+            self._last_input_device_signature = signature
+
+        if changed:
+            refresh_audio_device_table()
+            self.refresh_menu()
+            _logger.info("Input devices changed; microphone menu refreshed.")
+
+        with self._ui_lock:
+            if self._icon is not None:
+                self._schedule_input_device_poll_unlocked()
 
     def _make_menu(self, menu_cls: Any, item_cls: Any) -> Any:
         return menu_cls(
@@ -220,10 +273,19 @@ class TrayApp:
         return menu_cls(*items)
 
     def _make_microphone_menu(self, menu_cls: Any, item_cls: Any) -> Any:
+        self._microphone_item_cls = item_cls
+        return menu_cls(self._microphone_menu_items)
+
+    def _microphone_menu_items(self) -> tuple[Any, ...]:
+        item_cls = self._microphone_item_cls
+        if item_cls is None:
+            return ()
         items = [
             item_cls(
                 SYSTEM_DEFAULT_INPUT_LABEL,
-                self._selection_action(None, self._select_audio_input_device),
+                self._selection_action(
+                    (None, None), self._select_audio_input_selection
+                ),
                 checked=lambda item: self._system_default_selected(),
                 radio=True,
             )
@@ -232,16 +294,18 @@ class TrayApp:
             devices = list_audio_input_devices()
         except AudioInputDeviceError:
             devices = ()
+        groups = group_physical_input_devices(devices)
 
-        if devices:
-            for device in devices:
+        if groups:
+            for group in groups:
                 items.append(
                     item_cls(
-                        device.choice_label,
+                        group.label,
                         self._selection_action(
-                            device.index, self._select_audio_input_device
+                            (group.preferred.name, group.preferred.host_api),
+                            self._select_audio_input_selection,
                         ),
-                        checked=self._device_checked(device),
+                        checked=self._device_checked(group, groups),
                         radio=True,
                     )
                 )
@@ -250,7 +314,7 @@ class TrayApp:
                 item_cls("No microphone available", lambda icon, item: None, enabled=False)
             )
 
-        if self._saved_microphone_missing(devices):
+        if self._saved_microphone_missing(groups):
             items.append(
                 item_cls(
                     self._unavailable_microphone_label(devices),
@@ -259,7 +323,7 @@ class TrayApp:
                 )
             )
         items.append(item_cls("Test Microphone", self._on_test_microphone))
-        return menu_cls(*items)
+        return tuple(items)
 
     def _radio_item(
         self,
@@ -383,6 +447,17 @@ class TrayApp:
                 str(exc) or "Microphone setting could not be saved.",
             )
 
+    def _select_audio_input_selection(
+        self, selection: tuple[str | None, str | None]
+    ) -> None:
+        try:
+            self._controller.set_audio_input_selection(*selection)
+        except Exception as exc:
+            self._controller.notify(
+                APP_NAME,
+                str(exc) or "Microphone setting could not be saved.",
+            )
+
     def _current_language(self) -> str:
         return str(self._controller.settings.language_mode)
 
@@ -404,34 +479,57 @@ class TrayApp:
             and self._current_audio_input_device() is None
         )
 
-    def _device_matches_saved(self, device: AudioInputDevice) -> bool:
+    def _device_matches_saved(
+        self,
+        group: PhysicalInputDevice,
+        groups: tuple[PhysicalInputDevice, ...],
+    ) -> bool:
         saved_name = self._saved_microphone_name()
         if saved_name is not None:
-            return (
-                device.name == saved_name
-                and device.host_api == (self._saved_microphone_host_api() or "")
+            saved_host_api = self._saved_microphone_host_api() or ""
+            exact_group = next(
+                (
+                    candidate
+                    for candidate in groups
+                    if any(
+                        row.name == saved_name and row.host_api == saved_host_api
+                        for row in candidate.rows
+                    )
+                ),
+                None,
             )
+            if exact_group is not None:
+                return group is exact_group
+            return any(row.name == saved_name for row in group.rows)
         selected = self._current_audio_input_device()
-        return selected is not None and device.index == selected
+        return selected is not None and any(
+            row.index == selected for row in group.rows
+        )
 
-    def _device_checked(self, device: AudioInputDevice) -> Callable[[Any], bool]:
+    def _device_checked(
+        self,
+        group: PhysicalInputDevice,
+        groups: tuple[PhysicalInputDevice, ...],
+    ) -> Callable[[Any], bool]:
         def checked(item: Any) -> bool:
-            return self._device_matches_saved(device)
+            return self._device_matches_saved(group, groups)
 
         return checked
 
-    def _saved_microphone_missing(self, devices: tuple[AudioInputDevice, ...]) -> bool:
+    def _saved_microphone_missing(
+        self, groups: tuple[PhysicalInputDevice, ...]
+    ) -> bool:
         saved_name = self._saved_microphone_name()
         if saved_name is not None:
-            host_api = self._saved_microphone_host_api() or ""
             return not any(
-                device.name == saved_name and device.host_api == host_api
-                for device in devices
+                self._device_matches_saved(group, groups) for group in groups
             )
         selected = self._current_audio_input_device()
         if selected is None:
             return False
-        return not any(device.index == selected for device in devices)
+        return not any(
+            row.index == selected for group in groups for row in group.rows
+        )
 
     def _unavailable_microphone_label(
         self, devices: tuple[AudioInputDevice, ...]
@@ -439,9 +537,7 @@ class TrayApp:
         saved_name = self._saved_microphone_name()
         selected = self._current_audio_input_device()
         if saved_name is not None:
-            if selected is not None:
-                return f"{saved_name} [{selected}]"
-            return saved_name
+            return f"{saved_name} (unavailable)"
         return audio_input_device_label(selected, devices)
 
     def _tooltip(self) -> str:
@@ -454,14 +550,8 @@ class TrayApp:
         return tooltip[: _TOOLTIP_MAX_LENGTH - 3] + "..."
 
     def _make_icon_image(self) -> Any:
-        from PIL import Image, ImageDraw
-
         color = _STATUS_COLORS.get(self._status, _STATUS_COLORS["Idle"])
-        image = Image.new("RGBA", (64, 64), (0, 0, 0, 0))
-        draw = ImageDraw.Draw(image)
-        draw.ellipse((8, 8, 56, 56), fill=color)
-        draw.ellipse((8, 8, 56, 56), outline=(255, 255, 255, 255), width=3)
-        return image
+        return app_icon_image(color=color)
 
     def _update_menu(self) -> None:
         with self._ui_lock:

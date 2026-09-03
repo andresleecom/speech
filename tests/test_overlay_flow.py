@@ -220,10 +220,23 @@ class FakeHotkeySettingsWindow:
 
     def __init__(self) -> None:
         self.shown_with = None
+        self.capture_hooks = None
         self.instances.append(self)
 
-    def show(self, hotkeys, on_save, language_favorites) -> None:
+    def show(
+        self,
+        hotkeys,
+        on_save,
+        language_favorites,
+        on_capture_begin=None,
+        on_capture_end=None,
+    ) -> None:
         self.shown_with = (dict(hotkeys), on_save, list(language_favorites))
+        self.capture_hooks = (on_capture_begin, on_capture_end)
+        if on_capture_begin is not None:
+            on_capture_begin()
+        if on_capture_end is not None:
+            on_capture_end()
 
 
 class FakeLanguageSettingsWindow:
@@ -314,6 +327,7 @@ def make_controller(
         "insert_text",
         lambda text, shortcut="ctrl_v": inserted.append((text, shortcut)) or True,
     )
+    monkeypatch.setattr(main_module, "windows_modifier_state", lambda: set())
     monkeypatch.setattr(main_module.threading, "Thread", ImmediateThread)
     # controller.run() starts the Windows update check, and ImmediateThread makes
     # it synchronous. Stub the release lookup so flow tests never reach GitHub:
@@ -673,6 +687,7 @@ def test_controller_opens_hotkey_window_with_live_save_callback(monkeypatch, tmp
         raising=False,
     )
     controller = make_controller(monkeypatch, tmp_path, [], [])
+    original = controller.hotkeys
 
     controller.open_hotkey_settings()
 
@@ -681,6 +696,11 @@ def test_controller_opens_hotkey_window_with_live_save_callback(monkeypatch, tmp
     assert hotkeys == controller.settings.hotkeys
     assert on_save == controller.set_hotkeys
     assert language_favorites == ["en", "es", None]
+    begin, end = window.capture_hooks
+    assert begin is not None and end is not None
+    assert original.stopped is True
+    # Dialog closed immediately in the fake, so start ran again after stop.
+    assert original.started is True
 
 
 def test_controller_opens_language_window_with_live_save_callback(monkeypatch, tmp_path):
@@ -742,7 +762,7 @@ def test_controller_persists_input_device_and_runs_microphone_test(monkeypatch, 
     monkeypatch.setattr(main_module, "list_audio_input_devices", lambda: devices)
     controller = make_controller(monkeypatch, tmp_path, [], [])
 
-    controller.set_audio_input_device(3)
+    controller.set_audio_input_selection("USB Mic", "MME")
     controller.start_microphone_test()
     microphone_test = FakeMicrophoneTest.instances[-1]
     microphone_test.peak_level = 0.4
@@ -762,7 +782,7 @@ def test_controller_persists_input_device_and_runs_microphone_test(monkeypatch, 
         "hide",
     ]
     assert controller.tray.notifications[-1][1] == "Microphone test complete. Signal detected."
-    assert controller.tray.microphone_label == "USB Mic [3]"
+    assert controller.tray.microphone_label == "USB Mic"
 
 
 def test_controller_toasts_microphone_fallback_once(monkeypatch, tmp_path):
@@ -1161,6 +1181,75 @@ def test_hotkey_stop_restores_target_window_before_paste(monkeypatch, tmp_path):
     ]
 
 
+def test_push_to_talk_release_stops_and_pastes(monkeypatch, tmp_path, caplog):
+    inserted: list[tuple[str, str]] = []
+    controller = make_controller(monkeypatch, tmp_path, [], inserted)
+    controller.toggle()
+
+    with caplog.at_level("INFO"):
+        controller.on_hotkey("toggle_release")
+
+    assert controller.recorder.is_recording() is False
+    assert inserted == [("Hola mundo", "ctrl_v")]
+    assert "push_to_talk_release" in caplog.text
+
+
+def test_push_to_talk_release_is_ignored_while_idle(monkeypatch, tmp_path):
+    inserted: list[tuple[str, str]] = []
+    controller = make_controller(monkeypatch, tmp_path, [], inserted)
+
+    controller.on_hotkey("toggle_release")
+
+    assert controller.recorder.is_recording() is False
+    assert inserted == []
+
+
+def test_paste_does_not_wait_when_windows_modifiers_are_up(monkeypatch, tmp_path):
+    inserted: list[tuple[str, str]] = []
+    controller = make_controller(monkeypatch, tmp_path, [], inserted)
+    checks: list[bool] = []
+    monkeypatch.setattr(
+        main_module,
+        "windows_modifier_state",
+        lambda: checks.append(True) or set(),
+    )
+
+    def unexpected_sleep(_seconds):
+        raise AssertionError("Modifier wait should not sleep when modifiers are up")
+
+    monkeypatch.setattr(main_module.time, "sleep", unexpected_sleep)
+
+    controller.toggle()
+    controller.toggle()
+
+    assert checks == [True]
+    assert inserted == [("Hola mundo", "ctrl_v")]
+
+
+def test_paste_modifier_wait_is_bounded_when_modifiers_never_clear(
+    monkeypatch, tmp_path
+):
+    inserted: list[tuple[str, str]] = []
+    controller = make_controller(monkeypatch, tmp_path, [], inserted)
+    clock = [0.0]
+    sleeps: list[float] = []
+    monkeypatch.setattr(main_module, "windows_modifier_state", lambda: {"ctrl"})
+    monkeypatch.setattr(main_module.time, "monotonic", lambda: clock[0])
+
+    def advance(seconds: float) -> None:
+        sleeps.append(seconds)
+        clock[0] += seconds
+
+    monkeypatch.setattr(main_module.time, "sleep", advance)
+
+    controller.toggle()
+    controller.toggle()
+
+    assert sum(sleeps) == pytest.approx(1.0)
+    assert all(seconds <= 0.03 for seconds in sleeps)
+    assert inserted == [("Hola mundo", "ctrl_v")]
+
+
 def test_failed_focus_restore_skips_paste(monkeypatch, tmp_path):
     restored: list[int | None] = []
     copied: list[str] = []
@@ -1213,6 +1302,55 @@ def test_failed_windows_focus_restore_still_attempts_paste(monkeypatch, tmp_path
     inserted: list[tuple[str, str]] = []
     controller = make_controller(monkeypatch, tmp_path, [], inserted)
     monkeypatch.setattr(main_module, "restore_foreground_window", lambda _hwnd: False)
+    monkeypatch.setattr(main_module, "foreground_matches", lambda hwnd: hwnd == 777)
+
+    controller.toggle()
+    controller.toggle()
+
+    assert inserted == [("Hola mundo", "ctrl_v")]
+
+
+def test_changed_windows_foreground_copies_without_pasting(
+    monkeypatch,
+    tmp_path,
+    caplog,
+):
+    copied: list[str] = []
+    inserted: list[tuple[str, str]] = []
+    controller = make_controller(monkeypatch, tmp_path, [], inserted)
+    monkeypatch.setattr(main_module, "restore_foreground_window", lambda _hwnd: False)
+    monkeypatch.setattr(main_module, "foreground_matches", lambda _hwnd: False)
+    monkeypatch.setattr(
+        main_module,
+        "copy_text_to_clipboard",
+        lambda text: copied.append(text) or True,
+    )
+
+    with caplog.at_level("WARNING"):
+        controller.toggle()
+        controller.toggle()
+
+    assert copied == ["Hola mundo"]
+    assert inserted == []
+    assert controller.tray.notifications == [
+        (
+            "Speech",
+            "Target window changed. The text is on the clipboard; "
+            "press Ctrl+V to paste it.",
+        )
+    ]
+    assert "Target window changed; text left on the clipboard." in caplog.text
+
+
+def test_non_windows_skips_foreground_guard(monkeypatch, tmp_path):
+    inserted: list[tuple[str, str]] = []
+    controller = make_controller(monkeypatch, tmp_path, [], inserted)
+    monkeypatch.setattr(sys, "platform", "linux")
+
+    def unexpected_foreground_check(_hwnd):
+        raise AssertionError("Windows foreground guard should not run")
+
+    monkeypatch.setattr(main_module, "foreground_matches", unexpected_foreground_check)
 
     controller.toggle()
     controller.toggle()
@@ -1230,6 +1368,25 @@ def test_empty_transcription_notifies_without_pasting(monkeypatch, tmp_path):
     assert inserted == []
     assert controller.tray.notifications == [("Speech", "No speech detected")]
     assert not hasattr(controller.recorder, "last_take_stats")
+
+
+def test_stock_whisper_phrase_is_discarded_without_pasting(monkeypatch, tmp_path, caplog):
+    inserted: list[str] = []
+    controller = make_controller(
+        monkeypatch,
+        tmp_path,
+        [],
+        inserted,
+        transcription_text="Thank you for watching.",
+    )
+
+    with caplog.at_level("INFO"):
+        controller.toggle()
+        controller.toggle()
+
+    assert inserted == []
+    assert controller.tray.notifications == [("Speech", "No speech detected")]
+    assert "Discarded stock phrase." in caplog.text
 
 
 def test_zero_frames_skips_transcription_and_toasts_capture_failure(

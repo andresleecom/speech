@@ -1,3 +1,4 @@
+import ctypes
 import sys
 import types
 
@@ -10,6 +11,8 @@ from winwhisper.audio_inputs import (
     SYSTEM_DEFAULT_INPUT_LABEL,
     audio_input_device_label,
     default_audio_input_device,
+    group_physical_input_devices,
+    input_device_signature,
     input_stream_extra_settings,
     list_audio_input_devices,
     macos_audio_capture_device,
@@ -95,6 +98,133 @@ def test_list_audio_input_devices_hides_wdm_ks_rows(monkeypatch):
     devices = list_audio_input_devices()
     assert len(devices) == 1
     assert devices[0].host_api == "MME"
+
+
+def test_group_physical_input_devices_collapses_windows_host_api_rows(monkeypatch):
+    truncated_name = "Desktop Microphone (RØDE PodMic"
+    full_name = f"{truncated_name} USB)"
+    direct_sound = AudioInputDevice(
+        index=12,
+        name=full_name,
+        input_channels=1,
+        host_api="Windows DirectSound",
+    )
+    mme = AudioInputDevice(
+        index=2,
+        name=truncated_name,
+        input_channels=1,
+        host_api="MME",
+    )
+    wasapi = AudioInputDevice(
+        index=22,
+        name=full_name,
+        input_channels=1,
+        host_api="Windows WASAPI",
+    )
+    monkeypatch.setattr(audio_inputs, "_device_supports_capture", lambda row: True)
+
+    groups = group_physical_input_devices((direct_sound, mme, wasapi))
+
+    assert len(groups) == 1
+    assert groups[0].label == full_name
+    assert groups[0].rows == (direct_sound, mme, wasapi)
+    assert groups[0].preferred is mme
+
+
+def test_group_physical_input_devices_skips_failed_preferred_row(monkeypatch):
+    mme = AudioInputDevice(index=2, name="PodMic", input_channels=1, host_api="MME")
+    wasapi = AudioInputDevice(
+        index=22,
+        name="PodMic",
+        input_channels=1,
+        host_api="Windows WASAPI",
+    )
+    direct_sound = AudioInputDevice(
+        index=12,
+        name="PodMic",
+        input_channels=1,
+        host_api="Windows DirectSound",
+    )
+    checked: list[int] = []
+
+    def supports(row):
+        checked.append(row.index)
+        return row is not mme
+
+    monkeypatch.setattr(audio_inputs, "_device_supports_capture", supports)
+
+    groups = group_physical_input_devices((direct_sound, wasapi, mme))
+
+    assert groups[0].preferred is wasapi
+    assert checked == [2, 22]
+
+
+def test_group_physical_input_devices_hides_system_default_aliases(monkeypatch):
+    sound_mapper = AudioInputDevice(
+        index=0,
+        name="Microsoft Sound Mapper - Input",
+        input_channels=2,
+        host_api="MME",
+    )
+    primary_capture = AudioInputDevice(
+        index=8,
+        name="Primary Sound Capture Driver",
+        input_channels=2,
+        host_api="Windows DirectSound",
+    )
+    microphone = AudioInputDevice(
+        index=1,
+        name="Built-in Mic",
+        input_channels=2,
+        host_api="MME",
+    )
+    monkeypatch.setattr(audio_inputs, "_device_supports_capture", lambda row: True)
+
+    groups = group_physical_input_devices(
+        (sound_mapper, primary_capture, microphone)
+    )
+
+    assert [group.label for group in groups] == ["Built-in Mic"]
+    assert groups[0].rows == (microphone,)
+
+
+def test_input_device_signature_uses_private_winmm(monkeypatch):
+    names = ("Microphone Array", "USB Mic")
+
+    class FakeFunction:
+        def __init__(self, callback) -> None:
+            self.callback = callback
+            self.argtypes = None
+            self.restype = None
+
+        def __call__(self, *args):
+            return self.callback(*args)
+
+    class FakeWinMM:
+        def __init__(self) -> None:
+            self.waveInGetNumDevs = FakeFunction(lambda: len(names))
+            self.waveInGetDevCapsW = FakeFunction(self.get_capabilities)
+
+        @staticmethod
+        def get_capabilities(index, capabilities, size):
+            assert size == ctypes.sizeof(capabilities._obj)
+            capabilities._obj.szPname = names[index]
+            return 0
+
+    fake_winmm = FakeWinMM()
+    loaded: list[str] = []
+    monkeypatch.setattr(audio_inputs.sys, "platform", "win32")
+    monkeypatch.setattr(
+        ctypes,
+        "WinDLL",
+        lambda name: loaded.append(name) or fake_winmm,
+        raising=False,
+    )
+
+    assert input_device_signature() == names
+    assert loaded == ["winmm"]
+    assert fake_winmm.waveInGetNumDevs.argtypes == []
+    assert fake_winmm.waveInGetDevCapsW.argtypes is not None
 
 
 def test_default_audio_input_device_uses_first_sounddevice_default(monkeypatch):
