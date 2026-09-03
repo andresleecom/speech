@@ -43,6 +43,8 @@ def install_fake_sounddevice(monkeypatch):
     import sys
     import types
 
+    import winwhisper.audio_inputs as audio_inputs
+
     FakeInputStream.instances.clear()
     sounddevice = types.SimpleNamespace(
         InputStream=FakeInputStream,
@@ -52,6 +54,9 @@ def install_fake_sounddevice(monkeypatch):
         query_hostapis=lambda index: {"name": "MME"},
     )
     monkeypatch.setitem(sys.modules, "sounddevice", sounddevice)
+    # Force the PortAudio refresh path so refresh_ms assertions work on macOS CI,
+    # where _use_native_macos_audio() would otherwise skip refresh by design.
+    monkeypatch.setattr(audio_inputs, "_use_native_macos_audio", lambda: False)
 
 
 @pytest.fixture(autouse=True)
