@@ -245,6 +245,14 @@ def test_altgr_produces_character_unsupported_off_windows(monkeypatch):
     assert altgr_produces_character(0x45) is None
 
 
+def test_windows_modifier_state_unsupported_off_windows(monkeypatch):
+    import winwhisper.hotkeys as hotkeys_mod
+    from winwhisper.hotkeys import windows_modifier_state
+
+    monkeypatch.setattr(hotkeys_mod.os, "name", "posix")
+    assert windows_modifier_state() == set()
+
+
 def test_character_for_virtual_key_unsupported_off_windows(monkeypatch):
     import winwhisper.hotkeys as hotkeys_mod
     from winwhisper.hotkeys import character_for_virtual_key

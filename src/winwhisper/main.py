@@ -5,6 +5,7 @@ import ctypes
 import io
 import logging
 import os
+import re
 import sys
 import threading
 import time
@@ -1664,9 +1665,13 @@ _STOCK_WHISPER_NORMALIZED = frozenset(
     _normalize_stock_phrase(phrase) for phrase in _STOCK_WHISPER_PHRASES
 )
 
+# Word-boundary match for Amara subtitle credits; avoid a bare substring test
+# that static analysis treats as incomplete URL sanitization.
+_AMARA_CREDIT_RE = re.compile(r"\bamara\.org\b", re.IGNORECASE)
+
 
 def _is_stock_whisper_phrase(text: str) -> bool:
-    if "amara.org" in text.casefold():
+    if _AMARA_CREDIT_RE.search(text):
         return True
     return _normalize_stock_phrase(text) in _STOCK_WHISPER_NORMALIZED
 

@@ -337,6 +337,9 @@ def windows_modifier_state() -> set[str]:
     Windows has no keyboard listener here (RegisterHotKey handles keys), so the
     modifiers held at click time have to be queried directly.
     """
+    if os.name != "nt":
+        return set()
+
     import ctypes
 
     # Private handle: never mutate the process-wide ctypes.windll cache, whose
