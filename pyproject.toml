@@ -27,6 +27,10 @@ dependencies = [
   "pystray",
   "pyobjc-framework-Cocoa; sys_platform == 'darwin'",
   "pyobjc-framework-AVFoundation; sys_platform == 'darwin'",
+  # Required by wake_word_source_mac.py / recorder_mac.py for
+  # Dispatch.dispatch_queue_create when streaming AVCaptureAudioDataOutput
+  # buffers (the wake-word listener and stop-word monitor).
+  "pyobjc-framework-libdispatch; sys_platform == 'darwin'",
   "pillow",
   "python-dotenv",
   "pydantic",

@@ -150,7 +150,7 @@ def _data_output_delegate_class() -> Any:
 
 
 def _new_data_output_queue() -> Any:
-    from Dispatch import dispatch_queue_create
+    from dispatch import dispatch_queue_create
 
     return dispatch_queue_create(b"winwhisper.audio-data-output", None)
 
