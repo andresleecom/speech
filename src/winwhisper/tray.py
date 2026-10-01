@@ -38,6 +38,16 @@ _INPUT_DEVICE_POLL_SECONDS = 2.0
 _logger = logging.getLogger(__name__)
 
 
+def _on_main_thread(fn: Callable[[], None]) -> None:
+    # macOS 27+ asserts that NSStatusItem is only touched on the main thread.
+    if sys.platform != "darwin":
+        fn()
+        return
+    from PyObjCTools import AppHelper
+
+    AppHelper.callAfter(fn)
+
+
 class TrayApp:
     """System tray UI.
 
@@ -96,9 +106,14 @@ class TrayApp:
             if icon is None:
                 return
             try:
-                icon.title = self._tooltip()
-                icon.icon = self._make_icon_image()
-                self._update_menu_unlocked()
+                title, image = self._tooltip(), self._make_icon_image()
+
+                def apply() -> None:
+                    icon.title = title
+                    icon.icon = image
+                    icon.update_menu()
+
+                _on_main_thread(apply)
             except Exception:
                 pass
 
@@ -109,7 +124,12 @@ class TrayApp:
             if icon is None:
                 return
             try:
-                icon.title = self._tooltip()
+                title = self._tooltip()
+
+                def apply() -> None:
+                    icon.title = title
+
+                _on_main_thread(apply)
             except Exception:
                 pass
 
@@ -121,7 +141,7 @@ class TrayApp:
                     self._pending_notifications.append((title, message))
                 return
             try:
-                icon.notify(message, title)
+                _on_main_thread(lambda: icon.notify(message, title))
             except Exception:
                 pass
 
@@ -131,7 +151,7 @@ class TrayApp:
     def _on_icon_ready(self, icon: Any) -> None:
         # Win32 balloons need a visible icon; pystray's default setup only
         # sets visible when no custom setup is provided.
-        icon.visible = True
+        _on_main_thread(lambda: setattr(icon, "visible", True))
         with self._ui_lock:
             pending = list(self._pending_notifications)
             self._pending_notifications.clear()
@@ -562,6 +582,6 @@ class TrayApp:
         if icon is None:
             return
         try:
-            icon.update_menu()
+            _on_main_thread(icon.update_menu)
         except Exception:
             pass

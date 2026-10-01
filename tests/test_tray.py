@@ -13,6 +13,12 @@ from winwhisper.hotkey_settings import display_hotkey
 from winwhisper.tray import TrayApp
 
 
+@pytest.fixture(autouse=True)
+def _inline_main_thread(monkeypatch):
+    # No Cocoa run loop in tests: run main-thread work inline.
+    monkeypatch.setattr(tray_module, "_on_main_thread", lambda fn: fn())
+
+
 class FakeMenu:
     def __init__(self, *items) -> None:
         self._items = items

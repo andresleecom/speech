@@ -20,6 +20,8 @@ classifiers = [
 ]
 dependencies = [
   "faster-whisper",
+  # av 17+ dropped the metadata_errors kwarg faster-whisper passes to av.open.
+  "av<17",
   "sounddevice",
   "numpy",
   "pynput",
